@@ -10,6 +10,7 @@
 - 完成 macOS 原生前台、Python 桥接和流水线运行时整合。
 - 声明打包图标测试所需的 Pillow 开发依赖，确保干净 CI 环境可复现。
 - 拆分搜索页及结果卡片的 SwiftUI 子视图，兼容 GitHub macOS 14 runner 的编译器类型推断限制。
+- 升级官方 GitHub Actions 至 v7，移除 Node.js 20 运行时弃用提示。
 
 ## 1.1.3
 
