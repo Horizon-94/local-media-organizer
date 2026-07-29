@@ -431,12 +431,21 @@ class NativeImageVideoAppTests(unittest.TestCase):
                 '{"url":"file:///Users/' + 'alice/private-checkout"}',
                 encoding="utf-8",
             )
+            (metadata / "RECORD").write_text(
+                "../../../../Users/alice/private/cache.pyc,,\n"
+                "package/public.py,sha256=abc,3\n",
+                encoding="utf-8",
+            )
             builder.sanitize_portable_python_metadata(site_packages)
             self.assertEqual(
                 (site_packages / "editable.pth").read_text(encoding="utf-8"),
                 "import site\n",
             )
             self.assertFalse((metadata / "direct_url.json").exists())
+            self.assertEqual(
+                (metadata / "RECORD").read_text(encoding="utf-8"),
+                "package/public.py,sha256=abc,3\n",
+            )
 
     def test_release_signing_does_not_sign_shell_wrappers_with_deep_mode(self) -> None:
         source = (

@@ -593,6 +593,19 @@ def sanitize_portable_python_metadata(site_packages: Path) -> None:
                 path.write_text("\n".join(kept) + "\n", encoding="utf-8")
             else:
                 path.unlink()
+        elif path.name == "RECORD":
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            kept = [
+                line for line in lines
+                if "/Users/" not in line and "file://" not in line
+            ]
+            path.write_text(
+                ("\n".join(kept) + "\n") if kept else "",
+                encoding="utf-8",
+            )
 
 
 def bundle_release_documents(project_root: Path, resources: Path) -> None:

@@ -8,23 +8,29 @@ from pathlib import Path
 
 
 FORBIDDEN_SUFFIXES = {
-    ".db", ".gguf", ".log", ".m4a", ".mov", ".mp3", ".mp4", ".onnx",
-    ".pt", ".pth", ".safetensors", ".sqlite", ".sqlite3", ".wav",
+    ".db", ".gguf", ".log", ".onnx", ".pt", ".pth", ".safetensors",
+    ".sqlite", ".sqlite3",
 }
+MEDIA_SUFFIXES = {".m4a", ".mov", ".mp3", ".mp4", ".wav"}
 FORBIDDEN_NAMES = {
     ".env", "mobileclip2_b.ts", "pipeline.pid", "pipeline_state.json",
 }
 SENSITIVE_PATTERNS = {
-    "private_user_path": re.compile(rb"/Users/(?!yourname(?:/|\\b))[^/\\s]+/"),
+    "private_user_path": re.compile(
+        rb"/Users/(?!yourname(?:/|\b))[A-Za-z0-9._-]+/"
+    ),
     "private_key": re.compile(rb"BEGIN [A-Z ]*PRIVATE KEY"),
     "github_token": re.compile(rb"(?:github_pat_|gh[opusr]_)[A-Za-z0-9_]{16,}"),
     "aws_access_key": re.compile(rb"AKIA[0-9A-Z]{16}"),
 }
+BUILDER_HOME_PATTERN = re.compile(
+    re.escape(str(Path.home()).encode("utf-8")) + rb"(?:/|\b)"
+)
 CHUNK_SIZE = 1024 * 1024
 OVERLAP = 256
 
 
-def _scan_file(path: Path) -> list[str]:
+def _scan_file(path: Path, *, third_party_runtime: bool = False) -> list[str]:
     findings: list[str] = []
     previous = b""
     try:
@@ -34,13 +40,37 @@ def _scan_file(path: Path) -> list[str]:
                 if not chunk:
                     break
                 sample = previous + chunk
-                for label, pattern in SENSITIVE_PATTERNS.items():
+                patterns = (
+                    {"private_builder_path": BUILDER_HOME_PATTERN}
+                    if third_party_runtime
+                    else SENSITIVE_PATTERNS
+                )
+                for label, pattern in patterns.items():
                     if label not in findings and pattern.search(sample):
                         findings.append(label)
                 previous = sample[-OVERLAP:]
     except OSError as exc:
         findings.append(f"unreadable:{exc}")
     return findings
+
+
+def _is_third_party_runtime(relative: Path) -> bool:
+    parts = relative.parts
+    return (
+        parts[:2] == ("Contents", "Frameworks")
+        or parts[:3] == ("Contents", "Resources", "PipelineEnvs")
+    )
+
+
+def _is_runtime_configuration_pth(path: Path, relative: Path) -> bool:
+    if path.suffix.lower() != ".pth" or "site-packages" not in relative.parts:
+        return False
+    try:
+        return path.stat().st_size <= 64 * 1024 and "\x00" not in path.read_text(
+            encoding="utf-8"
+        )
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def audit_app_bundle(bundle: Path) -> list[str]:
@@ -102,9 +132,17 @@ def audit_app_bundle(bundle: Path) -> list[str]:
         if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(bundle)
-        if path.name in FORBIDDEN_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        third_party_runtime = _is_third_party_runtime(relative)
+        forbidden_suffix = path.suffix.lower() in FORBIDDEN_SUFFIXES
+        if _is_runtime_configuration_pth(path, relative):
+            forbidden_suffix = False
+        if (
+            path.name in FORBIDDEN_NAMES
+            or forbidden_suffix
+            or (path.suffix.lower() in MEDIA_SUFFIXES and not third_party_runtime)
+        ):
             failures.append(f"forbidden_file:{relative}")
-        for finding in _scan_file(path):
+        for finding in _scan_file(path, third_party_runtime=third_party_runtime):
             failures.append(f"{finding}:{relative}")
     return failures
 

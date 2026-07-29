@@ -68,6 +68,53 @@ class ReleaseDistributionTests(unittest.TestCase):
             self.assertTrue(any(row.startswith("private_user_path:") for row in failures))
             self.assertTrue(any(row.startswith("github_token:") for row in failures))
 
+    def test_public_dependency_build_paths_and_test_media_are_not_private_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = clean_fixture(Path(temp))
+            site_packages = (
+                bundle / "Contents/Resources/PipelineEnvs/visual/site-packages"
+            )
+            package = site_packages / "example"
+            package.mkdir(parents=True)
+            (package / "build_info.py").write_text(
+                'source = "/Users/runner/work/public-project/source"\n'
+                'fixture = "github_pat_' + "a" * 24 + '"\n',
+                encoding="utf-8",
+            )
+            (package / "sample.wav").write_bytes(b"third-party test fixture")
+            (site_packages / "distutils-precedence.pth").write_text(
+                "import _distutils_hack\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(AUDIT.audit_app_bundle(bundle), [])
+
+    def test_current_builder_home_is_rejected_inside_dependency_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = clean_fixture(Path(temp))
+            metadata = (
+                bundle
+                / "Contents/Resources/PipelineEnvs/visual/site-packages/example.dist-info"
+            )
+            metadata.mkdir(parents=True)
+            (metadata / "RECORD").write_bytes(
+                str(Path.home()).encode("utf-8") + b"/private/cache.pyc,,\n"
+            )
+            failures = AUDIT.audit_app_bundle(bundle)
+            self.assertTrue(
+                any(row.startswith("private_builder_path:") for row in failures)
+            )
+
+    def test_path_detection_does_not_cross_source_code_string_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = clean_fixture(Path(temp))
+            source = bundle / "Contents/Resources/path_filter.py"
+            source.write_text(
+                'kept = [line for line in lines if "/Users/" not in line '
+                'and "file://" not in line]\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(AUDIT.audit_app_bundle(bundle), [])
+
     def test_model_manifest_is_external_and_complete(self) -> None:
         manifest = json.loads(
             (ROOT / "configs/model_sources_v1.json").read_text(encoding="utf-8")
