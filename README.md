@@ -19,6 +19,8 @@
 
 普通用户优先从 GitHub Releases 下载由 Horizon-94 发布的 macOS DMG。
 DMG 内含应用和 Python 运行环境，但**不含任何第三方模型**。
+官方 1.1.4 通用 DMG 面向 Apple Silicon（M 系列芯片）；Intel Mac 用户
+目前应按下方说明从源码构建，不能把该 DMG 视为兼容版本。
 
 1. 安装 DMG 中的 `本地数据库.app`。
 2. 按 [模型安装说明](docs/MODEL_SETUP.md) 下载模型。

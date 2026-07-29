@@ -254,6 +254,12 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertEqual(config["license"], "GPL-3.0-only")
             self.assertTrue(info["NSRequiresAquaSystemAppearance"])
             self.assertEqual(info["NSHumanReadableCopyright"], "Copyright © 2026 Horizon-94")
+            self.assertEqual(
+                info["LSArchitecturePriority"],
+                list(module.python_framework_architectures(
+                    bundle / "Contents/Frameworks/Python3.framework"
+                )),
+            )
             self.assertTrue((bundle / "Contents/Frameworks/Python3.framework").is_dir())
             self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
             self.assertTrue((bundle / "Contents/Resources/app_icon_1024.png").is_file())
@@ -400,6 +406,9 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn("LICENSE-GPL-3.0.txt", source)
         self.assertIn('project_root / "docs" / "pipeline_rules"', source)
         self.assertIn('pipeline_root / "docs" / "pipeline_rules"', source)
+        self.assertIn("sys.base_prefix", source)
+        self.assertIn('"Python.framework"', source)
+        self.assertIn("LSArchitecturePriority", source)
 
     def test_portable_metadata_scrubs_local_editable_install_paths(self) -> None:
         builder_path = (

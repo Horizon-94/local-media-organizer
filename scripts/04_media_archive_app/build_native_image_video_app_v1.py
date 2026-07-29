@@ -107,28 +107,119 @@ int main(int argc, char **argv) {
 
 
 def locate_python_framework(python_executable: Path) -> Path:
-    prefix = subprocess.run(
-        [str(python_executable), "-c", "import sys; print(sys.prefix)"],
+    metadata = json.loads(subprocess.run(
+        [
+            str(python_executable), "-c",
+            "import json,sys,sysconfig;"
+            "print(json.dumps({'base_prefix':sys.base_prefix,"
+            "'framework':sysconfig.get_config_var('PYTHONFRAMEWORK')}))",
+        ],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env=build_environment(),
-    ).stdout.strip()
-    version_root = Path(prefix).resolve()
+    ).stdout)
+    version_root = Path(metadata["base_prefix"]).resolve()
     framework = version_root.parent.parent
-    if framework.name != "Python3.framework" or not (framework / "Versions/Current/Headers/Python.h").is_file():
+    expected_names = {
+        f"{metadata['framework']}.framework",
+        "Python.framework",
+        "Python3.framework",
+    }
+    if (
+        framework.name not in expected_names
+        or not (version_root / "Headers/Python.h").is_file()
+    ):
         raise RuntimeError(f"unsupported Python framework runtime: {framework}")
     return framework
 
 
+def _framework_version_root(framework: Path) -> Path:
+    current = framework / "Versions/Current"
+    if (current / "Headers/Python.h").is_file():
+        return current.resolve()
+    candidates = sorted(
+        path for path in (framework / "Versions").iterdir()
+        if path.is_dir() and (path / "Headers/Python.h").is_file()
+    )
+    if len(candidates) != 1:
+        raise RuntimeError(f"cannot select Python framework version: {framework}")
+    return candidates[0]
+
+
+def normalize_python_framework(framework: Path) -> None:
+    version_root = _framework_version_root(framework)
+    current = framework / "Versions/Current"
+    if not current.exists():
+        current.symlink_to(version_root.name)
+    binary_name = next(
+        (
+            name for name in ("Python", "Python3")
+            if (version_root / name).is_file()
+        ),
+        "",
+    )
+    if not binary_name:
+        raise RuntimeError(f"Python framework binary missing: {version_root}")
+    for link_name, target in (
+        (binary_name, f"Versions/Current/{binary_name}"),
+        ("Resources", "Versions/Current/Resources"),
+        ("Headers", "Versions/Current/Headers"),
+    ):
+        link = framework / link_name
+        if not link.exists():
+            link.symlink_to(target)
+
+
+def python_framework_architectures(framework: Path) -> tuple[str, ...]:
+    version_root = _framework_version_root(framework)
+    binary = next(
+        version_root / name for name in ("Python", "Python3")
+        if (version_root / name).is_file()
+    )
+    output = subprocess.run(
+        ["/usr/bin/lipo", "-archs", str(binary)],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.split()
+    supported = tuple(name for name in ("arm64", "x86_64") if name in output)
+    if not supported:
+        raise RuntimeError(f"unsupported Python framework architecture: {output}")
+    return supported
+
+
+def relocate_python_framework(framework: Path) -> None:
+    version_root = _framework_version_root(framework)
+    binary_name = next(
+        name for name in ("Python", "Python3")
+        if (version_root / name).is_file()
+    )
+    subprocess.run(
+        [
+            "/usr/bin/install_name_tool", "-id",
+            f"@rpath/{framework.name}/Versions/Current/{binary_name}",
+            str(version_root / binary_name),
+        ],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+
 def compile_native_launcher(executable: Path, framework: Path) -> None:
-    headers = framework / "Versions/Current/Headers"
+    headers = _framework_version_root(framework) / "Headers"
+    architecture_arguments = [
+        argument
+        for architecture in python_framework_architectures(framework)
+        for argument in ("-arch", architecture)
+    ]
     with tempfile.TemporaryDirectory(prefix="media-archive-launcher-") as temporary:
         source = Path(temporary) / "launcher.c"
-        source.write_text(NATIVE_LAUNCHER_SOURCE, encoding="utf-8")
+        source.write_text(
+            NATIVE_LAUNCHER_SOURCE.replace("Python3.framework", framework.name),
+            encoding="utf-8",
+        )
         subprocess.run(
             [
-                "/usr/bin/clang", "-std=c11", "-arch", "arm64", "-arch", "x86_64",
+                "/usr/bin/clang", "-std=c11", *architecture_arguments,
                 "-I", str(headers), str(source), "-F", str(framework.parent),
-                "-framework", "Python3", "-Wl,-rpath,@executable_path/../Frameworks",
+                "-framework", framework.stem,
+                "-Wl,-rpath,@executable_path/../Frameworks",
                 "-o", str(executable),
             ],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -137,11 +228,14 @@ def compile_native_launcher(executable: Path, framework: Path) -> None:
     executable.chmod(0o755)
 
 
-def compile_swift_frontend(source: Path, executable: Path) -> None:
+def compile_swift_frontend(
+    source: Path, executable: Path,
+    architectures: Sequence[str] = ("arm64", "x86_64"),
+) -> None:
     with tempfile.TemporaryDirectory(prefix="media-archive-swiftui-") as temporary:
         temporary_root = Path(temporary)
         architecture_outputs = []
-        for architecture in ("arm64", "x86_64"):
+        for architecture in architectures:
             architecture_output = temporary_root / f"frontend-{architecture}"
             completed = subprocess.run(
                 [
@@ -550,10 +644,13 @@ def build_bundle(
     shutil.copytree(source_package, resources / "media_archive_image_video_ui")
     bundle_release_documents(project_root, resources)
     python_framework = locate_python_framework(python_executable)
+    bundled_python_framework = frameworks / python_framework.name
     shutil.copytree(
-        python_framework, frameworks / "Python3.framework", symlinks=True,
+        python_framework, bundled_python_framework, symlinks=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    normalize_python_framework(bundled_python_framework)
+    relocate_python_framework(bundled_python_framework)
 
     if bundle_pipeline_runtimes:
         bundle_pipeline_runtime(
@@ -601,9 +698,13 @@ def build_bundle(
         encoding="utf-8",
     )
     helper_executable = helpers / "素材大整理Python"
-    compile_native_launcher(helper_executable, python_framework)
+    supported_architectures = python_framework_architectures(bundled_python_framework)
+    compile_native_launcher(helper_executable, bundled_python_framework)
     executable = macos / APP_RELEASE_NAME
-    compile_swift_frontend(source_package / "native_frontend.swift", executable)
+    compile_swift_frontend(
+        source_package / "native_frontend.swift", executable,
+        architectures=supported_architectures,
+    )
 
     plist = {
         "CFBundleDisplayName": APP_RELEASE_NAME,
@@ -618,6 +719,7 @@ def build_bundle(
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": True,
+        "LSArchitecturePriority": list(supported_architectures),
         "NSHumanReadableCopyright": f"Copyright © 2026 {APP_AUTHOR}",
     }
     with (contents / "Info.plist").open("wb") as handle:
