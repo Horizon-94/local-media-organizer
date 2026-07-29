@@ -451,11 +451,39 @@ class NativeImageVideoAppTests(unittest.TestCase):
         source = (
             ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
         ).read_text(encoding="utf-8")
-        sign_bundle = source[source.index("def sign_bundle"):source.index("def build_pkg")]
+        sign_bundle = source[
+            source.index("def sign_bundle"):
+            source.index("def verify_bundle_signature")
+        ]
         self.assertNotIn('"--deep"', sign_bundle)
         self.assertIn("_is_macho", sign_bundle)
         self.assertIn("path != main_executable", sign_bundle)
         self.assertIn("_codesign(bundle)", sign_bundle)
+        self.assertIn("verify_bundle_signature(bundle)", source)
+
+    def test_release_builder_removes_only_broken_framework_symlinks(self) -> None:
+        builder_path = (
+            ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
+        )
+        specification = importlib.util.spec_from_file_location(
+            "native_release_symlink_builder", builder_path
+        )
+        builder = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as temporary:
+            framework = Path(temporary) / "Python.framework"
+            version = framework / "Versions/3.12"
+            version.mkdir(parents=True)
+            valid_target = version / "Python"
+            valid_target.write_bytes(b"python")
+            valid_link = framework / "Python"
+            valid_link.symlink_to("Versions/3.12/Python")
+            broken_link = version / "site-packages"
+            broken_link.symlink_to("../../../../../../outside/site-packages")
+            builder.remove_broken_framework_symlinks(framework)
+            self.assertTrue(valid_link.is_symlink())
+            self.assertFalse(broken_link.exists())
+            self.assertFalse(broken_link.is_symlink())
 
     def test_portable_python_role_launcher_is_native_macho(self) -> None:
         builder_path = (

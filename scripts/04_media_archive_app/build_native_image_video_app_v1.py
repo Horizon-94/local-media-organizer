@@ -169,6 +169,13 @@ def normalize_python_framework(framework: Path) -> None:
             link.symlink_to(target)
 
 
+def remove_broken_framework_symlinks(framework: Path) -> None:
+    """Drop Homebrew links whose targets live outside the copied framework."""
+    for path in sorted(framework.rglob("*")):
+        if path.is_symlink() and not path.exists():
+            path.unlink()
+
+
 def python_framework_architectures(framework: Path) -> tuple[str, ...]:
     version_root = _framework_version_root(framework)
     binary = next(
@@ -663,6 +670,7 @@ def build_bundle(
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     normalize_python_framework(bundled_python_framework)
+    remove_broken_framework_symlinks(bundled_python_framework)
     relocate_python_framework(bundled_python_framework)
 
     if bundle_pipeline_runtimes:
@@ -803,6 +811,19 @@ def sign_bundle(bundle: Path) -> None:
     _codesign(bundle)
 
 
+def verify_bundle_signature(bundle: Path) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/codesign", "--verify", "--deep", "--strict",
+            "--verbose=2", str(bundle),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def build_pkg(bundle: Path, output_path: Path) -> Path:
     output_path = output_path.expanduser().resolve()
     if output_path.exists():
@@ -888,6 +909,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bundle_pipeline_runtimes=args.portable_runtimes,
     )
     sign_bundle(bundle)
+    verify_bundle_signature(bundle)
     if args.portable_runtimes:
         subprocess.run(
             [
