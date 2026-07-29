@@ -1269,48 +1269,140 @@ struct SearchResultCard: View {
             $0 != "exact_object_label" || !(result.matchedObjectLabels ?? []).isEmpty
         }
     }
+
+    private var channelScores: [String] {
+        [
+            result.openclipCosine.map { "画面原始相似度 \(String(format: "%.3f", $0))" },
+            result.textSemanticScore.map { "描述原始相似度 \(String(format: "%.3f", $0))" },
+        ].compactMap { $0 }
+    }
+
+    private var thumbnail: some View {
+        Group {
+            if let path = result.previewPath, let image = NSImage(contentsOfFile: path) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                ZStack {
+                    Color.gray.opacity(0.15)
+                    Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted)
+                }
+            }
+        }
+        .frame(width: 250, height: 150)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var resultHeader: some View {
+        HStack {
+            Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill")
+                .foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen)
+            Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent)
+                .font(.headline)
+            Spacer()
+            Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100))
+                .font(.caption)
+                .foregroundStyle(archiveBlue)
+        }
+    }
+
+    @ViewBuilder
+    private var videoTimecode: some View {
+        if result.mediaType == "video" {
+            Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")")
+                .font(.subheadline)
+                .foregroundStyle(archiveMuted)
+        }
+    }
+
+    @ViewBuilder
+    private var matchEvidence: some View {
+        if !visibleReasons.isEmpty {
+            Text("命中依据：" + visibleReasons.map {
+                [
+                    "exact_text": "文字直接命中",
+                    "exact_object_label": "物体标签直接命中",
+                    "strong_visual_semantic": "画面语义强匹配",
+                    "strong_text_semantic": "描述语义强匹配",
+                    "combined_visual_text": "画面与描述共同匹配",
+                    "same_person_reid": "本地人脸特征属于同一匿名人物簇",
+                ][$0] ?? $0
+            }.joined(separator: "、"))
+            .font(.caption)
+            .foregroundStyle(archiveBlue)
+        }
+        if let labels = result.matchedObjectLabels, !labels.isEmpty {
+            Text("物体标签证据：" + labels.prefix(3).map {
+                "\($0.labelZh ?? $0.label ?? "未知标签")（\(Int(($0.confidence ?? 0) * 100))%）"
+            }.joined(separator: "、"))
+            .font(.caption)
+            .foregroundStyle(archiveMuted)
+        }
+        if !channelScores.isEmpty {
+            Text(channelScores.joined(separator: " · ") + "；综合匹配仅用于结果排序，不是识别概率。")
+                .font(.caption2)
+                .foregroundStyle(archiveMuted)
+        }
+    }
+
+    @ViewBuilder
+    private var personClusterActions: some View {
+        if let clusters = result.personClusters, !clusters.isEmpty {
+            ForEach(clusters) { cluster in
+                Button("查找同一人物（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
+                    model.searchPersonCluster(cluster.personClusterId)
+                }
+                .buttonStyle(.bordered)
+                .help("只读取本地匿名人脸簇；不会识别或显示人物姓名")
+            }
+        }
+    }
+
+    private var openActions: some View {
+        HStack {
+            Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") {
+                model.open(result)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(result.canOpenOriginal != true)
+            Button("在 Finder 中显示") {
+                model.reveal(result)
+            }
+            .disabled(result.canOpenOriginal != true)
+        }
+    }
+
+    private var resultDetails: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            resultHeader
+            videoTimecode
+            Text("场景：\(result.environmentLabel ?? "未标注")")
+                .font(.caption)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            Text(result.textPreview ?? "该画面通过全视觉通道召回。")
+                .font(.subheadline)
+                .lineLimit(3)
+            matchEvidence
+            personClusterActions
+            Text("所属位置：\(result.sourceRelativePath ?? "")")
+                .font(.caption2)
+                .foregroundStyle(archiveMuted)
+            openActions
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
-            Group {
-                if let path = result.previewPath, let image = NSImage(contentsOfFile: path) { Image(nsImage: image).resizable().scaledToFill() }
-                else { ZStack { Color.gray.opacity(0.15); Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted) } }
-            }.frame(width: 250, height: 150).clipped().clipShape(RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 8) {
-                HStack { Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill").foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen); Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent).font(.headline); Spacer(); Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100)).font(.caption).foregroundStyle(archiveBlue) }
-                if result.mediaType == "video" { Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")").font(.subheadline).foregroundStyle(archiveMuted) }
-                Text("场景：\(result.environmentLabel ?? "未标注")").font(.caption).padding(.horizontal, 7).padding(.vertical, 4).background(Color.orange.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 5))
-                Text(result.textPreview ?? "该画面通过全视觉通道召回。").font(.subheadline).lineLimit(3)
-                if !visibleReasons.isEmpty {
-                    Text("命中依据：" + visibleReasons.map { ["exact_text":"文字直接命中", "exact_object_label":"物体标签直接命中", "strong_visual_semantic":"画面语义强匹配", "strong_text_semantic":"描述语义强匹配", "combined_visual_text":"画面与描述共同匹配", "same_person_reid":"本地人脸特征属于同一匿名人物簇"][$0] ?? $0 }.joined(separator: "、"))
-                        .font(.caption).foregroundStyle(archiveBlue)
-                }
-                if let labels = result.matchedObjectLabels, !labels.isEmpty {
-                    Text("物体标签证据：" + labels.prefix(3).map {
-                        "\($0.labelZh ?? $0.label ?? "未知标签")（\(Int(($0.confidence ?? 0) * 100))%）"
-                    }.joined(separator: "、"))
-                        .font(.caption).foregroundStyle(archiveMuted)
-                }
-                let channelScores = [
-                    result.openclipCosine.map { "画面原始相似度 \(String(format: "%.3f", $0))" },
-                    result.textSemanticScore.map { "描述原始相似度 \(String(format: "%.3f", $0))" },
-                ].compactMap { $0 }
-                if !channelScores.isEmpty {
-                    Text(channelScores.joined(separator: " · ") + "；综合匹配仅用于结果排序，不是识别概率。")
-                        .font(.caption2).foregroundStyle(archiveMuted)
-                }
-                if let clusters = result.personClusters, !clusters.isEmpty {
-                    ForEach(clusters) { cluster in
-                        Button("查找同一人物（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
-                            model.searchPersonCluster(cluster.personClusterId)
-                        }
-                        .buttonStyle(.bordered)
-                        .help("只读取本地匿名人脸簇；不会识别或显示人物姓名")
-                    }
-                }
-                Text("所属位置：\(result.sourceRelativePath ?? "")").font(.caption2).foregroundStyle(archiveMuted)
-                HStack { Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") { model.open(result) }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true); Button("在 Finder 中显示") { model.reveal(result) }.disabled(result.canOpenOriginal != true) }
-            }
-        }.padding(14).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
+            thumbnail
+            resultDetails
+        }
+        .padding(14)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
     }
 }
 
