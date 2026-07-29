@@ -1316,8 +1316,8 @@ struct SearchResultCard: View {
 
 struct SearchPage: View {
     @EnvironmentObject var model: ArchiveModel
-    var body: some View { ScrollView { VStack(alignment: .leading, spacing: 18) {
-        PageHeader(title: "搜索素材", subtitle: "同时搜索全部派生画面、AI 描述、OCR 文字和物体标签。")
+
+    private var searchControls: some View {
         Panel { VStack(spacing: 14) {
             HStack { Image(systemName: "magnifyingglass").foregroundStyle(archiveMuted); TextField("例如：夜间户外戴眼镜的人物", text: $model.query).textFieldStyle(.plain).font(.title3); Button(model.searching ? "搜索中…" : "搜索") { model.search() }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching || model.snapshot?.searchRuntime.ready != true) }
             Divider(); HStack {
@@ -1338,7 +1338,7 @@ struct SearchPage: View {
                     Picker("同一人物", selection: $model.selectedPersonClusterId) {
                         Text("请选择匿名人物").tag("")
                         ForEach(model.personClusterCatalog) { person in
-                            Text("\(person.displayName ?? "匿名人物") · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
+                            Text("\(person.displayName) · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
                                 .tag(person.personClusterId)
                         }
                     }.frame(maxWidth: 430)
@@ -1351,19 +1351,31 @@ struct SearchPage: View {
                 }
             }
         } }
+    }
+
+    private var searchCapabilityNotice: some View {
         Text(model.snapshot?.searchRuntime.ready == true ? "全量视觉搜索已启用；只显示图片和视频，查询原文与查询向量不会写入中心数据库。" : "首次素材整理完成后，搜索会在这里自动开放。")
             .font(.subheadline).foregroundStyle(archiveBlue).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.blue.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var searchPrewarmSummary: some View {
         HStack(spacing: 7) {
             Image(systemName: model.searchPrewarmReady ? "bolt.fill" : "bolt")
                 .foregroundStyle(model.searchPrewarmReady ? archiveGreen : archiveMuted)
             Text(model.searchPrewarmStatus).font(.caption).foregroundStyle(archiveMuted)
         }
-        Text("搜索会扫描全量画面向量，并融合 AI 描述、OCR 文字和物体标签。宽泛词与具体描述会重新排序；同一素材的不同时间点仍是独立画面。")
-            .font(.caption).foregroundStyle(archiveMuted)
+    }
+
+    @ViewBuilder
+    private var personCapabilityNote: some View {
         if !model.personCapabilityNote.isEmpty {
             Label(model.personCapabilityNote, systemImage: "person.crop.circle.badge.questionmark")
                 .font(.caption).foregroundStyle(archiveMuted)
         }
+    }
+
+    @ViewBuilder
+    private var searchProgressSection: some View {
         if model.searching, let progress = model.searchProgress {
             Panel { VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -1411,11 +1423,19 @@ struct SearchPage: View {
                 }
             } }
         }
+    }
+
+    @ViewBuilder
+    private var searchStatusSection: some View {
         if !model.searchStatus.isEmpty { Text(model.searchStatus).font(.subheadline).foregroundStyle(archiveMuted) }
         if let coverage = model.searchCoverage {
             Text("本次已扫描：画面向量 \(coverage.scannedVisualVectorCount) / \(coverage.eligibleVisualUnitCount) · 文本向量 \(coverage.scannedTextVectorCount)")
                 .font(.caption).foregroundStyle(archiveMuted)
         }
+    }
+
+    @ViewBuilder
+    private var searchDiagnosticSection: some View {
         if !model.searchDiagnostic.isEmpty {
             DisclosureGroup("展开诊断") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1427,6 +1447,10 @@ struct SearchPage: View {
                 }.padding(.top, 8)
             }.padding(12).background(Color.red.opacity(0.05)).clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    @ViewBuilder
+    private var searchResultsSection: some View {
         if model.searchResults.isEmpty, let overview = model.snapshot?.overview, model.snapshot?.configurationState == "configured" {
             HStack { MetricCard(title: "可搜索画面", value: overview.visualUnitTotalCount.formatted()); MetricCard(title: "图片素材", value: (overview.source["image"]?.count ?? 0).formatted()); MetricCard(title: "视频素材", value: (overview.source["video"]?.count ?? 0).formatted()); MetricCard(title: "文本向量", value: overview.recognition.textVectors.formatted()) }
         } else if model.snapshot?.configurationState != "configured" {
@@ -1436,10 +1460,30 @@ struct SearchPage: View {
         if model.nextSearchOffset != nil {
             HStack { Spacer(); Button(model.searching ? "加载中…" : "加载更多") { model.search(loadMore: true) }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching); Spacer() }.padding(.vertical, 12)
         }
-    }.padding(34) }.onAppear {
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                PageHeader(title: "搜索素材", subtitle: "同时搜索全部派生画面、AI 描述、OCR 文字和物体标签。")
+                searchControls
+                searchCapabilityNotice
+                searchPrewarmSummary
+                Text("搜索会扫描全量画面向量，并融合 AI 描述、OCR 文字和物体标签。宽泛词与具体描述会重新排序；同一素材的不同时间点仍是独立画面。")
+                    .font(.caption).foregroundStyle(archiveMuted)
+                personCapabilityNote
+                searchProgressSection
+                searchStatusSection
+                searchDiagnosticSection
+                searchResultsSection
+            }
+            .padding(34)
+        }
+        .onAppear {
         if model.personClusterCatalog.isEmpty { model.loadPersonClusters() }
         model.prewarmSearch()
-    } }
+        }
+    }
 }
 
 struct DuplicatesPage: View {
