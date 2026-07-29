@@ -1,51 +1,51 @@
 {
   "contract_version": "media_archive_app_runtime_contract_v1",
-  "project_root": "/Users/yourname/Documents/AI-Local/media-archive-clean",
+  "project_root": "$PROJECT_ROOT",
   "python": {
-    "system": "/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python",
-    "visual": "/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python",
-    "yolo": "/Users/yourname/Documents/AI-Local/envs/media-archive-v06-yolo/bin/python",
-    "person_reid": "/Users/yourname/Documents/AI-Local/envs/media-archive-v06-yolo/bin/python",
-    "qwen": "/Users/yourname/Documents/AI-Local/envs/qwen-vl/bin/python",
-    "ocr": "/Users/yourname/Documents/AI-Local/envs/media-archive-v06-ocr/bin/python",
-    "embedding": "/Users/yourname/Documents/AI-Local/envs/media-archive-embedding/bin/python"
+    "system": "$ENV_ROOT/media-archive-v06-visual/bin/python",
+    "visual": "$ENV_ROOT/media-archive-v06-visual/bin/python",
+    "yolo": "$ENV_ROOT/media-archive-v06-yolo/bin/python",
+    "person_reid": "$ENV_ROOT/media-archive-v06-yolo/bin/python",
+    "qwen": "$ENV_ROOT/qwen-vl/bin/python",
+    "ocr": "$ENV_ROOT/media-archive-v06-ocr/bin/python",
+    "embedding": "$ENV_ROOT/media-archive-embedding/bin/python"
   },
   "tools": {
-    "ffmpeg": "/opt/homebrew/bin/ffmpeg",
-    "ffprobe": "/opt/homebrew/bin/ffprobe",
-    "sips": "/usr/bin/sips"
+    "ffmpeg": "$FFMPEG",
+    "ffprobe": "$FFPROBE",
+    "sips": "$SIPS"
   },
   "models": {
     "yoloe": {
-      "path": "/Users/yourname/Documents/model/yoloe26-l-seg/weights/yoloe26-l-seg.pt",
+      "path": "$MODEL_ROOT/yoloe26-l-seg/weights/yoloe-26l-seg.pt",
       "kind": "file"
     },
     "yoloe_mobileclip": {
-      "path": "/Users/yourname/Documents/model/yoloe26-l-seg/mobileclip2_b.ts",
+      "path": "$MODEL_ROOT/yoloe26-l-seg/mobileclip2_b.ts",
       "kind": "file"
     },
     "openclip": {
-      "path": "/Users/yourname/Documents/model/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors",
+      "path": "$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k/model.safetensors",
       "kind": "file"
     },
     "person_reid": {
-      "path": "/Users/yourname/Documents/model/insightface/buffalo_l",
+      "path": "$MODEL_ROOT/insightface/buffalo_l",
       "kind": "directory"
     },
     "qwen": {
-      "path": "/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit",
+      "path": "$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit",
       "kind": "directory"
     },
     "ocr_detection": {
-      "path": "/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_det",
+      "path": "$MODEL_ROOT/ocr/PP-OCRv6_medium_det",
       "kind": "directory"
     },
     "ocr_recognition": {
-      "path": "/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_rec",
+      "path": "$MODEL_ROOT/ocr/PP-OCRv6_medium_rec",
       "kind": "directory"
     },
     "text_embedding": {
-      "path": "/Users/yourname/Documents/model/Qwen3-Embedding-0.6B",
+      "path": "$MODEL_ROOT/Qwen3-Embedding-0.6B",
       "kind": "directory"
     }
   },

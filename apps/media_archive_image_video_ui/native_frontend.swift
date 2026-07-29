@@ -989,6 +989,7 @@ struct Sidebar: View {
                     .font(.caption).foregroundStyle(libraryReady && state.database.integrityCheck == "ok" ? archiveGreen : archiveMuted)
             }
             Text("版本 \(bundledAppVersion)").font(.caption2).foregroundStyle(archiveMuted)
+            Text("© 2026 Horizon-94 · GPL-3.0").font(.caption2).foregroundStyle(archiveMuted)
         }.padding(24).frame(width: 250).background(Color.white.opacity(0.78))
     }
 }
@@ -1058,7 +1059,7 @@ struct NewTaskPage: View {
                             SummaryRow("GPU", state.hardware.gpuCores.map { "\($0) 核" } ?? "系统未公开")
                             SummaryRow("统一内存", state.hardware.unifiedMemoryGb.map { String(format: "%.0f GB", $0) } ?? "系统未公开")
                             Divider(); Text("保守推荐模型并发 \(state.hardware.recommendation.modelWorkers) 路 · 本机估算上限 \(state.hardware.recommendation.estimatedMaxModelWorkers) 路").font(.caption).foregroundStyle(archiveBlue)
-                            Text("抽帧推荐 \(state.hardware.recommendation.frameExtractWorkers) 路；实际运行遇到内存压力会自动降低。").font(.caption2).foregroundStyle(archiveMuted)
+                            Text("抽帧推荐 \(state.hardware.recommendation.frameExtractWorkers) 路；若出现内存压力，请在设置中降低并发。").font(.caption2).foregroundStyle(archiveMuted)
                             Button("查看并调整设置") { model.page = .settings }.buttonStyle(.link)
                         } }
                         Panel { VStack(alignment: .leading, spacing: 11) {
@@ -1634,12 +1635,14 @@ struct SettingsPage: View {
             HStack { MetricCard(title: "芯片", value: state.hardware.chip, tint: archiveBlue, icon: "cpu"); MetricCard(title: "CPU", value: "\(state.hardware.cpuCoresTotal) 核"); MetricCard(title: "GPU", value: state.hardware.gpuCores.map { "\($0) 核" } ?? "未公开"); MetricCard(title: "统一内存", value: state.hardware.unifiedMemoryGb.map { String(format: "%.0f GB", $0) } ?? "未公开") }
             Panel { VStack(alignment: .leading, spacing: 13) {
                 Text("新任务处理方案").font(.title3.bold())
-                Text("默认值按本机能力保守推荐。遇到内存压力时只能自动降低并发，不会静默提高。").font(.subheadline).foregroundStyle(archiveMuted)
+                Text("应用会读取芯片、CPU 核数和统一内存，给出保守默认值与估算上限；不会静默提高并发。").font(.subheadline).foregroundStyle(archiveMuted)
                 Divider()
                 SettingPicker(title: "运行方式", selection: $model.schedulerMode, values: ["自动选择（推荐）", "数据库流水线异步（尚未开放）", "按阶段串行"])
                 Label("数据库流水线异步尚未开放：当前只能保存未来方案，不会启动异步总编排器。", systemImage: "clock.badge.exclamationmark")
                     .font(.caption).foregroundStyle(archiveOrange)
                 SettingStepper(title: "模型并发路数", value: $model.modelWorkers, range: 1...8, hint: "保守推荐 \(state.hardware.recommendation.modelWorkers) 路 · 估算上限 \(state.hardware.recommendation.estimatedMaxModelWorkers) 路")
+                Text("32 GB 只是开发基准。更高配置可以在估算上限内提高；若出现交换内存增长、卡顿或模型退出，应立即降低。")
+                    .font(.caption).foregroundStyle(archiveMuted)
                 SettingStepper(title: "抽帧并发路数", value: $model.frameWorkers, range: 1...16, hint: "推荐 \(state.hardware.recommendation.frameExtractWorkers) 路")
                 SettingPicker(title: "视频抽帧间隔", selection: $model.frameInterval, values: ["1 秒", "2 秒", "3 秒", "4 秒", "5 秒"])
                 SettingPicker(title: "高价值分析密度", selection: $model.highValueMode, values: ["兼容当前规则", "目标 15%", "目标 20%", "目标 30%"])
@@ -1686,6 +1689,14 @@ struct SettingsPage: View {
                 SafetyCard(title: "原始素材保护", detail: "只读；仅在用户主动打开时访问", passed: true)
             }
             Panel { VStack(alignment: .leading, spacing: 8) { Text("模型更新闸门").font(.headline); Text("登记模型指纹  →  离线小样本测试  →  与当前模型对比  →  人工确认  →  明确启用").font(.subheadline).foregroundStyle(archiveMuted); Text("应用不会联网下载模型，也不会自动替换正式模型。").font(.caption).foregroundStyle(archiveBlue) } }
+            Panel { VStack(alignment: .leading, spacing: 8) {
+                Text("关于本软件").font(.headline)
+                Text("Copyright © 2026 Horizon-94")
+                Text("GNU GPL v3.0 only · 修改版本必须注明修改，并按许可证提供对应源码。")
+                    .font(.caption).foregroundStyle(archiveMuted)
+                Link("官方源码：github.com/Horizon-94/local-media-organizer", destination: URL(string: "https://github.com/Horizon-94/local-media-organizer")!)
+                    .font(.caption)
+            } }
             if !model.actionMessage.isEmpty { Label(model.actionMessage, systemImage: model.actionFailed ? "xmark.circle" : "checkmark.circle").font(.subheadline).foregroundStyle(model.actionFailed ? Color.red : archiveGreen) }
         } else {
             Panel { VStack(alignment: .leading, spacing: 10) {

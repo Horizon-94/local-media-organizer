@@ -1,33 +1,14 @@
 {
-  "model_root": "/Users/yourname/Documents/model",
+  "model_root": "~/Library/Application Support/素材大整理/Models",
+  "automatic_download": false,
   "models": {
-    "yoloe26_l_seg": {
-      "name": "YOLOE-26L-Seg",
-      "path": "/Users/yourname/Documents/model/yoloe26-l-seg",
-      "stage": "V0.5",
-      "purpose": "object_detection_and_segmentation",
-      "enabled": false
-    },
-    "qwen_vl": {
-      "name": "Qwen-VL",
-      "path": "/Users/yourname/Documents/model/<qwen-vl-model-folder>",
-      "stage": "V0.5",
-      "purpose": "visual_language_understanding",
-      "enabled": false
-    },
-    "whisper": {
-      "name": "Whisper",
-      "path": "/Users/yourname/Documents/model/<whisper-model-folder>",
-      "stage": "V0.5",
-      "purpose": "speech_to_text",
-      "enabled": false
-    },
-    "embedding": {
-      "name": "Embedding model",
-      "path": "/Users/yourname/Documents/model/<embedding-model-folder>",
-      "stage": "V0.5",
-      "purpose": "semantic_vector_index",
-      "enabled": false
-    }
+    "yoloe": "yoloe26-l-seg/weights/yoloe-26l-seg.pt",
+    "yoloe_mobileclip": "yoloe26-l-seg/mobileclip2_b.ts",
+    "openclip": "openclip-vit-b-32-laion2b-s34b-b79k/model.safetensors",
+    "qwen": "Qwen3-VL-4B-Instruct-4bit",
+    "ocr_detection": "ocr/PP-OCRv6_medium_det",
+    "ocr_recognition": "ocr/PP-OCRv6_medium_rec",
+    "text_embedding": "Qwen3-Embedding-0.6B",
+    "person_reid_optional": "insightface/buffalo_l"
   }
 }

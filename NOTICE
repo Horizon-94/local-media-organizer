@@ -1,7 +1,17 @@
 Local Media Organizer
-Copyright 2026 Horizon-94
+Copyright (C) 2026 Horizon-94
+Original project and official source:
+https://github.com/Horizon-94/local-media-organizer
 
-This source repository does not include third-party model weights, original
-media, databases, signed applications, or installers. Third-party model names
-and upstream links are documented in MODEL_SOURCES.md for attribution and
-license review.
+The current source tree is licensed under GNU GPL version 3 only. License
+history, including the earlier Apache-2.0 release, is documented in
+LICENSE_HISTORY.md.
+
+Third-party model weights are not part of this program and are not covered by
+the GPL. Their upstream links and separate license conditions are documented
+in MODEL_SOURCES.md. Original media, databases, credentials and user logs are
+never included in official source or release artifacts.
+
+The GPL does not grant permission to imply that a modified build is an
+official Horizon-94 release. Modified distributions must clearly identify
+their changes and must not misrepresent their origin.

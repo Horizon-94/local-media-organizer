@@ -16,7 +16,11 @@ Local Media Organizer 的目标是让素材、索引和模型留在用户自己�
 - SQLite、JSONL 索引、向量文件和搜索历史；
 - 模型权重、Tokenizer、缓存和虚拟环境；
 - 日志、崩溃报告、用户名、绝对路径、设备标识和访问令牌；
-- 已签名应用、证书、Provisioning Profile、DMG 或 ZIP。
+- 签名证书、Provisioning Profile 或未经隐私审计的 DMG/ZIP。
+
+经过 `scripts/release_artifact_audit.py` 检查的通用 DMG 可以作为
+GitHub Release 附件发布，但不能提交到 Git 历史。DMG 不得包含模型、
+真实数据库、素材、日志、令牌、本机用户名或本机绝对路径。
 
 ## 问题报告
 

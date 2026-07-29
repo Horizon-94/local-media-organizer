@@ -20,6 +20,7 @@ from media_archive_image_video_ui.native_app import APP_VERSION, default_paths, 
 from media_archive_image_video_ui.processing_profile import (  # noqa: E402
     build_processing_profile,
     detect_hardware,
+    recommend_workers,
     save_processing_profile,
 )
 from media_archive_image_video_ui.repository import ReadonlyMediaRepository, VISIBLE_MEDIA_TYPES  # noqa: E402
@@ -248,7 +249,11 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertNotIn("qwen_model", config)
             self.assertEqual(config["appearance_policy"], "native_swiftui_system_appearance_v1")
             self.assertEqual(config["runtime_policy"], "native_swiftui_embedded_python_bridge_v1")
+            self.assertEqual(config["author"], "Horizon-94")
+            self.assertEqual(config["official_source"], "https://github.com/Horizon-94/local-media-organizer")
+            self.assertEqual(config["license"], "GPL-3.0-only")
             self.assertTrue(info["NSRequiresAquaSystemAppearance"])
+            self.assertEqual(info["NSHumanReadableCopyright"], "Copyright © 2026 Horizon-94")
             self.assertTrue((bundle / "Contents/Frameworks/Python3.framework").is_dir())
             self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
             self.assertTrue((bundle / "Contents/Resources/app_icon_1024.png").is_file())
@@ -271,6 +276,8 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertIn("本次已扫描：画面向量", bundled_frontend)
             self.assertIn('Button("查看同一人物")', bundled_frontend)
             self.assertIn("总用时", bundled_frontend)
+            self.assertIn("Copyright © 2026 Horizon-94", bundled_frontend)
+            self.assertIn("github.com/Horizon-94/local-media-organizer", bundled_frontend)
             self.assertIn("AVPlayerView", bundled_frontend)
             self.assertNotIn("QuickTime Player", bundled_frontend)
             self.assertNotIn("/usr/bin/osascript", bundled_frontend)
@@ -313,6 +320,20 @@ class NativeImageVideoAppTests(unittest.TestCase):
             hardware["recommendation"]["estimated_max_model_workers"],
             hardware["recommendation"]["model_workers"],
         )
+
+    def test_worker_recommendation_adapts_to_unified_memory(self) -> None:
+        def recommended(memory: int) -> dict[str, int]:
+            return recommend_workers({
+                "cpu_cores_total": 16,
+                "unified_memory_gb": memory,
+            })
+
+        self.assertEqual(recommended(16)["model_workers"], 1)
+        self.assertEqual(recommended(24)["model_workers"], 2)
+        self.assertEqual(recommended(32)["model_workers"], 3)
+        self.assertEqual(recommended(32)["estimated_max_model_workers"], 4)
+        self.assertEqual(recommended(64)["model_workers"], 4)
+        self.assertEqual(recommended(64)["estimated_max_model_workers"], 8)
 
     def test_processing_profile_activates_generic_interval_and_density(self) -> None:
         hardware = {
@@ -374,8 +395,39 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn('"models_included": False', source)
         self.assertIn("PipelinePython", source)
         self.assertIn("PipelineEnvs", source)
+        self.assertIn('"$APP_RESOURCES/Pipeline"', source)
+        self.assertIn("bundle_release_documents", source)
+        self.assertIn("LICENSE-GPL-3.0.txt", source)
         self.assertIn('project_root / "docs" / "pipeline_rules"', source)
         self.assertIn('pipeline_root / "docs" / "pipeline_rules"', source)
+
+    def test_portable_metadata_scrubs_local_editable_install_paths(self) -> None:
+        builder_path = (
+            ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
+        )
+        specification = importlib.util.spec_from_file_location(
+            "native_release_metadata_builder", builder_path
+        )
+        builder = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as temporary:
+            site_packages = Path(temporary)
+            (site_packages / "editable.pth").write_text(
+                "/Users/" + "alice/private-checkout\nimport site\n",
+                encoding="utf-8",
+            )
+            metadata = site_packages / "package.dist-info"
+            metadata.mkdir()
+            (metadata / "direct_url.json").write_text(
+                '{"url":"file:///Users/' + 'alice/private-checkout"}',
+                encoding="utf-8",
+            )
+            builder.sanitize_portable_python_metadata(site_packages)
+            self.assertEqual(
+                (site_packages / "editable.pth").read_text(encoding="utf-8"),
+                "import site\n",
+            )
+            self.assertFalse((metadata / "direct_url.json").exists())
 
     def test_release_signing_does_not_sign_shell_wrappers_with_deep_mode(self) -> None:
         source = (

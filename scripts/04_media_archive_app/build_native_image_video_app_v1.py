@@ -8,6 +8,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
@@ -18,6 +19,9 @@ APP_BUNDLE_NAME = f"{APP_RELEASE_NAME}.app"
 APP_BUNDLE_VERSION = "1.1.4-search-progress-warm-cache"
 APP_SEMVER = "1.1.4"
 APP_BUNDLE_IDENTIFIER = "local.horizon.local-database.v114"
+APP_AUTHOR = "Horizon-94"
+APP_SOURCE_URL = "https://github.com/Horizon-94/local-media-organizer"
+APP_LICENSE = "GPL-3.0-only"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_ROOT = Path(
@@ -400,12 +404,14 @@ def bundle_pipeline_runtime(
             framework_by_version[version] = (
                 str(framework.relative_to(frameworks)), major_minor,
             )
+        environment_target = resources / "PipelineEnvs" / environment_name / "site-packages"
         shutil.copytree(
             Path(metadata["purelib"]),
-            resources / "PipelineEnvs" / environment_name / "site-packages",
+            environment_target,
             symlinks=True,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
         )
+        sanitize_portable_python_metadata(environment_target)
 
     wrapper_root = helpers / "PipelinePython"
     wrapper_root.mkdir(parents=True)
@@ -427,9 +433,16 @@ def bundle_pipeline_runtime(
 
     def portable(value):
         if isinstance(value, str):
-            return value.replace(
-                str(project_root), "$APP_RESOURCES/Pipeline",
-            ).replace("/Users/yourname/Documents/model", "$MODEL_ROOT")
+            return (
+                value
+                .replace(str(project_root), "$APP_RESOURCES/Pipeline")
+                .replace("$PROJECT_ROOT", "$APP_RESOURCES/Pipeline")
+                .replace(
+                    "/Users/yourname/Documents/AI-Local/media-archive-clean",
+                    "$APP_RESOURCES/Pipeline",
+                )
+                .replace("/Users/yourname/Documents/model", "$MODEL_ROOT")
+            )
         if isinstance(value, list):
             return [portable(item) for item in value]
         if isinstance(value, dict):
@@ -458,6 +471,51 @@ def bundle_pipeline_runtime(
         encoding="utf-8",
     )
     return manifest
+
+
+def sanitize_portable_python_metadata(site_packages: Path) -> None:
+    """Remove local checkout references that Python installers record as metadata.
+
+    The application package itself is bundled separately, so editable-install
+    path hints are neither required nor safe to distribute.
+    """
+    for path in sorted(site_packages.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.name == "direct_url.json":
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "file://" in text or "/Users/" in text:
+                path.unlink()
+        elif path.suffix == ".pth":
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            kept = [line for line in lines if "/Users/" not in line and "file://" not in line]
+            if kept:
+                path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            else:
+                path.unlink()
+
+
+def bundle_release_documents(project_root: Path, resources: Path) -> None:
+    documentation = resources / "Documentation"
+    documentation.mkdir()
+    files = {
+        project_root / "LICENSE": documentation / "LICENSE-GPL-3.0.txt",
+        project_root / "LICENSE_HISTORY.md": documentation / "LICENSE_HISTORY.md",
+        project_root / "NOTICE": documentation / "NOTICE.txt",
+        project_root / "MODEL_SOURCES.md": documentation / "MODEL_SOURCES.md",
+        project_root / "docs" / "MODEL_SETUP.md": documentation / "MODEL_SETUP.md",
+        project_root / "docs" / "BUILD_FROM_SOURCE.md": documentation / "BUILD_FROM_SOURCE.md",
+    }
+    for source, destination in files.items():
+        if not source.is_file():
+            raise FileNotFoundError(f"release document missing: {source}")
+        shutil.copy2(source, destination)
 
 
 def build_bundle(
@@ -490,6 +548,7 @@ def build_bundle(
     resources.mkdir(parents=True)
     build_app_icon(source_package / "assets" / "app_icon_1024.png", resources)
     shutil.copytree(source_package, resources / "media_archive_image_video_ui")
+    bundle_release_documents(project_root, resources)
     python_framework = locate_python_framework(python_executable)
     shutil.copytree(
         python_framework, frameworks / "Python3.framework", symlinks=True,
@@ -504,7 +563,10 @@ def build_bundle(
     config = {
         "app_bundle_contract": "media_archive_native_image_video_app_bundle_v1",
         "configuration_state": "development_attached" if development_database else "first_run_clean",
-        "project_root": str(project_root),
+        "project_root": (
+            "$APP_RESOURCES/Pipeline"
+            if bundle_pipeline_runtimes else str(project_root)
+        ),
         "runtime_contract_path": (
             "$APP_RESOURCES/runtime_contract.json"
             if bundle_pipeline_runtimes else
@@ -519,6 +581,9 @@ def build_bundle(
         "runtime_policy": "native_swiftui_embedded_python_bridge_v1",
         "portable_pipeline_runtimes": bool(bundle_pipeline_runtimes),
         "models_included": False,
+        "author": APP_AUTHOR,
+        "official_source": APP_SOURCE_URL,
+        "license": APP_LICENSE,
     }
     (resources / "app_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -553,7 +618,7 @@ def build_bundle(
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": True,
-        "NSHumanReadableCopyright": "Local-only media archive",
+        "NSHumanReadableCopyright": f"Copyright © 2026 {APP_AUTHOR}",
     }
     with (contents / "Info.plist").open("wb") as handle:
         plistlib.dump(plist, handle, sort_keys=True)
@@ -655,9 +720,16 @@ def build_dmg(bundle: Path, output_path: Path) -> Path:
         # runtime trees and invalidates the signed app copied into the DMG.
         shutil.copytree(bundle, staging / bundle.name, symlinks=True)
         (staging / "Applications").symlink_to("/Applications", target_is_directory=True)
+        documentation = bundle / "Contents" / "Resources" / "Documentation"
+        shutil.copy2(documentation / "LICENSE-GPL-3.0.txt", staging / "GNU GPL v3.0.txt")
+        shutil.copy2(documentation / "MODEL_SETUP.md", staging / "模型安装说明.md")
+        shutil.copy2(documentation / "NOTICE.txt", staging / "项目与版权说明.txt")
         (staging / "安装说明.txt").write_text(
             f"把“{APP_RELEASE_NAME}”拖入 Applications 文件夹。以后可从“应用程序”、启动台或 Dock 打开。\n"
-            "当前版本只显示图片与视频；不会修改原始素材。\n",
+            "当前版本只显示图片与视频；不会修改原始素材。\n"
+            "模型不在安装包内，也不会自动下载。请阅读“模型安装说明.md”。\n"
+            f"官方源码：{APP_SOURCE_URL}\n"
+            f"Copyright © 2026 {APP_AUTHOR} · {APP_LICENSE}\n",
             encoding="utf-8",
         )
         try:
@@ -701,12 +773,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bundle_pipeline_runtimes=args.portable_runtimes,
     )
     sign_bundle(bundle)
+    if args.portable_runtimes:
+        subprocess.run(
+            [
+                sys.executable,
+                str(args.project_root / "scripts" / "release_artifact_audit.py"),
+                str(bundle),
+            ],
+            check=True,
+        )
     installers = []
     if args.dmg:
         installers.append(str(build_dmg(
             bundle, args.output_dir / f"{APP_RELEASE_NAME}-{APP_SEMVER}.dmg",
         )))
-    print(json.dumps({
+    result = {
         "status": "PASS",
         "app_bundle": str(bundle),
         "app_version": APP_BUNDLE_VERSION,
@@ -719,7 +800,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "portable_pipeline_runtimes": bool(args.portable_runtimes),
         "models_included": False,
         "configuration_state": "development_attached" if args.development_database else "first_run_clean",
-    }, ensure_ascii=False, indent=2))
+        "official_source": APP_SOURCE_URL,
+        "license": APP_LICENSE,
+        "sha256": {
+            str(Path(path).name): _sha256(Path(path))
+            for path in installers
+        },
+    }
+    if args.portable_runtimes:
+        (args.output_dir / "release_manifest.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
