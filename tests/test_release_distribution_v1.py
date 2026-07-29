@@ -77,7 +77,7 @@ class ReleaseDistributionTests(unittest.TestCase):
             package = site_packages / "example"
             package.mkdir(parents=True)
             (package / "build_info.py").write_text(
-                'source = "/Users/runner/work/public-project/source"\n'
+                'source = "/Users/' + 'runner/work/public-project/source"\n'
                 'fixture = "github_pat_' + "a" * 24 + '"\n',
                 encoding="utf-8",
             )

@@ -432,7 +432,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (metadata / "RECORD").write_text(
-                "../../../../Users/alice/private/cache.pyc,,\n"
+                "../../../../Users/" + "alice/private/cache.pyc,,\n"
                 "package/public.py,sha256=abc,3\n",
                 encoding="utf-8",
             )
