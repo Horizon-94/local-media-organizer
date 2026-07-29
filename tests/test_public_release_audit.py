@@ -43,6 +43,10 @@ class PublicReleaseAuditTests(unittest.TestCase):
             )
             self.assertEqual(MODULE.audit(root), [])
 
+    def test_dev_extra_declares_icon_builder_dependency(self) -> None:
+        pyproject = (SCRIPT.parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('dev = ["pytest>=8", "Pillow>=10"]', pyproject)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ authors = [{ name = "Horizon-94" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "Pillow>=10"]
 visual = [
   "numpy",
   "Pillow",
