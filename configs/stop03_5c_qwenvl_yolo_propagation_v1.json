@@ -1,0 +1,28 @@
+{
+  "contract_version": "stop03_5c_qwenvl_yolo_propagation_v1",
+  "source_staging_selector": "latest_success_stop03_5b_run",
+  "source_modality": "qwenvl",
+  "source_quality_statuses": [
+    "PASS"
+  ],
+  "video_derived_type": "video_frame_jpg1280",
+  "neighbor_radius_frames": 3,
+  "yoloe_min_confidence": 0.35,
+  "semantic_gate": "qwen_mentioned_label_intersect_source_yoloe_intersect_target_yoloe",
+  "target_direct_qwenvl_policy": "record_propagation_without_overwrite",
+  "allow_cross_source_propagation": false,
+  "allow_recursive_propagation": false,
+  "propagate_ocr": false,
+  "propagate_full_qwen_text": false,
+  "propagate_object_labels_only": true,
+  "ambiguous_single_cjk_terms": [
+    "人",
+    "车"
+  ],
+  "source_policy": "central_db_latest_frozen_results_only",
+  "original_video_read": false,
+  "model_run": false,
+  "network_used": false,
+  "download_used": false,
+  "database_write_in_dry_run": false
+}

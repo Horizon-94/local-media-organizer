@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-media-organizer"
+version = "1.1.4"
+description = "Local-first macOS media cataloging and search"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Horizon-94" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+visual = [
+  "numpy",
+  "Pillow",
+  "opencv-python",
+  "safetensors",
+  "torch",
+  "open-clip-torch",
+]
+yolo = ["torch", "ultralytics"]
+qwen = ["mlx", "mlx-vlm", "transformers"]
+ocr = ["paddleocr", "paddlepaddle", "paddlex"]
+embedding = ["torch", "transformers", "sentence-transformers"]
+
+[tool.setuptools]
+package-dir = {"" = "apps"}
+
+[tool.setuptools.packages.find]
+where = ["apps"]
+include = ["media_archive_image_video_ui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["apps"]

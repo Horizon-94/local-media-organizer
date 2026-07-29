@@ -1,0 +1,73 @@
+{
+  "contract_version": "stop03_5e_text_search_contract_v1",
+  "source_view": "v_stop03_5d_latest_text_documents",
+  "source_run_selector": "latest_success_stop03_5d",
+  "query_model_policy": "must_match_selected_embedding_run",
+  "query_prompt_name": "query",
+  "query_normalize_embeddings": true,
+  "query_min_characters": 1,
+  "query_max_characters": 512,
+  "semantic_score": "cosine_dot_normalized_float32",
+  "baseline_backend": "sqlite_blob_streaming_cosine_v1",
+  "vector_scan_chunk_size": 2048,
+  "ranking_unit": "unique_text_vector_group",
+  "default_vector_group_limit": 50,
+  "max_vector_group_limit": 500,
+  "default_documents_per_group": 20,
+  "max_documents_per_group": 500,
+  "document_pagination": true,
+  "exact_text_signal": "reported_separately_before_semantic_tiebreak",
+  "fts5_policy": "capability_only_not_indexed_in_v1",
+  "allowed_filters": [
+    "media_type",
+    "document_kind",
+    "source_content_id",
+    "source_relative_path_prefix",
+    "time_position_ms_range"
+  ],
+  "stable_tiebreak": [
+    "exact_text_match_desc",
+    "semantic_score_desc",
+    "text_vector_id_asc",
+    "source_content_id_asc",
+    "time_position_ms_asc",
+    "document_id_asc"
+  ],
+  "result_thumbnail_required": true,
+  "result_thumbnail_source": "derived_assets.derived_path",
+  "result_thumbnail_asset_policy": "relative_symlink_then_readonly_copy",
+  "video_preview_window_ms": 5000,
+  "video_preview_window_options_ms": [
+    5000,
+    10000
+  ],
+  "video_preview_anchor_offset_ms": 2000,
+  "timecode_display_format": "adaptive_hh_mm_ss",
+  "timecode_default_precision": "millisecond",
+  "timecode_precision_choices": [
+    "second",
+    "millisecond"
+  ],
+  "environment_label_policy": "temporal_qwen_consensus_non_destructive_v1",
+  "environment_neighbor_count_each_side": 2,
+  "environment_categories": [
+    "indoor",
+    "outdoor_day",
+    "outdoor_night",
+    "outdoor",
+    "night_or_indoor",
+    "indoor_or_outdoor",
+    "unknown"
+  ],
+  "environment_ambiguous_display_label": "夜间/室内（待确认）",
+  "environment_user_confirmation_supported": true,
+  "playback_contract": "ui_resolves_source_content_id_and_seeks_preview_segment",
+  "original_video_clip_generation": false,
+  "query_persistence": false,
+  "result_traceability": true,
+  "network_used": false,
+  "download_used": false,
+  "original_media_read": false,
+  "search_index_created": false,
+  "database_write_in_preflight_or_dry_run": false
+}

@@ -1,0 +1,33 @@
+{
+  "model_root": "/Users/yourname/Documents/model",
+  "models": {
+    "yoloe26_l_seg": {
+      "name": "YOLOE-26L-Seg",
+      "path": "/Users/yourname/Documents/model/yoloe26-l-seg",
+      "stage": "V0.5",
+      "purpose": "object_detection_and_segmentation",
+      "enabled": false
+    },
+    "qwen_vl": {
+      "name": "Qwen-VL",
+      "path": "/Users/yourname/Documents/model/<qwen-vl-model-folder>",
+      "stage": "V0.5",
+      "purpose": "visual_language_understanding",
+      "enabled": false
+    },
+    "whisper": {
+      "name": "Whisper",
+      "path": "/Users/yourname/Documents/model/<whisper-model-folder>",
+      "stage": "V0.5",
+      "purpose": "speech_to_text",
+      "enabled": false
+    },
+    "embedding": {
+      "name": "Embedding model",
+      "path": "/Users/yourname/Documents/model/<embedding-model-folder>",
+      "stage": "V0.5",
+      "purpose": "semantic_vector_index",
+      "enabled": false
+    }
+  }
+}

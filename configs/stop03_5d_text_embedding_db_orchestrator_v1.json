@@ -1,0 +1,19 @@
+{
+  "orchestrator_version": "stop03_5d_text_embedding_db_orchestrator_v1",
+  "contract_version": "stop03_5d_text_embedding_db_contract_v1",
+  "scheduling_mode": "dynamic_database_claim",
+  "default_workers": 3,
+  "default_max_attempts": 3,
+  "worker_model_load_policy": "once_per_worker",
+  "claim_policy": "one_unique_text_at_a_time",
+  "completion_policy": "database_counts_without_fixed_total",
+  "retry_policy": "failed_below_max_attempts",
+  "stale_running_resume_policy": "reset_to_pending",
+  "successful_vector_rerun": false,
+  "vector_storage": "central_sqlite_blob",
+  "progress_policy": "append_after_each_completed_item",
+  "network_policy": "offline_environment_and_blocked_socket",
+  "source_policy": "central_db_text_only",
+  "original_video_read": false,
+  "search_index_created": false
+}

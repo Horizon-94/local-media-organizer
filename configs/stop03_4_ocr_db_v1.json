@@ -1,0 +1,18 @@
+{
+  "contract_version": "stop03_4_ocr_db_v1",
+  "queue_view": "v_stop03_2_v25_ocr_execution_queue",
+  "ocr_python": "/Users/yourname/Documents/AI-Local/envs/media-archive-v06-ocr/bin/python",
+  "model_root": "/Users/yourname/Documents/model/ocr",
+  "text_detection_model_dir": "/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_det",
+  "text_recognition_model_dir": "/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_rec",
+  "paddlex_cache_root": "/Users/yourname/.paddlex/official_models",
+  "use_doc_orientation_classify": false,
+  "use_doc_unwarping": false,
+  "use_textline_orientation": false,
+  "text_rec_score_thresh": 0.0,
+  "workers": 3,
+  "max_attempts": 3,
+  "network_policy": "blocked_in_worker",
+  "source_policy": "derived_visual_only",
+  "result_contract": "stop03_4_ocr_evidence_v1"
+}

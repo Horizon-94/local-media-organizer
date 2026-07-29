@@ -1,0 +1,12 @@
+@include docs/pipeline_rules/FROZEN_INTERFACE_BUNDLE_FILES_V2.txt
+apps/media_archive_image_video_ui/__init__.py
+apps/media_archive_image_video_ui/native_app.py
+apps/media_archive_image_video_ui/processing_profile.py
+apps/media_archive_image_video_ui/repository.py
+apps/media_archive_image_video_ui/search_jobs.py
+scripts/04_media_archive_app/build_native_image_video_app_v1.py
+scripts/04_media_archive_app/build_frozen_v1_evidence_bundle.py
+docs/pipeline_rules/MEDIA_ARCHIVE_IMAGE_VIDEO_NATIVE_APP_V1.md
+docs/pipeline_rules/MEDIA_ARCHIVE_PROCESSING_PROFILE_CONTRACT_V1.md
+docs/pipeline_rules/MEDIA_ARCHIVE_V1_RELEASE_HANDOFF_20260717.md
+tests/test_media_archive_image_video_native_app_v1.py

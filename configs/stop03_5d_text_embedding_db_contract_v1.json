@@ -1,0 +1,38 @@
+{
+  "contract_version": "stop03_5d_text_embedding_db_contract_v1",
+  "source_evidence_selector": "latest_success_stop03_5b_view",
+  "source_propagation_selector": "latest_success_stop03_5c_view",
+  "included_direct_quality_statuses": [
+    "PASS"
+  ],
+  "excluded_direct_quality_statuses": [
+    "REVIEW"
+  ],
+  "included_modalities": [
+    "qwenvl",
+    "ocr"
+  ],
+  "one_document_per_derived_id": true,
+  "text_section_order": [
+    "qwenvl",
+    "ocr",
+    "propagated_labels"
+  ],
+  "deduplicate_direct_text_by_sha256": true,
+  "deduplicate_propagated_labels": true,
+  "reuse_identical_embedding_text": true,
+  "model_name": "Qwen3-Embedding-0.6B",
+  "model_path": "/Users/yourname/Documents/model/Qwen3-Embedding-0.6B",
+  "python_path": "/Users/yourname/Documents/AI-Local/envs/media-archive-embedding/bin/python",
+  "model_dimension": 1024,
+  "vector_dtype": "float32",
+  "normalize_embeddings": true,
+  "document_prompt_name": "document",
+  "document_prompt_text": "",
+  "vector_storage": "central_sqlite_blob",
+  "original_video_read": false,
+  "model_run": false,
+  "network_used": false,
+  "download_used": false,
+  "database_write_in_dry_run": false
+}

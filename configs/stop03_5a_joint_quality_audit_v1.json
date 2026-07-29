@@ -1,0 +1,19 @@
+{
+  "contract_version": "stop03_5a_joint_quality_audit_v1",
+  "qwen_run_selector": "latest_complete_for_current_queue",
+  "ocr_run_selector": "latest_complete_full_for_current_queue",
+  "qwen_required_sections": [
+    "1）概括",
+    "2）元素",
+    "3）检索价值"
+  ],
+  "qwen_min_text_chars_review": 80,
+  "qwen_max_text_chars_review": 2000,
+  "ocr_min_text_chars_review": 4,
+  "ocr_mean_confidence_review_threshold": 0.8,
+  "allow_quality_review_for_staging": true,
+  "source_policy": "central_db_and_existing_output_reports_only",
+  "original_video_read": false,
+  "model_run": false,
+  "database_write": false
+}

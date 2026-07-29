@@ -1,0 +1,57 @@
+{
+  "config_version": "stop03_3_qwenvl_db_v1",
+  "v25_contract_name": "stop03_2_v25_candidate_snapshot",
+  "v25_snapshot_contract_version": "stop03_2_v25_candidate_snapshot_v1",
+  "qwenvl_queue_view": "v_stop03_2_v25_qwenvl_execution_queue",
+  "ocr_queue_view": "v_stop03_2_v25_ocr_execution_queue",
+  "output_contract_version": "qwenvl_output_contract_v2.0",
+  "default_max_tokens": 384,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "default_workers": 1,
+  "default_timeout_seconds": 1200,
+  "model_name": "Qwen3-VL-4B-Instruct-4bit",
+  "model_path": "/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit",
+  "model_weight_file": "/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit/model.safetensors",
+  "model_config_file": "config.json",
+  "model_tokenizer_files": [
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "merges.txt",
+    "chat_template.jinja",
+    "chat_template.json"
+  ],
+  "qwen_python": "/Users/yourname/Documents/AI-Local/envs/qwen-vl/bin/python",
+  "prompt_path": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/qwenvl_prompt_v2_384.txt",
+  "production_success_status": "success",
+  "non_success_statuses": [
+    "truncated",
+    "parse_failed",
+    "missing_required_fields",
+    "input_fingerprint_mismatch",
+    "failed"
+  ],
+  "resume_statuses": [
+    "pending",
+    "failed",
+    "review",
+    "truncated",
+    "parse_failed",
+    "missing_required_fields",
+    "input_fingerprint_mismatch"
+  ],
+  "required_output_sections": [
+    "1）概括：",
+    "2）元素：",
+    "3）检索价值："
+  ],
+  "offline_environment": {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "HF_DATASETS_OFFLINE": "1",
+    "TOKENIZERS_PARALLELISM": "false"
+  }
+}

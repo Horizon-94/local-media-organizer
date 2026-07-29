@@ -1,0 +1,14 @@
+{
+  "contract_version": "stop03_5b_unified_evidence_staging_v1",
+  "quality_audit_config": "configs/stop03_5a_joint_quality_audit_v1.json",
+  "modalities": [
+    "qwenvl",
+    "ocr"
+  ],
+  "allow_quality_review": true,
+  "source_policy": "central_db_complete_runs_and_existing_output_reports_only",
+  "original_video_read": false,
+  "model_run": false,
+  "network_used": false,
+  "download_used": false
+}
