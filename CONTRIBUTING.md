@@ -9,6 +9,8 @@
 3. 保持原始素材只读与搜索只读接口。
 4. 不改变 A9T-v3、R2J-FIX-C4 等已经冻结的名称。
 5. 新增模型能力时同时更新 `MODEL_SOURCES.md` 和许可证说明。
+6. 贡献视为按当前 `GPL-3.0-only` 许可证提供；第三方代码必须保留来源和兼容许可证。
+7. 修改版本、派生发行版和截图必须明确说明修改者，不得冒充 Horizon-94 官方构建。
 
 提交前运行：
 
@@ -16,7 +18,10 @@
 python scripts/public_release_audit.py .
 python -m compileall -q apps scripts
 python -m pytest -q \
+  tests/test_public_release_audit.py \
   tests/test_media_archive_search_readiness_v1.py \
   tests/test_media_archive_repository_schema_compat_v1.py \
   tests/test_media_archive_native_bridge_state_v1.py
 ```
+
+可验证的历史问题整理在 `docs/history/KNOWN_ISSUES_AND_FIXES.md`。请用 Issue 模板新增问题，不要提交私人日志全文。

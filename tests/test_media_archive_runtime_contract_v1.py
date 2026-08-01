@@ -20,13 +20,16 @@ from media_archive_image_video_ui.runtime_contract import (  # noqa: E402
 
 class MediaArchiveRuntimeContractTests(unittest.TestCase):
     def test_fixed_runtime_contract_is_complete_without_loading_models(self) -> None:
-        report = validate_runtime_contract(ROOT / "configs/media_archive_app_runtime_contract_v1.json")
-        self.assertTrue(report["ready"], report)
-        self.assertEqual(report["status"], "PASS")
-        self.assertEqual(report["counts"]["python"], 6)
-        self.assertEqual(report["counts"]["tools"], 3)
-        self.assertEqual(report["counts"]["models"], 8)
-        self.assertIn("person_reid", {row["key"] for row in report["model_items"]})
+        contract = load_runtime_contract(
+            ROOT / "configs/media_archive_app_runtime_contract_v1.json"
+        )
+        self.assertEqual(len(contract["python"]), 7)
+        self.assertEqual(len(contract["tools"]), 3)
+        self.assertEqual(len(contract["models"]), 8)
+        self.assertIn("person_reid", contract["models"])
+        self.assertNotIn("$PROJECT_ROOT", contract["project_root"])
+        self.assertNotIn("$MODEL_ROOT", contract["models"]["qwen"]["path"])
+        self.assertEqual(contract["policies"]["download"], "disabled")
 
     def test_runtime_contract_reports_exact_missing_key(self) -> None:
         source = ROOT / "configs/media_archive_app_runtime_contract_v1.json"

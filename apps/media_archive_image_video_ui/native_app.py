@@ -198,6 +198,7 @@ class NativeMediaArchiveApp:
         tk.Frame(footer, bg=COLORS["line"], height=1).pack(fill="x", pady=(0, 14))
         tk.Label(footer, text="●  中心数据库只读连接", font=("PingFang SC", 10), fg=COLORS["green"], bg=COLORS["sidebar"]).pack(anchor="w")
         tk.Label(footer, text=f"版本 {APP_VERSION}", font=("PingFang SC", 10), fg=COLORS["muted"], bg=COLORS["sidebar"]).pack(anchor="w", pady=(7, 0))
+        tk.Label(footer, text="© 2026 Horizon-94 · GPL-3.0", font=("PingFang SC", 9), fg=COLORS["muted"], bg=COLORS["sidebar"]).pack(anchor="w", pady=(4, 0))
 
         status = tk.Label(self.content, textvariable=self.status_var, font=("PingFang SC", 10), fg=COLORS["muted"], bg="#EEF2F7", anchor="w", padx=16, pady=7)
         status.pack(side="bottom", fill="x")
@@ -654,7 +655,7 @@ class NativeMediaArchiveApp:
         profile_card = self._card(content)
         profile_card.pack(fill="x", pady=(0, 16))
         tk.Label(profile_card, text="新任务处理方案", font=("PingFang SC", 16, "bold"), fg=COLORS["text"], bg=COLORS["card"]).pack(anchor="w", padx=22, pady=(19, 5))
-        tk.Label(profile_card, text="默认值按本机能力保守推荐。用户可以降低或提高，但运行时遇到内存压力只会自动降低并发。", font=("PingFang SC", 10), fg=COLORS["muted"], bg=COLORS["card"]).pack(anchor="w", padx=22, pady=(0, 13))
+        tk.Label(profile_card, text="应用会读取芯片、CPU 核数和统一内存给出保守默认值与估算上限。32 GB 只是开发基准；高配机器可提高并发，出现内存压力时请降低。", font=("PingFang SC", 10), fg=COLORS["muted"], bg=COLORS["card"]).pack(anchor="w", padx=22, pady=(0, 13))
         form = tk.Frame(profile_card, bg=COLORS["card"])
         form.pack(fill="x", padx=22, pady=(0, 20))
         self.profile_scheduler = tk.StringVar(value="自动选择（推荐）")
@@ -698,6 +699,7 @@ class NativeMediaArchiveApp:
         model_card.pack(fill="x", pady=(18, 0))
         tk.Label(model_card, text="模型更新必须经过 5 道检查", font=("PingFang SC", 14, "bold"), fg=COLORS["text"], bg=COLORS["card"]).pack(anchor="w", padx=20, pady=(17, 7))
         tk.Label(model_card, text="登记模型指纹  →  离线小样本测试  →  与当前模型对比  →  人工确认  →  明确启用", font=("PingFang SC", 10), fg=COLORS["muted"], bg=COLORS["card"]).pack(anchor="w", padx=20, pady=(0, 17))
+        tk.Label(content, text="Copyright © 2026 Horizon-94 · GNU GPL v3.0 only\n官方源码：https://github.com/Horizon-94/local-media-organizer", justify="left", font=("PingFang SC", 10), fg=COLORS["muted"], bg=COLORS["bg"]).pack(anchor="w", pady=(18, 0))
 
     def _settings_combo(self, master: tk.Misc, label: str, variable: tk.StringVar, values: tuple[str, ...]) -> None:
         row = tk.Frame(master, bg=COLORS["card"])

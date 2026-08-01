@@ -1,0 +1,74 @@
+{
+  "contract": "local_media_organizer_model_sources_v1",
+  "automatic_download": false,
+  "default_model_root": "~/Library/Application Support/素材大整理/Models",
+  "models": [
+    {
+      "key": "yoloe",
+      "required_for": "开放词汇物体检测",
+      "relative_path": "yoloe26-l-seg/weights/yoloe-26l-seg.pt",
+      "upstream": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yoloe-26l-seg.pt",
+      "license_review": "https://www.ultralytics.com/license",
+      "required": true
+    },
+    {
+      "key": "yoloe_mobileclip",
+      "required_for": "YOLOE 文本提示编码",
+      "relative_path": "yoloe26-l-seg/mobileclip2_b.ts",
+      "upstream": "https://github.com/ultralytics/assets/releases/download/v8.4.0/mobileclip2_b.ts",
+      "sha256": "35d7f213e4d75f38514e4656ad3cb91158bd33e3805d8ac349f23b186f66982f",
+      "license_review": "https://www.ultralytics.com/license",
+      "required": true
+    },
+    {
+      "key": "openclip",
+      "required_for": "全视觉向量搜索",
+      "relative_path": "openclip-vit-b-32-laion2b-s34b-b79k/model.safetensors",
+      "upstream": "https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K/blob/main/model.safetensors",
+      "sha256": "74813fbcdc750f235c9784c367ca1394d2a5c25eb0aac92761752ac239db7cff",
+      "license_review": "https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K",
+      "required": true
+    },
+    {
+      "key": "qwen",
+      "required_for": "画面描述",
+      "relative_path": "Qwen3-VL-4B-Instruct-4bit",
+      "upstream": "https://huggingface.co/mlx-community/Qwen3-VL-4B-Instruct-4bit/tree/main",
+      "license_review": "https://huggingface.co/mlx-community/Qwen3-VL-4B-Instruct-4bit",
+      "required": true
+    },
+    {
+      "key": "ocr_detection",
+      "required_for": "OCR 文字检测",
+      "relative_path": "ocr/PP-OCRv6_medium_det",
+      "upstream": "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det",
+      "license_review": "https://github.com/PaddlePaddle/PaddleOCR",
+      "required": true
+    },
+    {
+      "key": "ocr_recognition",
+      "required_for": "OCR 文字识别",
+      "relative_path": "ocr/PP-OCRv6_medium_rec",
+      "upstream": "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec",
+      "license_review": "https://github.com/PaddlePaddle/PaddleOCR",
+      "required": true
+    },
+    {
+      "key": "text_embedding",
+      "required_for": "文本语义向量",
+      "relative_path": "Qwen3-Embedding-0.6B",
+      "upstream": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B/tree/main",
+      "license_review": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+      "required": true
+    },
+    {
+      "key": "person_reid",
+      "required_for": "可选的匿名人物归并",
+      "relative_path": "insightface/buffalo_l",
+      "upstream": "https://github.com/deepinsight/insightface/releases/tag/v0.7",
+      "license_review": "https://github.com/deepinsight/insightface#license",
+      "required": false,
+      "warning": "buffalo_l 模型不是随 GPL 程序授权的组成部分；商业使用前必须向上游确认单独许可。"
+    }
+  ]
+}

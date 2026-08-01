@@ -8,6 +8,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
@@ -18,6 +19,9 @@ APP_BUNDLE_NAME = f"{APP_RELEASE_NAME}.app"
 APP_BUNDLE_VERSION = "1.1.4-search-progress-warm-cache"
 APP_SEMVER = "1.1.4"
 APP_BUNDLE_IDENTIFIER = "local.horizon.local-database.v114"
+APP_AUTHOR = "Horizon-94"
+APP_SOURCE_URL = "https://github.com/Horizon-94/local-media-organizer"
+APP_LICENSE = "GPL-3.0-only"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_ROOT = Path(
@@ -103,28 +107,126 @@ int main(int argc, char **argv) {
 
 
 def locate_python_framework(python_executable: Path) -> Path:
-    prefix = subprocess.run(
-        [str(python_executable), "-c", "import sys; print(sys.prefix)"],
+    metadata = json.loads(subprocess.run(
+        [
+            str(python_executable), "-c",
+            "import json,sys,sysconfig;"
+            "print(json.dumps({'base_prefix':sys.base_prefix,"
+            "'framework':sysconfig.get_config_var('PYTHONFRAMEWORK')}))",
+        ],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env=build_environment(),
-    ).stdout.strip()
-    version_root = Path(prefix).resolve()
+    ).stdout)
+    version_root = Path(metadata["base_prefix"]).resolve()
     framework = version_root.parent.parent
-    if framework.name != "Python3.framework" or not (framework / "Versions/Current/Headers/Python.h").is_file():
+    expected_names = {
+        f"{metadata['framework']}.framework",
+        "Python.framework",
+        "Python3.framework",
+    }
+    if (
+        framework.name not in expected_names
+        or not (version_root / "Headers/Python.h").is_file()
+    ):
         raise RuntimeError(f"unsupported Python framework runtime: {framework}")
     return framework
 
 
+def _framework_version_root(framework: Path) -> Path:
+    current = framework / "Versions/Current"
+    if (current / "Headers/Python.h").is_file():
+        return current.resolve()
+    candidates = sorted(
+        path for path in (framework / "Versions").iterdir()
+        if path.is_dir() and (path / "Headers/Python.h").is_file()
+    )
+    if len(candidates) != 1:
+        raise RuntimeError(f"cannot select Python framework version: {framework}")
+    return candidates[0]
+
+
+def normalize_python_framework(framework: Path) -> None:
+    version_root = _framework_version_root(framework)
+    current = framework / "Versions/Current"
+    if not current.exists():
+        current.symlink_to(version_root.name)
+    binary_name = next(
+        (
+            name for name in ("Python", "Python3")
+            if (version_root / name).is_file()
+        ),
+        "",
+    )
+    if not binary_name:
+        raise RuntimeError(f"Python framework binary missing: {version_root}")
+    for link_name, target in (
+        (binary_name, f"Versions/Current/{binary_name}"),
+        ("Resources", "Versions/Current/Resources"),
+        ("Headers", "Versions/Current/Headers"),
+    ):
+        link = framework / link_name
+        if not link.exists():
+            link.symlink_to(target)
+
+
+def remove_broken_framework_symlinks(framework: Path) -> None:
+    """Drop Homebrew links whose targets live outside the copied framework."""
+    for path in sorted(framework.rglob("*")):
+        if path.is_symlink() and not path.exists():
+            path.unlink()
+
+
+def python_framework_architectures(framework: Path) -> tuple[str, ...]:
+    version_root = _framework_version_root(framework)
+    binary = next(
+        version_root / name for name in ("Python", "Python3")
+        if (version_root / name).is_file()
+    )
+    output = subprocess.run(
+        ["/usr/bin/lipo", "-archs", str(binary)],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.split()
+    supported = tuple(name for name in ("arm64", "x86_64") if name in output)
+    if not supported:
+        raise RuntimeError(f"unsupported Python framework architecture: {output}")
+    return supported
+
+
+def relocate_python_framework(framework: Path) -> None:
+    version_root = _framework_version_root(framework)
+    binary_name = next(
+        name for name in ("Python", "Python3")
+        if (version_root / name).is_file()
+    )
+    subprocess.run(
+        [
+            "/usr/bin/install_name_tool", "-id",
+            f"@rpath/{framework.name}/Versions/Current/{binary_name}",
+            str(version_root / binary_name),
+        ],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+
 def compile_native_launcher(executable: Path, framework: Path) -> None:
-    headers = framework / "Versions/Current/Headers"
+    headers = _framework_version_root(framework) / "Headers"
+    architecture_arguments = [
+        argument
+        for architecture in python_framework_architectures(framework)
+        for argument in ("-arch", architecture)
+    ]
     with tempfile.TemporaryDirectory(prefix="media-archive-launcher-") as temporary:
         source = Path(temporary) / "launcher.c"
-        source.write_text(NATIVE_LAUNCHER_SOURCE, encoding="utf-8")
+        source.write_text(
+            NATIVE_LAUNCHER_SOURCE.replace("Python3.framework", framework.name),
+            encoding="utf-8",
+        )
         subprocess.run(
             [
-                "/usr/bin/clang", "-std=c11", "-arch", "arm64", "-arch", "x86_64",
+                "/usr/bin/clang", "-std=c11", *architecture_arguments,
                 "-I", str(headers), str(source), "-F", str(framework.parent),
-                "-framework", "Python3", "-Wl,-rpath,@executable_path/../Frameworks",
+                "-framework", framework.stem,
+                "-Wl,-rpath,@executable_path/../Frameworks",
                 "-o", str(executable),
             ],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -133,11 +235,14 @@ def compile_native_launcher(executable: Path, framework: Path) -> None:
     executable.chmod(0o755)
 
 
-def compile_swift_frontend(source: Path, executable: Path) -> None:
+def compile_swift_frontend(
+    source: Path, executable: Path,
+    architectures: Sequence[str] = ("arm64", "x86_64"),
+) -> None:
     with tempfile.TemporaryDirectory(prefix="media-archive-swiftui-") as temporary:
         temporary_root = Path(temporary)
         architecture_outputs = []
-        for architecture in ("arm64", "x86_64"):
+        for architecture in architectures:
             architecture_output = temporary_root / f"frontend-{architecture}"
             completed = subprocess.run(
                 [
@@ -400,12 +505,14 @@ def bundle_pipeline_runtime(
             framework_by_version[version] = (
                 str(framework.relative_to(frameworks)), major_minor,
             )
+        environment_target = resources / "PipelineEnvs" / environment_name / "site-packages"
         shutil.copytree(
             Path(metadata["purelib"]),
-            resources / "PipelineEnvs" / environment_name / "site-packages",
+            environment_target,
             symlinks=True,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
         )
+        sanitize_portable_python_metadata(environment_target)
 
     wrapper_root = helpers / "PipelinePython"
     wrapper_root.mkdir(parents=True)
@@ -427,9 +534,16 @@ def bundle_pipeline_runtime(
 
     def portable(value):
         if isinstance(value, str):
-            return value.replace(
-                str(project_root), "$APP_RESOURCES/Pipeline",
-            ).replace("/Users/yourname/Documents/model", "$MODEL_ROOT")
+            return (
+                value
+                .replace(str(project_root), "$APP_RESOURCES/Pipeline")
+                .replace("$PROJECT_ROOT", "$APP_RESOURCES/Pipeline")
+                .replace(
+                    "/Users/yourname/Documents/AI-Local/media-archive-clean",
+                    "$APP_RESOURCES/Pipeline",
+                )
+                .replace("/Users/yourname/Documents/model", "$MODEL_ROOT")
+            )
         if isinstance(value, list):
             return [portable(item) for item in value]
         if isinstance(value, dict):
@@ -458,6 +572,64 @@ def bundle_pipeline_runtime(
         encoding="utf-8",
     )
     return manifest
+
+
+def sanitize_portable_python_metadata(site_packages: Path) -> None:
+    """Remove local checkout references that Python installers record as metadata.
+
+    The application package itself is bundled separately, so editable-install
+    path hints are neither required nor safe to distribute.
+    """
+    for path in sorted(site_packages.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.name == "direct_url.json":
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "file://" in text or "/Users/" in text:
+                path.unlink()
+        elif path.suffix == ".pth":
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            kept = [line for line in lines if "/Users/" not in line and "file://" not in line]
+            if kept:
+                path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            else:
+                path.unlink()
+        elif path.name == "RECORD":
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            kept = [
+                line for line in lines
+                if "/Users/" not in line and "file://" not in line
+            ]
+            path.write_text(
+                ("\n".join(kept) + "\n") if kept else "",
+                encoding="utf-8",
+            )
+
+
+def bundle_release_documents(project_root: Path, resources: Path) -> None:
+    documentation = resources / "Documentation"
+    documentation.mkdir()
+    files = {
+        project_root / "LICENSE": documentation / "LICENSE-GPL-3.0.txt",
+        project_root / "LICENSE_HISTORY.md": documentation / "LICENSE_HISTORY.md",
+        project_root / "NOTICE": documentation / "NOTICE.txt",
+        project_root / "MODEL_SOURCES.md": documentation / "MODEL_SOURCES.md",
+        project_root / "docs" / "MODEL_SETUP.md": documentation / "MODEL_SETUP.md",
+        project_root / "docs" / "BUILD_FROM_SOURCE.md": documentation / "BUILD_FROM_SOURCE.md",
+    }
+    for source, destination in files.items():
+        if not source.is_file():
+            raise FileNotFoundError(f"release document missing: {source}")
+        shutil.copy2(source, destination)
 
 
 def build_bundle(
@@ -490,11 +662,16 @@ def build_bundle(
     resources.mkdir(parents=True)
     build_app_icon(source_package / "assets" / "app_icon_1024.png", resources)
     shutil.copytree(source_package, resources / "media_archive_image_video_ui")
+    bundle_release_documents(project_root, resources)
     python_framework = locate_python_framework(python_executable)
+    bundled_python_framework = frameworks / python_framework.name
     shutil.copytree(
-        python_framework, frameworks / "Python3.framework", symlinks=True,
+        python_framework, bundled_python_framework, symlinks=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    normalize_python_framework(bundled_python_framework)
+    remove_broken_framework_symlinks(bundled_python_framework)
+    relocate_python_framework(bundled_python_framework)
 
     if bundle_pipeline_runtimes:
         bundle_pipeline_runtime(
@@ -504,7 +681,10 @@ def build_bundle(
     config = {
         "app_bundle_contract": "media_archive_native_image_video_app_bundle_v1",
         "configuration_state": "development_attached" if development_database else "first_run_clean",
-        "project_root": str(project_root),
+        "project_root": (
+            "$APP_RESOURCES/Pipeline"
+            if bundle_pipeline_runtimes else str(project_root)
+        ),
         "runtime_contract_path": (
             "$APP_RESOURCES/runtime_contract.json"
             if bundle_pipeline_runtimes else
@@ -519,6 +699,9 @@ def build_bundle(
         "runtime_policy": "native_swiftui_embedded_python_bridge_v1",
         "portable_pipeline_runtimes": bool(bundle_pipeline_runtimes),
         "models_included": False,
+        "author": APP_AUTHOR,
+        "official_source": APP_SOURCE_URL,
+        "license": APP_LICENSE,
     }
     (resources / "app_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -536,9 +719,13 @@ def build_bundle(
         encoding="utf-8",
     )
     helper_executable = helpers / "素材大整理Python"
-    compile_native_launcher(helper_executable, python_framework)
+    supported_architectures = python_framework_architectures(bundled_python_framework)
+    compile_native_launcher(helper_executable, bundled_python_framework)
     executable = macos / APP_RELEASE_NAME
-    compile_swift_frontend(source_package / "native_frontend.swift", executable)
+    compile_swift_frontend(
+        source_package / "native_frontend.swift", executable,
+        architectures=supported_architectures,
+    )
 
     plist = {
         "CFBundleDisplayName": APP_RELEASE_NAME,
@@ -553,7 +740,8 @@ def build_bundle(
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": True,
-        "NSHumanReadableCopyright": "Local-only media archive",
+        "LSArchitecturePriority": list(supported_architectures),
+        "NSHumanReadableCopyright": f"Copyright © 2026 {APP_AUTHOR}",
     }
     with (contents / "Info.plist").open("wb") as handle:
         plistlib.dump(plist, handle, sort_keys=True)
@@ -623,6 +811,19 @@ def sign_bundle(bundle: Path) -> None:
     _codesign(bundle)
 
 
+def verify_bundle_signature(bundle: Path) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/codesign", "--verify", "--deep", "--strict",
+            "--verbose=2", str(bundle),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def build_pkg(bundle: Path, output_path: Path) -> Path:
     output_path = output_path.expanduser().resolve()
     if output_path.exists():
@@ -655,9 +856,16 @@ def build_dmg(bundle: Path, output_path: Path) -> Path:
         # runtime trees and invalidates the signed app copied into the DMG.
         shutil.copytree(bundle, staging / bundle.name, symlinks=True)
         (staging / "Applications").symlink_to("/Applications", target_is_directory=True)
+        documentation = bundle / "Contents" / "Resources" / "Documentation"
+        shutil.copy2(documentation / "LICENSE-GPL-3.0.txt", staging / "GNU GPL v3.0.txt")
+        shutil.copy2(documentation / "MODEL_SETUP.md", staging / "模型安装说明.md")
+        shutil.copy2(documentation / "NOTICE.txt", staging / "项目与版权说明.txt")
         (staging / "安装说明.txt").write_text(
             f"把“{APP_RELEASE_NAME}”拖入 Applications 文件夹。以后可从“应用程序”、启动台或 Dock 打开。\n"
-            "当前版本只显示图片与视频；不会修改原始素材。\n",
+            "当前版本只显示图片与视频；不会修改原始素材。\n"
+            "模型不在安装包内，也不会自动下载。请阅读“模型安装说明.md”。\n"
+            f"官方源码：{APP_SOURCE_URL}\n"
+            f"Copyright © 2026 {APP_AUTHOR} · {APP_LICENSE}\n",
             encoding="utf-8",
         )
         try:
@@ -701,12 +909,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bundle_pipeline_runtimes=args.portable_runtimes,
     )
     sign_bundle(bundle)
+    verify_bundle_signature(bundle)
+    if args.portable_runtimes:
+        subprocess.run(
+            [
+                sys.executable,
+                str(args.project_root / "scripts" / "release_artifact_audit.py"),
+                str(bundle),
+            ],
+            check=True,
+        )
     installers = []
     if args.dmg:
         installers.append(str(build_dmg(
             bundle, args.output_dir / f"{APP_RELEASE_NAME}-{APP_SEMVER}.dmg",
         )))
-    print(json.dumps({
+    result = {
         "status": "PASS",
         "app_bundle": str(bundle),
         "app_version": APP_BUNDLE_VERSION,
@@ -719,7 +937,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "portable_pipeline_runtimes": bool(args.portable_runtimes),
         "models_included": False,
         "configuration_state": "development_attached" if args.development_database else "first_run_clean",
-    }, ensure_ascii=False, indent=2))
+        "official_source": APP_SOURCE_URL,
+        "license": APP_LICENSE,
+        "sha256": {
+            str(Path(path).name): _sha256(Path(path))
+            for path in installers
+        },
+    }
+    if args.portable_runtimes:
+        (args.output_dir / "release_manifest.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

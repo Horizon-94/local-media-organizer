@@ -122,8 +122,14 @@ def build_processing_profile(
             "event_driven_database_handoff": scheduler_mode == "pipeline_async",
             "model_workers": int(model_workers),
             "frame_extract_workers": int(frame_extract_workers),
-            "runtime_may_reduce_workers_for_memory_pressure": True,
+            "runtime_may_reduce_workers_for_memory_pressure": False,
             "runtime_may_silently_increase_workers": False,
+            "hardware_estimated_model_worker_ceiling": int(
+                (hardware.get("recommendation") or {}).get(
+                    "estimated_max_model_workers", model_workers
+                )
+            ),
+            "user_must_confirm_worker_count": True,
         },
         "video_sampling": {
             "frame_interval_seconds": interval,
