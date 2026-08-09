@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-media-organizer"
-version = "1.1.4"
+version = "1.2.0"
 description = "Local-first macOS media cataloging and search"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,6 +26,7 @@ yolo = ["torch", "ultralytics"]
 qwen = ["mlx", "mlx-vlm", "transformers"]
 ocr = ["paddleocr", "paddlepaddle", "paddlex"]
 embedding = ["torch", "transformers", "sentence-transformers"]
+whisper = ["mlx-whisper", "torch", "torchaudio"]
 
 [tool.setuptools]
 package-dir = {"" = "apps"}

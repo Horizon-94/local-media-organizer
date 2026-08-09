@@ -11,15 +11,28 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps"))
+TEST_MODELS = {
+    "yoloe": "/model/yoloe.pt",
+    "yoloe_mobileclip": "/model/mobileclip.ts",
+    "openclip": "/model/openclip.safetensors",
+    "qwen": "/model/qwen",
+}
 
 from media_archive_image_video_ui.pipeline_orchestrator import (  # noqa: E402
+    _open_acceptance_database,
     build_stage_plan,
+    command_for_resume,
     execute_pipeline,
     offline_environment,
+    qwen_database_progress,
+    required_runtime_path,
+    runtime_model_root,
+    summarize_stage_failure,
     validate_stage_acceptance,
 )
 
@@ -105,6 +118,62 @@ def fake_inventory_plan(root: Path, stage_count: int) -> list[dict[str, object]]
 
 
 class PipelineOrchestratorTests(unittest.TestCase):
+    def test_runtime_paths_never_fall_back_to_developer_home(self) -> None:
+        self.assertEqual(
+            required_runtime_path({"qwen": "/portable/models/qwen"}, "qwen", "models"),
+            "/portable/models/qwen",
+        )
+        with self.assertRaisesRegex(ValueError, "missing_runtime_path:models.qwen"):
+            required_runtime_path({}, "qwen", "models")
+
+    def test_qwen_resume_reuses_existing_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            out = workspace / "stages" / "11_qwen_optional_v2"
+            out.mkdir(parents=True)
+            (out / "run_id.txt").write_text("run_existing\n", encoding="utf-8")
+            stage = {
+                "key": "qwen_optional_v2",
+                "command": [
+                    "wrapper", "--", "qwen", "--mode", "run", "--out", str(out),
+                ],
+            }
+            command = command_for_resume(stage, workspace)
+            self.assertEqual(command[command.index("--mode") + 1], "resume")
+            self.assertEqual(command[command.index("--run-id") + 1], "run_existing")
+            self.assertIn("--confirm-compatible-script-resume", command)
+
+    def test_qwen_database_progress_counts_commits_and_live_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            con = sqlite3.connect(db)
+            con.execute("CREATE TABLE stop03_3_qwenvl_run_items(run_id TEXT,status TEXT)")
+            con.executemany(
+                "INSERT INTO stop03_3_qwenvl_run_items VALUES('run1',?)",
+                [("success",), ("success",), ("pending",), ("failed",)],
+            )
+            con.commit()
+            con.close()
+            workers = root / "worker_status"
+            workers.mkdir()
+            (workers / "worker_1.json").write_text(
+                json.dumps({"lifecycle": "running"}), encoding="utf-8"
+            )
+            progress = qwen_database_progress(db, root, "run1")
+            self.assertEqual(progress["completed"], 3)
+            self.assertEqual(progress["total"], 4)
+            self.assertEqual(progress["success"], 2)
+            self.assertEqual(progress["failed"], 1)
+            self.assertEqual(progress["actual_workers"], 1)
+
+    def test_failure_summary_prefers_exception_over_traceback_header(self) -> None:
+        summary, _details = summarize_stage_failure([
+            "Traceback (most recent call last):",
+            "FileExistsError: already exists",
+        ], 1)
+        self.assertEqual(summary, "FileExistsError: already exists")
+
     def test_external_stage_environment_does_not_inherit_embedded_python_home(self) -> None:
         previous = {key: os.environ.get(key) for key in (
             "PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__",
@@ -130,6 +199,29 @@ class PipelineOrchestratorTests(unittest.TestCase):
         })
         self.assertTrue(environment["PATH"].startswith("/opt/homebrew/bin"))
 
+    def test_external_stage_environment_forces_model_runtimes_offline(self) -> None:
+        environment = offline_environment(
+            Path("/tmp/library"), model_root=Path("/example/models")
+        )
+        self.assertEqual(environment["HF_HUB_OFFLINE"], "1")
+        self.assertEqual(environment["TRANSFORMERS_OFFLINE"], "1")
+        self.assertEqual(environment["HF_DATASETS_OFFLINE"], "1")
+        self.assertEqual(environment["ULTRALYTICS_OFFLINE"], "1")
+        self.assertEqual(environment["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"], "True")
+        self.assertEqual(environment["HF_HOME"], "/tmp/library/cache/huggingface")
+        self.assertEqual(environment["TORCH_HOME"], "/tmp/library/cache/torch")
+        self.assertEqual(environment["MEDIA_ARCHIVE_MODEL_ROOT"], "/example/models")
+
+    def test_existing_task_infers_model_root_from_model_paths(self) -> None:
+        runtime = {
+            "models": {
+                "yoloe": "/example/models/yolo/weights/model.pt",
+                "qwen": "/example/models/qwen/model",
+                "ocr": "/example/models/ocr/model",
+            }
+        }
+        self.assertEqual(runtime_model_root(runtime), Path("/example/models"))
+
     def test_video_stage_cannot_pass_when_all_video_frames_are_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -143,6 +235,32 @@ class PipelineOrchestratorTests(unittest.TestCase):
             con.close()
             reason = validate_stage_acceptance({"database": str(db)}, "video_frames")
         self.assertEqual(reason, "VIDEO_INPUT_WITHOUT_DERIVED_FRAMES")
+
+    def test_acceptance_database_falls_back_to_immutable_readonly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            db = Path(temp) / "library.sqlite"
+            with sqlite3.connect(db) as con:
+                con.execute("CREATE TABLE source_assets(source_content_id TEXT)")
+            real_connect = sqlite3.connect
+            opened: list[str] = []
+
+            def flaky_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+                uri = str(database)
+                opened.append(uri)
+                if uri.endswith("?mode=ro"):
+                    raise sqlite3.OperationalError("unable to open database file")
+                return real_connect(database, *args, **kwargs)
+
+            with mock.patch(
+                "media_archive_image_video_ui.pipeline_orchestrator.sqlite3.connect",
+                side_effect=flaky_connect,
+            ):
+                with _open_acceptance_database(db) as con:
+                    self.assertEqual(
+                        con.execute("SELECT COUNT(*) FROM source_assets").fetchone()[0], 0,
+                    )
+        self.assertTrue(opened[0].endswith("?mode=ro"))
+        self.assertTrue(opened[1].endswith("?mode=ro&immutable=1"))
 
     def test_stage_plan_uses_each_frozen_runtime(self) -> None:
         task = {
@@ -165,13 +283,14 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     "ocr": "/runtime/ocr",
                     "embedding": "/runtime/embedding",
                 },
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
                 "ocr_workers": 2,
                 "embedding_workers": 2,
             },
         }
         plan = {stage["key"]: stage for stage in build_stage_plan(task)}
         self.assertEqual(plan["scan"]["command"][0], "/runtime/visual")
+        self.assertIn("--hash-all", plan["scan"]["command"])
         self.assertEqual(plan["image_preview"]["command"][0], "/runtime/visual")
         self.assertEqual(plan["video_frames"]["command"][0], "/runtime/visual")
         self.assertIn(
@@ -227,7 +346,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 "python": {key: f"/runtime/{key}" for key in (
                     "system", "visual", "yolo", "qwen", "ocr", "embedding"
                 )},
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
             },
         }
         plan = build_stage_plan(task)
@@ -244,7 +363,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
     def test_repair_reuses_all_images_and_density_profile(self) -> None:
         task = {
-            "mode": "repair",
+            "mode": "repair_images",
             "workspace": "/tmp/library",
             "database": "/tmp/library/media_archive.sqlite",
             "source_root": "/tmp/source",
@@ -261,7 +380,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 "python": {key: f"/runtime/{key}" for key in (
                     "system", "visual", "yolo", "qwen", "ocr", "embedding"
                 )},
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
             },
         }
         plan = build_stage_plan(task)
@@ -288,7 +407,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 "python": {key: f"/runtime/{key}" for key in (
                     "system", "visual", "yolo", "qwen", "ocr", "embedding"
                 )},
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
                 "scripts": {
                     "stage_runner": "/contract/stage_runner.py",
                     "source_scan": "/contract/source_scan.py",
@@ -305,7 +424,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
     def test_repair_stage_plan_only_supplements_missing_image_semantics(self) -> None:
         task = {
-            "mode": "repair",
+            "mode": "repair_images",
             "workspace": "/tmp/library",
             "stage_output_root": "/tmp/library/maintenance/repair_1/stages",
             "database": "/tmp/library/media_archive.sqlite",
@@ -316,7 +435,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 "python": {key: f"/runtime/{key}" for key in (
                     "system", "visual", "yolo", "qwen", "ocr", "embedding"
                 )},
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
                 "embedding_workers": 3,
             },
         }
@@ -334,7 +453,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
         self.assertIn("20260720_stop03_3_qwenvl_supplement_v1.sql", all_arguments)
         self.assertIn("/tmp/library/maintenance/repair_1/stages", all_arguments)
 
-    def test_rebuild_search_reconciles_layout_and_only_fills_missing_visual_vectors(self) -> None:
+    def test_rebuild_search_uses_existing_database_without_models_or_source_scan(self) -> None:
         task = {
             "mode": "rebuild_search",
             "workspace": "/tmp/library",
@@ -347,25 +466,108 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 "python": {key: f"/runtime/{key}" for key in (
                     "system", "visual", "yolo", "qwen", "ocr", "embedding"
                 )},
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
             },
         }
         plan = build_stage_plan(task)
-        self.assertEqual([stage["key"] for stage in plan], [
-            "rebuild_scan", "rebuild_image_preview",
-            "rebuild_restore_lineage", "rebuild_visual_schema",
-            "rebuild_openclip",
-        ])
+        self.assertEqual([stage["key"] for stage in plan], ["rebuild_search_index"])
         command_text = "\n".join(" ".join(stage["command"]) for stage in plan)
-        self.assertIn("--timelapse-manifest", command_text)
-        self.assertIn("restore_source_file_lineage_from_manifest_v1.py", command_text)
-        self.assertIn("stop03_1b_openclip_visual_embedding_db_safe_v4", command_text)
-        self.assertNotIn("--include-existing", command_text)
+        self.assertIn("rebuild_search_index_from_database_v1.py", command_text)
+        self.assertIn("--confirm-central-db-write", command_text)
+        self.assertNotIn("source_scan", command_text)
         for forbidden in (
             "stop03_yoloe", "stop03_3f_qwenvl",
             "stop03_4_ocr_db", "stop03_5d_text_embedding_db",
         ):
             self.assertNotIn(forbidden, command_text.lower())
+
+    def test_general_repair_checks_every_stage_without_clearing_successes(self) -> None:
+        task = {
+            "mode": "repair",
+            "workspace": "/tmp/library",
+            "stage_output_root": "/tmp/library/maintenance/repair_all/stages",
+            "database": "/tmp/library/media_archive.sqlite",
+            "source_root": "/tmp/source",
+            "profile": {
+                "scheduler": {"model_workers": 3, "frame_extract_workers": 4},
+                "video_sampling": {"frame_interval_seconds": 3},
+            },
+            "runtime": {
+                "project_root": str(ROOT),
+                "python": {key: f"/runtime/{key}" for key in (
+                    "system", "visual", "yolo", "qwen", "ocr", "embedding"
+                )},
+                "models": {
+                    "yoloe": "/model/yoloe.pt",
+                    "yoloe_mobileclip": "/model/mobileclip.ts",
+                    "openclip": "/model/openclip.safetensors",
+                    "qwen": "/model/qwen",
+                },
+            },
+        }
+        plan = build_stage_plan(task)
+        keys = [stage["key"] for stage in plan]
+        self.assertEqual(keys[0], "scan")
+        self.assertIn("修复缺失扫描", plan[0]["name"])
+        self.assertIn("video_frames", keys)
+        self.assertIn("yoloe", keys)
+        self.assertIn("qwen_optional_v2", keys)
+        self.assertIn("embedding_optional_v2", keys)
+        command_text = "\n".join(" ".join(stage["command"]) for stage in plan)
+        self.assertNotIn("--clear-existing-candidate-items", command_text)
+        self.assertIn("--limit-new 0", command_text)
+
+    def test_only_source_dependent_stages_require_the_original_volume(self) -> None:
+        task = {
+            "workspace": "/tmp/library",
+            "database": "/tmp/library/media_archive.sqlite",
+            "source_root": "/Volumes/source/library",
+            "profile": {
+                "scheduler": {"model_workers": 3, "frame_extract_workers": 4},
+                "video_sampling": {"frame_interval_seconds": 3},
+                "high_value_policy": {"mode": "frozen_v25_compatible"},
+            },
+            "runtime": {
+                "project_root": str(ROOT),
+                "python": {
+                    key: "/runtime/python" for key in
+                    ("system", "visual", "yolo", "qwen", "ocr", "embedding")
+                },
+                "models": TEST_MODELS,
+            },
+        }
+        plan = build_stage_plan(task)
+        source_dependent = {"scan", "image_preview", "video_frames"}
+        for stage in plan:
+            has_source_gate = "--allowed-source-root" in stage["command"]
+            self.assertEqual(
+                has_source_gate,
+                stage["key"] in source_dependent,
+                stage["key"],
+            )
+
+    def test_incremental_plan_reuses_library_database_without_clearing_candidates(self) -> None:
+        task = {
+            "mode": "incremental",
+            "workspace": "/tmp/library",
+            "stage_output_root": "/tmp/library/maintenance/incremental_1/stages",
+            "database": "/tmp/library/media_archive.sqlite",
+            "source_root": "/tmp/source",
+            "profile": {"scheduler": {"model_workers": 3, "frame_extract_workers": 4}},
+            "runtime": {
+                "project_root": str(ROOT),
+                "python": {key: f"/runtime/{key}" for key in (
+                    "system", "visual", "yolo", "qwen", "ocr", "embedding"
+                )},
+                "models": TEST_MODELS,
+            },
+        }
+        plan = build_stage_plan(task)
+        command_text = "\n".join(" ".join(stage["command"]) for stage in plan)
+        self.assertEqual(plan[0]["key"], "scan")
+        self.assertIn("增量扫描并建立素材清单", plan[0]["name"])
+        self.assertNotIn("--clear-existing-candidate-items", command_text)
+        self.assertIn("--limit-new 0", command_text)
 
     def test_rebuild_openclip_acceptance_requires_complete_visual_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -649,6 +851,51 @@ class PipelineOrchestratorTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_generic_stage_adapter_expands_release_placeholders(self) -> None:
+        adapter = ROOT / "scripts/04_media_archive_app/run_generic_pipeline_stage.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pipeline = root / "Example.app/Contents/Resources/Pipeline"
+            stage = pipeline / "scripts/02_scan/toy_release_stage.py"
+            output = (root / "task/workspace").resolve()
+            stage.parent.mkdir(parents=True)
+            output.mkdir(parents=True)
+            stage.write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "PROJECT_ROOT = Path('$APP_RESOURCES/Pipeline')\n"
+                "EXPECTED_PYTHON = Path('$BUNDLED_PIPELINE_ENVS/scan/bin/python')\n"
+                "MODEL_ROOT = Path('$MODEL_ROOT')\n"
+                "TASK_RUNTIME = Path('$TASK_RUNTIME')\n"
+                "REGISTRY_FILES = [PROJECT_ROOT / 'docs/one.md', "
+                "Path('$APP_RESOURCES/Pipeline/docs/two.md')]\n"
+                "NESTED_PATHS = {'model': (Path('$MODEL_ROOT/model.bin'),)}\n"
+                "TEST_OUTPUT_ROOT = Path('$USER_HOME/old-output')\n"
+                "DEFAULT_DB = PROJECT_ROOT / 'media_archive.sqlite'\n"
+                "def main(argv=None):\n"
+                "    expected_root = Path(__file__).resolve().parents[2]\n"
+                "    checks = [PROJECT_ROOT == expected_root, "
+                "EXPECTED_PYTHON == Path(sys.executable), "
+                "MODEL_ROOT == Path('/example/models'), "
+                f"TASK_RUNTIME == Path({str(output)!r}), "
+                "REGISTRY_FILES == [expected_root / 'docs/one.md', "
+                "expected_root / 'docs/two.md'], "
+                "NESTED_PATHS == {'model': (Path('/example/models/model.bin'),)}, "
+                f"TEST_OUTPUT_ROOT == Path({str(output)!r}), "
+                "DEFAULT_DB == expected_root / 'media_archive.sqlite']\n"
+                "    return 0 if all(checks) else 7\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["MEDIA_ARCHIVE_MODEL_ROOT"] = "/example/models"
+            completed = subprocess.run(
+                [sys.executable, str(adapter), "--script", str(stage),
+                 "--allowed-output-root", str(output), "--"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=environment,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_fake_stages_automatically_reach_success_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -793,7 +1040,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 sqlite3.connect(db).close()
                 image = load_script_namespace(scripts[0])
                 image_report = image["runtime_preflight"](
-                    db, Path("/Users/yourname/Documents/AI-Local/test-output/fake-image")
+                    db, root / "fake-image"
                 )
                 video = load_script_namespace(scripts[1])
                 video_report = video["runtime_preflight"](
@@ -951,7 +1198,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 "python": {key: f"/runtime/{key}" for key in (
                     "system", "visual", "yolo", "qwen", "ocr", "embedding"
                 )},
-                "models": {"qwen": "/model/qwen"},
+                "models": TEST_MODELS,
             },
         }
         plan = {stage["key"]: stage for stage in build_stage_plan(task)}
@@ -1586,13 +1833,16 @@ class PipelineOrchestratorTests(unittest.TestCase):
         source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(encoding="utf-8")
         bridge = (ROOT / "apps/media_archive_image_video_ui/native_bridge.py").read_text(encoding="utf-8")
         self.assertIn("开始第一次完整整理", source)
-        self.assertIn('let taskModes = ["第一次完整整理", "增量整理", "修复缺失内容", "重建搜索入口"]', source)
+        self.assertIn('let taskModes = ["第一次完整整理", "增量整理", "修复缺失内容", "重建搜索入口", "补充音频搜索"]', source)
         self.assertIn("Text(mode).tag(mode)", source)
         self.assertIn("已有素材库", source)
         self.assertIn('"start-existing-task"', source)
+        self.assertIn('"增量整理":"incremental"', source)
         self.assertIn("开始修复缺失内容", source)
         self.assertIn("停止当前任务", source)
         self.assertIn("从断点继续", source)
+        self.assertIn("当前阶段预计剩余", source)
+        self.assertNotIn("全任务预计剩余", source)
         self.assertLess(
             source.index('Button("从断点继续")'),
             source.index('Button("进入搜索素材")'),
@@ -1612,6 +1862,12 @@ class PipelineOrchestratorTests(unittest.TestCase):
         self.assertIn("detail.pipeline.errorSummary ?? detail.error", source)
         self.assertIn('"failed_stage_key": state.get("failed_stage_key")', bridge)
         self.assertIn('"error_summary": str(state.get("error_summary")', bridge)
+
+    def test_embedded_python_does_not_mutate_signed_app_bundle(self) -> None:
+        source = (
+            ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('setenv("PYTHONDONTWRITEBYTECODE", "1", 1);', source)
 
     def test_app_launcher_marks_private_python_as_portable_runtime(self) -> None:
         builder = (

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -17,6 +18,7 @@ sys.path.insert(0, str(ROOT / "apps"))
 from media_archive_image_video_ui.native_bridge import (  # noqa: E402
     _validate_search_result_contract,
     _load_or_default_profile,
+    activate_library,
     existing_libraries,
     estimate_task_remaining,
     human_duration,
@@ -33,9 +35,98 @@ from media_archive_image_video_ui.native_bridge import (  # noqa: E402
     task_output_acceptance,
     task_pipeline,
 )
+from media_archive_image_video_ui import native_bridge  # noqa: E402
 
 
 class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
+    def test_person_annotations_fall_back_to_named_legacy_overlay(self) -> None:
+        legacy = {
+            "contract": "media_archive_local_person_annotations_v1",
+            "identities": {
+                "person-local": {
+                    "display_name": "康康", "tags": [], "cluster_ids": ["cluster-1"],
+                },
+            },
+            "cluster_to_identity": {"cluster-1": "person-local"},
+        }
+        with mock.patch.object(
+            native_bridge, "task_id_for_database", return_value="task-1"
+        ), mock.patch.object(
+            native_bridge, "load_central_person_annotations",
+            return_value={
+                "contract": "media_archive_local_person_annotations_v1",
+                "identities": {}, "cluster_to_identity": {},
+            },
+        ), mock.patch.object(
+            native_bridge, "_legacy_person_annotations",
+            return_value=(Path("/legacy/people.json"), legacy),
+        ):
+            payload, source, task_id = native_bridge._load_person_annotation_payload(
+                Path("/library.sqlite")
+            )
+        self.assertEqual(payload["identities"]["person-local"]["display_name"], "康康")
+        self.assertEqual(source, "/legacy/people.json")
+        self.assertEqual(task_id, "task-1")
+
+    def test_initial_resource_snapshot_never_returns_empty_contract(self) -> None:
+        native_bridge._RESOURCE_CACHE = (0.0, None, {})
+        completed = SimpleNamespace(stdout="", returncode=0)
+        with mock.patch.object(native_bridge.time, "monotonic", return_value=0.1), mock.patch.object(
+            native_bridge.subprocess, "run", return_value=completed
+        ):
+            report = native_bridge.live_resource_snapshot(None)
+        self.assertEqual(report["active_pid"], None)
+        self.assertFalse(report["process_alive"])
+        self.assertEqual(report["cpu_percent"], 0.0)
+        self.assertEqual(report["memory_bytes"], 0)
+        self.assertFalse(report["source_scanned"])
+
+    def test_resource_snapshot_aggregates_the_complete_process_tree(self) -> None:
+        native_bridge._RESOURCE_CACHE = (0.0, None, {})
+        process_rows = SimpleNamespace(
+            stdout=(
+                "100 1 0.1 1000 S\n"
+                "101 100 25.0 2000 S\n"
+                "102 101 50.0 3000 R\n"
+                "999 1 99.0 9000 R\n"
+            ),
+            returncode=0,
+        )
+        swap = SimpleNamespace(stdout="total = 4096.00M used = 512.00M free = 3584.00M", returncode=0)
+        with mock.patch.object(native_bridge.time, "monotonic", return_value=10.0), mock.patch.object(
+            native_bridge.subprocess, "run", side_effect=[process_rows, swap]
+        ):
+            report = native_bridge.live_resource_snapshot({"current_child_pid": 100})
+        self.assertTrue(report["process_alive"])
+        self.assertEqual(report["process_count"], 3)
+        self.assertEqual(report["cpu_percent"], 75.1)
+        self.assertEqual(report["memory_bytes"], 6000 * 1024)
+        self.assertEqual(report["swap_used_bytes"], 512 * 1024 * 1024)
+
+    def test_swift_ui_discards_stale_snapshot_responses(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "apps/media_archive_image_video_ui/native_frontend.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn("private var snapshotGeneration = 0", source)
+        self.assertIn("let requestedGeneration = snapshotGeneration", source)
+        self.assertIn(
+            "guard requestedGeneration == self.snapshotGeneration else { return }",
+            source,
+        )
+
+    def test_swift_ui_clears_previous_search_coverage_for_new_query(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "apps/media_archive_image_video_ui/native_frontend.swift"
+        ).read_text(encoding="utf-8")
+        new_query = source[source.index("if !continuing {"):]
+        new_query = new_query[:new_query.index("searchStatus = continuing")]
+        self.assertIn("searchCoverage = nil", new_query)
+        self.assertIn("if model.searching {", source)
+        self.assertIn("本次扫描统计：正在计算当前搜索范围", source)
+        self.assertIn("else if let coverage = model.searchCoverage", source)
+
     def test_person_cluster_catalog_is_query_only_and_anonymous(self) -> None:
         class FakeRepository:
             def person_cluster_catalog(self, offset, limit):
@@ -463,6 +554,47 @@ class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
         self.assertEqual((rows[0]["image_count"], rows[0]["video_count"]), (2, 1))
         self.assertNotIn("opaque_task_93ad18", rows[0]["task_name"])
 
+    def test_known_index_root_discovers_siblings_and_activation_switches_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "home"; home.mkdir()
+            index_root = Path(temp) / "index"
+            tasks_root = index_root / "tasks"
+
+            def create_task(directory: str, name: str) -> Path:
+                task_dir = tasks_root / directory; task_dir.mkdir(parents=True)
+                workspace = task_dir / "workspace"; workspace.mkdir()
+                database = workspace / "media_archive.sqlite"
+                con = sqlite3.connect(database)
+                con.executescript(
+                    "CREATE TABLE source_assets(source_content_id TEXT,media_type TEXT);"
+                    "INSERT INTO source_assets VALUES('image-1','image'),('video-1','video');"
+                )
+                con.close()
+                state_path = task_dir / "pipeline_state.json"
+                state_path.write_text(json.dumps({"status": "success"}), encoding="utf-8")
+                task_path = task_dir / "task.json"
+                task_path.write_text(json.dumps({
+                    "task_id": directory, "name": name, "database": str(database),
+                    "workspace": str(workspace), "state_path": str(state_path),
+                    "created_at": "2026-08-06T10:00:00+0800",
+                }), encoding="utf-8")
+                return task_path
+
+            first = create_task("20260801_001", "001项目")
+            second = create_task("20260802_wheat", "麦子熟了")
+            with mock.patch.dict(os.environ, {"HOME": str(home)}):
+                libraries = existing_libraries({"task_path": str(first)})
+                report = activate_library({"task_path": str(first)}, second)
+                active = json.loads(
+                    (home / "Library/Application Support/素材大整理/runtime/active_library.json").read_text()
+                )
+                switched = existing_libraries(active)
+
+        self.assertEqual({row["task_name"] for row in libraries}, {"001项目", "麦子熟了"})
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(Path(active["task_path"]), second.resolve())
+        self.assertEqual([row["task_name"] for row in switched if row["is_active"]], ["麦子熟了"])
+
     def test_historical_task_detail_reads_selected_task_not_active_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -587,7 +719,7 @@ class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
         self.assertEqual(run["elapsed_seconds"], 90.0)
         self.assertIsNone(run["eta_seconds"])
 
-    def test_overall_eta_uses_live_counts_and_actual_workers_not_project_totals(self) -> None:
+    def test_overall_eta_waits_for_observed_live_throughput(self) -> None:
         state = {"stages": [
             {"key": "qwen_optional_v2", "status": "running"},
             {"key": "ocr_optional_v2", "status": "pending"},
@@ -603,10 +735,16 @@ class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
             "runtime": {"ocr_workers": 3, "embedding_workers": 3},
         }
         eta = estimate_task_remaining(state, metrics, task)
-        self.assertEqual(eta["overall_eta_item_counts"], {
-            "person_reid": 0, "qwen_vl": 10, "ocr": 30, "embedding_estimate": 30,
+        self.assertIsNone(eta["overall_eta_seconds"])
+        self.assertIn("不做虚假预测", eta["overall_eta_basis"])
+
+        state["stages"][0].update({
+            "eta_seconds": 42.5,
+            "eta_basis": "按本阶段当前实际吞吐量估算",
         })
-        self.assertAlmostEqual(eta["overall_eta_seconds"], 153.0)
+        observed = estimate_task_remaining(state, metrics, task)
+        self.assertEqual(observed["overall_eta_seconds"], 42.5)
+        self.assertIn("当前阶段估算", observed["overall_eta_basis"])
 
     def test_completed_task_exposes_missing_video_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

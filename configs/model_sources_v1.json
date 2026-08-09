@@ -69,6 +69,30 @@
       "license_review": "https://github.com/deepinsight/insightface#license",
       "required": false,
       "warning": "buffalo_l 模型不是随 GPL 程序授权的组成部分；商业使用前必须向上游确认单独许可。"
+    },
+    {
+      "key": "silero_vad",
+      "required_for": "本地语音活动检测",
+      "relative_path": "silero-vad",
+      "upstream": "https://github.com/snakers4/silero-vad",
+      "license_review": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+      "required": false
+    },
+    {
+      "key": "whisper",
+      "required_for": "本地人声转写",
+      "relative_path": "whisper-large-v3-turbo",
+      "upstream": "https://huggingface.co/mlx-community/whisper-large-v3-turbo",
+      "license_review": "https://huggingface.co/mlx-community/whisper-large-v3-turbo",
+      "required": false
+    },
+    {
+      "key": "deep_filter",
+      "required_for": "可选人声降噪",
+      "relative_path": "DeepFilterNet3_onnx.tar.gz",
+      "upstream": "https://github.com/Rikorose/DeepFilterNet",
+      "license_review": "https://github.com/Rikorose/DeepFilterNet/blob/main/LICENSE",
+      "required": false
     }
   ]
 }

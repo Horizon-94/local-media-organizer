@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import uuid
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,54 @@ class SearchJobManager:
         self._jobs: dict[str, SearchJob] = {}
         self._lock = threading.Lock()
 
+    def _database_preflight(self) -> tuple[sqlite3.Connection | None, dict[str, Any]]:
+        """Open only the selected existing task database and report why it failed.
+
+        ``mode=ro`` prevents a search from creating an empty SQLite file when
+        a task pointer is stale.  A completed library on an external/APFS
+        volume can reject SQLite's normal shared-lock sidecar; immutable mode
+        remains safely query-only and is only tried after the file has already
+        been proven to exist and be readable.
+        """
+        path = self.db_path
+        report: dict[str, Any] = {
+            "database_path": str(path),
+            "database_path_absolute": path.is_absolute(),
+            "database_exists": path.exists(),
+            "database_is_file": path.is_file(),
+            "database_readable": os.access(path, os.R_OK),
+            "database_open_mode": "readonly_uri",
+            "database_error": "",
+        }
+        if not (report["database_path_absolute"] and report["database_is_file"] and report["database_readable"]):
+            report["database_error"] = "数据库文件不存在、不是普通文件或当前不可读"
+            return None, report
+        try:
+            uri = f"file:{quote(path.as_posix())}?mode=ro"
+            con = sqlite3.connect(uri, uri=True, timeout=5.0)
+            con.execute("PRAGMA query_only=ON")
+            # SQLite may create the connection before the volume rejects the
+            # first shared-lock read.  Prove the selected task is genuinely
+            # readable before reporting a normal readonly success.
+            con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            return con, report
+        except sqlite3.Error as uri_error:
+            try:
+                con.close()
+            except (UnboundLocalError, AttributeError):
+                pass
+            report["database_open_mode"] = "readonly_immutable_uri_fallback"
+            report["database_uri_error"] = str(uri_error)
+            try:
+                immutable_uri = f"file:{quote(path.as_posix())}?mode=ro&immutable=1"
+                con = sqlite3.connect(immutable_uri, uri=True, timeout=5.0)
+                con.execute("PRAGMA query_only=ON")
+                con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+                return con, report
+            except sqlite3.Error as native_error:
+                report["database_error"] = str(native_error)
+                return None, report
+
     def readiness(self) -> dict[str, Any]:
         paths = {
             "database": self.db_path,
@@ -100,11 +149,12 @@ class SearchJobManager:
         checks = {key: path.is_file() for key, path in paths.items()}
         database_ready = False
         text_enrichment_ready = False
+        text_vector_link_coverage = False
         uncovered_video_source_count = 0
-        if checks["database"]:
+        con, database_preflight = self._database_preflight()
+        checks["database"] = bool(con is not None)
+        if con is not None:
             try:
-                con = sqlite3.connect(str(self.db_path))
-                con.execute("PRAGMA query_only=ON")
                 objects = {
                     str(row[0]) for row in con.execute(
                         "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
@@ -155,20 +205,40 @@ class SearchJobManager:
                         "SELECT 1 FROM stop03_5d_text_embedding_runs "
                         "WHERE status='success' LIMIT 1"
                     ).fetchone())
-                con.close()
-            except (OSError, sqlite3.Error):
+                    if {
+                        "stop03_5d_text_documents", "stop03_5d_document_vector_links",
+                    }.issubset(objects):
+                        documents = int(con.execute(
+                            "SELECT COUNT(*) FROM stop03_5d_text_documents"
+                        ).fetchone()[0] or 0)
+                        links = int(con.execute(
+                            "SELECT COUNT(*) FROM stop03_5d_document_vector_links"
+                        ).fetchone()[0] or 0)
+                        vectors = int(con.execute(
+                            "SELECT COUNT(*) FROM stop03_5d_text_vectors WHERE status='success'"
+                        ).fetchone()[0] or 0)
+                        text_vector_link_coverage = (
+                            documents > 0 and links == documents and vectors > 0
+                        )
+            except (OSError, sqlite3.Error) as exc:
                 database_ready = False
+                database_preflight["database_error"] = str(exc)
+            finally:
+                con.close()
         checks["database_search_ready"] = database_ready
         checks["text_enrichment_ready"] = text_enrichment_ready
+        checks["text_vector_link_coverage"] = text_vector_link_coverage
         required_checks = (
             "database", "search_script", "search_config", "embedding_python",
             "openclip_python", "database_search_ready",
         )
+        hybrid_ready = text_enrichment_ready and text_vector_link_coverage
         return {
             "ready": all(checks[key] for key in required_checks),
-            "search_mode": "HYBRID_VISUAL_TEXT" if text_enrichment_ready else "VISUAL_ONLY",
+            "search_mode": "HYBRID_VISUAL_TEXT" if hybrid_ready else "VISUAL_ONLY",
             "checks": checks,
             "uncovered_video_source_count": uncovered_video_source_count,
+            "database_preflight": database_preflight,
         }
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -177,7 +247,14 @@ class SearchJobManager:
             raise ValueError("搜索文字长度必须在 1 到 512 个字符之间")
         readiness = self.readiness()
         if not readiness["ready"]:
-            raise RuntimeError(f"search runtime is incomplete: {readiness['checks']}")
+            preflight = readiness.get("database_preflight", {})
+            if preflight.get("database_error"):
+                raise RuntimeError(
+                    "搜索数据库不可用："
+                    f"{preflight['database_error']}（{preflight.get('database_path', '')}）"
+                )
+            missing = [name for name, passed in readiness["checks"].items() if not passed]
+            raise RuntimeError("搜索运行环境未通过预检：" + "、".join(missing))
         with self._lock:
             if any(job.status in {"queued", "running"} for job in self._jobs.values()):
                 raise RuntimeError("已有一个搜索正在运行，请等待它完成")
@@ -226,9 +303,23 @@ class SearchJobManager:
         media_type = str(request.get("media_type", "all"))
         if media_type in {"image", "video"}:
             command.extend(["--media-type", media_type])
+        elif media_type == "audio":
+            # Speech evidence is retained as text attached to its source video,
+            # not as a standalone audio asset.
+            command.extend(["--media-type", "video", "--audio-evidence-only"])
         prefix = " ".join(str(request.get("path_prefix", "")).split())
         if prefix:
             command.extend(["--source-relative-path-prefix", prefix])
+        for key, option in (
+            ("source_mtime_min", "--source-mtime-min"),
+            ("source_mtime_max", "--source-mtime-max"),
+        ):
+            if request.get(key) is not None:
+                command.extend([option, str(int(request[key]))])
+        if request.get("has_ocr"):
+            command.append("--has-ocr")
+        if request.get("has_person"):
+            command.append("--has-person")
         return command
 
     def _wait(self, job: SearchJob, log_file: Any) -> None:
@@ -269,6 +360,8 @@ class SearchJobManager:
                     "hybrid_score", "openclip_cosine", "text_semantic_score", "text_evidence_present",
                     "text_preview", "yoloe_labels", "environment_label",
                     "environment_user_confirmation_required",
+                    "audio_transcript_match", "audio_evidence_id", "audio_start_time_ms",
+                    "audio_end_time_ms", "audio_hit_time_ms",
                 )
             }
             keep["preview_url"] = f"/api/preview/{row.get('derived_id')}"

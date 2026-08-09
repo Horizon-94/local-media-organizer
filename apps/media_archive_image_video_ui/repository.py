@@ -7,21 +7,13 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 
 VISIBLE_MEDIA_TYPES = ("image", "video")
 
 # Measured defaults from the frozen local validation runs.  These are rates,
 # not project totals: a new library always supplies its own item count.
-MODEL_SECONDS_PER_ITEM_PER_WORKER = {
-    "person_reid": 0.25,
-    "qwen_vl": 13.0,
-    "ocr": 8.5,
-    "embedding": 0.30,
-}
-
-
 def _int(value: Any) -> int:
     return int(value or 0)
 
@@ -40,15 +32,23 @@ class ReadonlyMediaRepository:
             raise FileNotFoundError(f"central database not found: {self.db_path}")
 
     def connect(self) -> sqlite3.Connection:
-        # Some embedded macOS Python builds fail to open non-ASCII paths via a
-        # SQLite file: URI while the pipeline owns a WAL database.  Open the
-        # existing task database by its native path, then make the connection
-        # query-only before issuing any application query.
-        con = sqlite3.connect(str(self.db_path), timeout=5.0)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA query_only=ON")
-        con.execute("PRAGMA foreign_keys=ON")
-        return con
+        # Prefer a normal WAL-aware readonly URI for active tasks.  A finished
+        # library on an external/APFS volume can reject SQLite's lock sidecar;
+        # immutable mode is then safe because this repository is query-only.
+        errors: list[str] = []
+        for suffix in ("mode=ro", "mode=ro&immutable=1"):
+            try:
+                con = sqlite3.connect(
+                    f"{self.db_path.as_uri()}?{suffix}", uri=True, timeout=5.0,
+                )
+                con.row_factory = sqlite3.Row
+                con.execute("PRAGMA query_only=ON")
+                con.execute("PRAGMA foreign_keys=ON")
+                con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+                return con
+            except sqlite3.Error as exc:
+                errors.append(str(exc))
+        raise sqlite3.OperationalError("readonly_database_open_failed:" + " | ".join(errors))
 
     @staticmethod
     def _table_exists(con: sqlite3.Connection, table: str) -> bool:
@@ -294,6 +294,40 @@ class ReadonlyMediaRepository:
                         (str(latest_person_run["run_id"]),),
                     )
             dedup = count("visual_identity")
+            ledger_candidates = count("stop03_2_candidate_queue_items")
+            ledger_qwen_candidates = count(
+                "stop03_2_candidate_queue_items", "WHERE queue_type='qwenvl_high_value'"
+            )
+            ledger_ocr_candidates = count(
+                "stop03_2_candidate_queue_items", "WHERE queue_type='ocr_trigger'"
+            )
+            ledger_has_media_type = (
+                self._table_exists(con, "stop03_2_candidate_queue_items")
+                and self._column_exists(con, "stop03_2_candidate_queue_items", "media_type")
+            )
+            ledger_qwen_image_candidates = count(
+                "stop03_2_candidate_queue_items",
+                "WHERE queue_type='qwenvl_high_value' AND media_type='image'",
+            ) if ledger_has_media_type else 0
+            ledger_qwen_video_candidates = count(
+                "stop03_2_candidate_queue_items",
+                "WHERE queue_type='qwenvl_high_value' AND media_type='video'",
+            ) if ledger_has_media_type else max(
+                0, ledger_qwen_candidates - ledger_qwen_image_candidates
+            )
+            ledger_role_counts: dict[str, int] = {}
+            if (
+                self._table_exists(con, "stop03_2_candidate_queue_items")
+                and self._column_exists(con, "stop03_2_candidate_queue_items", "candidate_role")
+            ):
+                ledger_role_counts = {
+                    str(row["candidate_role"]): _int(row["n"])
+                    for row in con.execute(
+                        "SELECT candidate_role,COUNT(*) AS n "
+                        "FROM stop03_2_candidate_queue_items "
+                        "WHERE queue_type='qwenvl_high_value' GROUP BY candidate_role"
+                    )
+                }
             candidates = count("stop03_2_candidate_queue_frozen_v25")
             qwen_candidates = count(
                 "stop03_2_candidate_queue_frozen_v25", "WHERE queue_type='qwenvl_high_value'"
@@ -366,6 +400,14 @@ class ReadonlyMediaRepository:
             f"用户选择全部图片时另补充 {supplement_candidates} 张；"
             f"OCR {ocr_candidates} 张"
         )
+        ledger_candidate_breakdown = (
+            f"视频 {ledger_qwen_video_candidates} 张"
+            f"（覆盖兼高信号 {ledger_role_counts.get('video_coverage_high_signal_overlap', 0)}、"
+            f"覆盖补位 {ledger_role_counts.get('video_coverage_keyframe', 0)}、"
+            f"高信号补充 {ledger_role_counts.get('video_high_signal_supplement', 0)}）；"
+            f"图片候选 {ledger_qwen_image_candidates} 张；"
+            f"OCR {ledger_ocr_candidates} 张"
+        )
         return {
             "scan": {"done": source_total, "total": source_total,
                      "description": f"图片 {source_image} 个，视频 {source_video} 个"},
@@ -385,13 +427,17 @@ class ReadonlyMediaRepository:
             "person_reid_optional_v1": {
                 "done": person_reid_done, "total": person_reid_total,
                 "description": (
-                    f"本地匿名人物识别 {person_reid_done}/{person_reid_total} 张；"
-                    f"检测到 {person_reid_faces} 张脸，形成 {person_reid_clusters} 个匿名人物簇"
+                    f"全量检查 {person_reid_done}/{person_reid_total} 张画面；"
+                    f"取得 {person_reid_faces} 条合格人脸特征，机器归并为 "
+                    f"{person_reid_clusters} 个待确认人物组；不代表真实人数，背影未仅凭服装强行认人"
                 ),
             },
             "candidate_schema": {"done": 0, "total": 0, "description": "候选数据库结构准备阶段，无逐项队列"},
-            "candidates_generic_v2": {"done": candidates, "total": candidates,
-                                      "description": "候选计算链：" + candidate_breakdown},
+            "candidates_generic_v2": {
+                "done": ledger_candidates,
+                "total": ledger_candidates,
+                "description": "候选计算链：" + ledger_candidate_breakdown,
+            },
             "candidate_snapshot": {"done": candidates, "total": candidates,
                                    "description": "冻结当前素材库候选快照"},
             "qwen_optional_v2": {"done": qwen_main_done, "total": qwen_candidates,
@@ -412,7 +458,7 @@ class ReadonlyMediaRepository:
             "propagation_optional_v2": {"done": propagated, "total": propagated,
                                         "description": "按通用邻帧规则生成语义传播记录"},
             "embedding_optional_v2": {"done": vector_done, "total": vector_done,
-                                      "description": f"{documents} 份文本记录复用 {vector_done} 个唯一向量，共 {vector_links} 条链接"},
+                                      "description": f"{documents} 份可搜索文档全部建立链接；去重后只计算 {vector_done} 个不同文本向量（共 {vector_links} 条文档—向量链接）"},
             "repair_finder_tags": {"done": finder_tags_scanned, "total": source_image,
                                     "description": "只读补查现有图片的 macOS Finder 标签"},
             "repair_candidate_dry_run": {"done": supplement_candidates, "total": supplement_candidates,
@@ -465,22 +511,46 @@ class ReadonlyMediaRepository:
         with self.connect() as con:
             if self._table_exists(con, "stop03_3_qwenvl_runs"):
                 workers = "workers" if self._column_exists(con, "stop03_3_qwenvl_runs", "workers") else "1"
+                if self._table_exists(con, "stop03_3_qwenvl_run_items"):
+                    qwen_completed = """(
+                        SELECT COUNT(*) FROM stop03_3_qwenvl_run_items i
+                        WHERE i.run_id=r.run_id AND i.status NOT IN ('pending','running')
+                    )"""
+                    qwen_pending = """(
+                        SELECT COUNT(*) FROM stop03_3_qwenvl_run_items i
+                        WHERE i.run_id=r.run_id AND i.status IN ('pending','running')
+                    )"""
+                else:
+                    qwen_completed = "r.success_count+r.failed_count+r.review_count"
+                    qwen_pending = "r.pending_count"
                 for row in con.execute(
-                    f"""SELECT run_id,'高价值画面描述（Qwen-VL）' AS stage,candidate_count AS total,
-                              success_count+failed_count+review_count AS completed,
-                              pending_count AS pending,started_at,{workers} AS workers,
+                    f"""SELECT r.run_id,'高价值画面描述（Qwen-VL）' AS stage,r.candidate_count AS total,
+                              {qwen_completed} AS completed,
+                              {qwen_pending} AS pending,r.started_at,{workers} AS workers,
                               'qwen_vl' AS eta_kind
-                       FROM stop03_3_qwenvl_runs WHERE status='running'"""
+                       FROM stop03_3_qwenvl_runs r WHERE r.status='running'"""
                 ):
                     active.append(dict(row))
             if self._table_exists(con, "stop03_4_ocr_runs"):
                 workers = "workers" if self._column_exists(con, "stop03_4_ocr_runs", "workers") else "1"
+                if self._table_exists(con, "stop03_4_ocr_run_items"):
+                    ocr_completed = """(
+                        SELECT COUNT(*) FROM stop03_4_ocr_run_items i
+                        WHERE i.run_id=r.run_id AND i.status NOT IN ('pending','running')
+                    )"""
+                    ocr_pending = """(
+                        SELECT COUNT(*) FROM stop03_4_ocr_run_items i
+                        WHERE i.run_id=r.run_id AND i.status IN ('pending','running')
+                    )"""
+                else:
+                    ocr_completed = "r.success_count+r.no_text_count+r.failed_count"
+                    ocr_pending = "r.pending_count"
                 for row in con.execute(
-                    f"""SELECT run_id,'画面文字识别（OCR）' AS stage,candidate_count AS total,
-                              success_count+no_text_count+failed_count AS completed,
-                              pending_count AS pending,started_at,{workers} AS workers,
+                    f"""SELECT r.run_id,'画面文字识别（OCR）' AS stage,r.candidate_count AS total,
+                              {ocr_completed} AS completed,
+                              {ocr_pending} AS pending,r.started_at,{workers} AS workers,
                               'ocr' AS eta_kind
-                       FROM stop03_4_ocr_runs WHERE status='running'"""
+                       FROM stop03_4_ocr_runs r WHERE r.status='running'"""
                 ):
                     active.append(dict(row))
             if self._table_exists(con, "stop03_5d_text_embedding_runs"):
@@ -513,19 +583,20 @@ class ReadonlyMediaRepository:
             except (TypeError, ValueError):
                 elapsed = 0.0
             remaining = max(0, total - completed)
-            eta_kind = str(row.get("eta_kind") or "")
-            baseline = MODEL_SECONDS_PER_ITEM_PER_WORKER.get(eta_kind)
-            workers = max(1, _int(row.get("workers")))
             eta = (
-                remaining * baseline / workers
-                if baseline is not None else
-                (elapsed / completed * remaining) if completed > 0 else None
+                elapsed / completed * remaining
+                if completed >= 20 and elapsed >= 30.0 and remaining > 0
+                else None
             )
             row["elapsed_seconds"] = round(elapsed, 1)
             row["remaining"] = remaining
             row["percent"] = round((completed / total * 100.0) if total else 0.0, 2)
             row["eta_seconds"] = round(eta, 1) if eta is not None else None
-            row["eta_basis"] = "历史单项平均用时" if baseline is not None else "当前运行平均用时"
+            row["eta_basis"] = (
+                "按本次运行实际吞吐量估算"
+                if eta is not None else
+                "正在估算；至少完成20项并运行30秒后显示"
+            )
         return active
 
     def duplicate_groups(self, offset: int = 0, limit: int = 30) -> dict[str, Any]:
@@ -533,16 +604,54 @@ class ReadonlyMediaRepository:
         with self.connect() as con:
             if not self._table_exists(con, "source_duplicate_groups"):
                 return {"total": 0, "offset": offset, "limit": limit, "items": []}
-            total = self._one(con, "SELECT COUNT(*) FROM source_duplicate_groups")
+            real_group_where = """
+                WHERE (
+                    SELECT COUNT(*)
+                    FROM source_asset_identity i
+                    JOIN source_file_records mf
+                      ON mf.source_file_id=i.source_file_record_id
+                    WHERE i.duplicate_group_id=g.duplicate_group_id
+                      AND mf.file_name NOT LIKE '._%'
+                ) >= 2
+            """
+            total = self._one(
+                con,
+                "SELECT COUNT(*) FROM source_duplicate_groups g " + real_group_where,
+            )
             rows = con.execute(
                 """SELECT g.duplicate_group_id,g.member_count,g.total_bytes,g.canonical_reason,
                           f.source_content_id,f.file_name,f.relative_path,f.size_bytes
                    FROM source_duplicate_groups g
                    LEFT JOIN source_file_records f ON f.source_file_id=g.canonical_source_file_record_id
+                   """ + real_group_where + """
                    ORDER BY g.total_bytes DESC,g.duplicate_group_id LIMIT ? OFFSET ?""",
                 (limit, offset),
             ).fetchall()
-        return {"total": total, "offset": offset, "limit": limit, "items": [dict(row) for row in rows]}
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                members = [dict(member) for member in con.execute(
+                    """SELECT f.source_file_id,f.source_content_id,f.file_name,
+                              f.relative_path,f.absolute_path,f.size_bytes,
+                              i.identity_status
+                       FROM source_asset_identity i
+                       JOIN source_file_records f
+                         ON f.source_file_id=i.source_file_record_id
+                       WHERE i.duplicate_group_id=?
+                         AND f.file_name NOT LIKE '._%'
+                       ORDER BY CASE i.identity_status WHEN 'canonical' THEN 0 ELSE 1 END,
+                                f.relative_path,f.source_file_id""",
+                    (row["duplicate_group_id"],),
+                )]
+                for member in members:
+                    absolute = str(member.get("absolute_path") or "")
+                    member["folder_path"] = str(Path(absolute).parent) if absolute else ""
+                    member["is_canonical"] = member.get("identity_status") == "canonical"
+                item["members"] = members
+                item["member_count"] = len(members)
+                item["total_bytes"] = sum(int(member.get("size_bytes") or 0) for member in members)
+                items.append(item)
+        return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     def timelapse_groups(self, offset: int = 0, limit: int = 30) -> dict[str, Any]:
         offset, limit = max(0, int(offset)), max(1, min(int(limit), 100))
@@ -764,14 +873,19 @@ class ReadonlyMediaRepository:
 
     def person_cluster_results(
         self,
-        person_cluster_id: str,
+        person_cluster_id: str | Sequence[str],
         media_type: str = "all",
         offset: int = 0,
         limit: int = 30,
+        source_content_id: str | None = None,
     ) -> dict[str, Any]:
         """Read one anonymous-person cluster without running a model."""
-        clean_cluster_id = str(person_cluster_id).strip()
-        if not clean_cluster_id:
+        cluster_ids = (
+            sorted({str(value).strip() for value in person_cluster_id if str(value).strip()})
+            if not isinstance(person_cluster_id, str)
+            else [person_cluster_id.strip()]
+        )
+        if not cluster_ids or not cluster_ids[0]:
             raise ValueError("person_cluster_id_required")
         if media_type not in {"all", "image", "video"}:
             raise ValueError("person_cluster_media_type_invalid")
@@ -780,8 +894,9 @@ class ReadonlyMediaRepository:
                 con, "v_stop03_1c_latest_person_cluster_members",
             ):
                 return {"total": 0, "items": [], "count_by_media": {}}
+            placeholders = ",".join("?" for _ in cluster_ids)
             rows = con.execute(
-                """
+                f"""
                 SELECT p.person_cluster_id,p.member_count,
                        p.distinct_source_count,p.cluster_confidence,
                        p.human_review_status,p.visual_unit_id,
@@ -792,7 +907,7 @@ class ReadonlyMediaRepository:
                 JOIN derived_assets AS d ON d.derived_id=p.derived_id
                 JOIN source_assets AS s
                   ON s.source_content_id=p.source_content_id
-                WHERE p.person_cluster_id=?
+                WHERE p.person_cluster_id IN ({placeholders})
                   AND p.member_count > 1
                   AND (
                     p.distinct_source_count >= 2
@@ -805,7 +920,7 @@ class ReadonlyMediaRepository:
                 ORDER BY p.similarity_to_representative DESC,
                          p.time_position_ms,p.visual_unit_id
                 """,
-                (clean_cluster_id,),
+                cluster_ids,
             ).fetchall()
         unique: list[dict[str, Any]] = []
         seen_visual_units: set[str] = set()
@@ -828,17 +943,46 @@ class ReadonlyMediaRepository:
                 "source_online": source_path.is_file(),
                 "can_open_original": source_path.is_file(),
             })
+        frame_total = len(unique)
+        selected: list[dict[str, Any]]
+        clean_source = str(source_content_id or "").strip()
+        if clean_source:
+            selected = [
+                dict(row) | {"source_frame_count": 1, "result_level": "frame"}
+                for row in unique if str(row.get("source_content_id") or "") == clean_source
+            ]
+            count_by_media = defaultdict(int)
+            for row in selected:
+                count_by_media[str(row.get("media_type") or "unknown")] += 1
+        else:
+            grouped: dict[str, dict[str, Any]] = {}
+            counts: dict[str, int] = defaultdict(int)
+            for row in unique:
+                source_id = str(row.get("source_content_id") or "")
+                counts[source_id] += 1
+                grouped.setdefault(source_id, row)
+            selected = [
+                dict(row) | {
+                    "source_frame_count": counts[source_id],
+                    "result_level": "source",
+                }
+                for source_id, row in grouped.items()
+            ]
+            count_by_media = defaultdict(int)
+            for row in selected:
+                count_by_media[str(row.get("media_type") or "unknown")] += 1
         safe_offset = max(0, int(offset))
         safe_limit = max(1, min(int(limit), 100))
         return {
-            "total": len(unique),
-            "items": unique[safe_offset:safe_offset + safe_limit],
+            "total": len(selected),
+            "frame_total": frame_total,
+            "items": selected[safe_offset:safe_offset + safe_limit],
             "count_by_media": dict(count_by_media),
             "offset": safe_offset,
             "limit": safe_limit,
             "next_offset": (
                 safe_offset + safe_limit
-                if safe_offset + safe_limit < len(unique)
+                if safe_offset + safe_limit < len(selected)
                 else None
             ),
         }

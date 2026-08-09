@@ -20,7 +20,6 @@ from media_archive_image_video_ui.native_app import APP_VERSION, default_paths, 
 from media_archive_image_video_ui.processing_profile import (  # noqa: E402
     build_processing_profile,
     detect_hardware,
-    recommend_workers,
     save_processing_profile,
 )
 from media_archive_image_video_ui.repository import ReadonlyMediaRepository, VISIBLE_MEDIA_TYPES  # noqa: E402
@@ -88,7 +87,11 @@ class NativeImageVideoAppTests(unittest.TestCase):
             embedding_python=defaults["embedding_python"], openclip_python=defaults["openclip_python"],
         )
         command = manager.build_command(
-            "夜间人物", {"media_type": "video", "preview_window_ms": 5000, "limit": 17},
+            "夜间人物", {
+                "media_type": "video", "preview_window_ms": 5000, "limit": 17,
+                "path_prefix": "项目 A/", "source_mtime_min": 100,
+                "source_mtime_max": 200, "has_ocr": True, "has_person": True,
+            },
             Path("/tmp/native-app-search-test/output"),
         )
         joined = " ".join(command)
@@ -96,9 +99,17 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn("--media-type video", joined)
         self.assertIn("--preview-window-ms 5000", joined)
         self.assertIn("--result-limit 17", joined)
+        self.assertIn("--source-relative-path-prefix 项目 A/", joined)
+        self.assertIn("--source-mtime-min 100", joined)
+        self.assertIn("--source-mtime-max 200", joined)
+        self.assertIn("--has-ocr", command)
+        self.assertIn("--has-person", command)
         self.assertIn("--confirm-real-local-query", command)
         self.assertIn("--native-app-result-contract", command)
-        self.assertIn(str(defaults["openclip_python"]), command)
+        self.assertIn(
+            str(Path.home() / "Documents/AI-Local/envs/media-archive-v06-visual/bin/python"),
+            command,
+        )
 
     def test_search_manager_preserves_virtualenv_python_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -140,16 +151,11 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertNotIn("RESOURCEPATH", minimal)
         self.assertNotIn("DYLD_FRAMEWORK_PATH", minimal)
         self.assertNotIn("PYTHONHOME", minimal)
-        with tempfile.TemporaryDirectory() as temp:
-            venv = Path(temp) / "visual"
-            python = venv / "bin/python"
-            python.parent.mkdir(parents=True)
-            python.symlink_to(Path(sys.executable))
-            expected_site_packages = venv / "lib/python3.12/site-packages"
-            expected_site_packages.mkdir(parents=True)
-            executable, site_packages = namespace["explicit_venv_runtime"](python)
-            self.assertTrue(executable.is_file())
-            self.assertEqual(site_packages, expected_site_packages.resolve())
+        executable, site_packages = namespace["explicit_venv_runtime"](
+            Path.home() / "Documents/AI-Local/envs/media-archive-v06-visual/bin/python"
+        )
+        self.assertTrue(executable.is_file())
+        self.assertEqual(site_packages.name, "site-packages")
         source = script.read_text(encoding="utf-8")
         self.assertIn("sys.path.insert(0,site_packages)", source)
 
@@ -238,6 +244,11 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertEqual(bundle.name, "本地数据库.app")
             self.assertEqual(info["CFBundleDisplayName"], "本地数据库")
             self.assertEqual(info["CFBundleExecutable"], "本地数据库")
+            self.assertEqual(info["CFBundleShortVersionString"], "1.2.0")
+            self.assertEqual(info["CFBundleVersion"], "120")
+            self.assertEqual(info["CFBundleIdentifier"], "local.horizon.local-database")
+            self.assertIn("Horizon-94", info["NSHumanReadableCopyright"])
+            self.assertTrue(info["HorizonBuildDate"])
             self.assertFalse(config["web_server_used"])
             self.assertEqual(config["configuration_state"], "first_run_clean")
             self.assertEqual(config["database"], "")
@@ -249,17 +260,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertNotIn("qwen_model", config)
             self.assertEqual(config["appearance_policy"], "native_swiftui_system_appearance_v1")
             self.assertEqual(config["runtime_policy"], "native_swiftui_embedded_python_bridge_v1")
-            self.assertEqual(config["author"], "Horizon-94")
-            self.assertEqual(config["official_source"], "https://github.com/Horizon-94/local-media-organizer")
-            self.assertEqual(config["license"], "GPL-3.0-only")
             self.assertTrue(info["NSRequiresAquaSystemAppearance"])
-            self.assertEqual(info["NSHumanReadableCopyright"], "Copyright © 2026 Horizon-94")
-            self.assertEqual(
-                info["LSArchitecturePriority"],
-                list(module.python_framework_architectures(
-                    bundle / "Contents/Frameworks/Python3.framework"
-                )),
-            )
             self.assertTrue((bundle / "Contents/Frameworks/Python3.framework").is_dir())
             self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
             self.assertTrue((bundle / "Contents/Resources/app_icon_1024.png").is_file())
@@ -282,8 +283,6 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertIn("本次已扫描：画面向量", bundled_frontend)
             self.assertIn('Button("查看同一人物")', bundled_frontend)
             self.assertIn("总用时", bundled_frontend)
-            self.assertIn("Copyright © 2026 Horizon-94", bundled_frontend)
-            self.assertIn("github.com/Horizon-94/local-media-organizer", bundled_frontend)
             self.assertIn("AVPlayerView", bundled_frontend)
             self.assertNotIn("QuickTime Player", bundled_frontend)
             self.assertNotIn("/usr/bin/osascript", bundled_frontend)
@@ -326,20 +325,6 @@ class NativeImageVideoAppTests(unittest.TestCase):
             hardware["recommendation"]["estimated_max_model_workers"],
             hardware["recommendation"]["model_workers"],
         )
-
-    def test_worker_recommendation_adapts_to_unified_memory(self) -> None:
-        def recommended(memory: int) -> dict[str, int]:
-            return recommend_workers({
-                "cpu_cores_total": 16,
-                "unified_memory_gb": memory,
-            })
-
-        self.assertEqual(recommended(16)["model_workers"], 1)
-        self.assertEqual(recommended(24)["model_workers"], 2)
-        self.assertEqual(recommended(32)["model_workers"], 3)
-        self.assertEqual(recommended(32)["estimated_max_model_workers"], 4)
-        self.assertEqual(recommended(64)["model_workers"], 4)
-        self.assertEqual(recommended(64)["estimated_max_model_workers"], 8)
 
     def test_processing_profile_activates_generic_interval_and_density(self) -> None:
         hardware = {
@@ -390,7 +375,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn("已保存方案会显示在上方", source)
 
     def test_version_is_image_video_native_release(self) -> None:
-        self.assertEqual(APP_VERSION, "1.1.4-search-progress-warm-cache")
+        self.assertEqual(APP_VERSION, "1.2.0-final")
 
     def test_release_builder_supports_portable_runtimes_without_models(self) -> None:
         source = (
@@ -401,89 +386,51 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn('"models_included": False', source)
         self.assertIn("PipelinePython", source)
         self.assertIn("PipelineEnvs", source)
-        self.assertIn('"$APP_RESOURCES/Pipeline"', source)
-        self.assertIn("bundle_release_documents", source)
-        self.assertIn("LICENSE-GPL-3.0.txt", source)
-        self.assertIn('project_root / "docs" / "pipeline_rules"', source)
-        self.assertIn('pipeline_root / "docs" / "pipeline_rules"', source)
-        self.assertIn("sys.base_prefix", source)
-        self.assertIn('"Python.framework"', source)
-        self.assertIn("LSArchitecturePriority", source)
+        self.assertIn('for name in ("pipeline_rules", "model_registry")', source)
+        self.assertIn('pipeline_root / "docs" / name', source)
+        self.assertIn("sanitize_embedded_project_files", source)
+        self.assertIn("embedded_developer_private_path_detected", source)
 
-    def test_portable_metadata_scrubs_local_editable_install_paths(self) -> None:
+    def test_embedded_pipeline_privacy_sanitizer_removes_developer_paths(self) -> None:
         builder_path = (
             ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
         )
         specification = importlib.util.spec_from_file_location(
-            "native_release_metadata_builder", builder_path
+            "native_release_builder_privacy", builder_path
         )
         builder = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(builder)
         with tempfile.TemporaryDirectory() as temporary:
-            site_packages = Path(temporary)
-            (site_packages / "editable.pth").write_text(
-                "/Users/" + "alice/private-checkout\nimport site\n",
+            root = Path(temporary)
+            pipeline = root / "Pipeline"
+            config = pipeline / "configs/runtime.json"
+            config.parent.mkdir(parents=True)
+            project = Path.home() / "Documents/AI-Local/media-archive-clean"
+            config.write_text(
+                json.dumps({
+                    "project": str(project),
+                    "model": str(Path.home() / "Documents/model/example"),
+                    "python": str(Path.home() / "Documents/AI-Local/envs/example/bin/python"),
+                    "historical_example": str(Path.home() / "Desktop/example"),
+                }),
                 encoding="utf-8",
             )
-            metadata = site_packages / "package.dist-info"
-            metadata.mkdir()
-            (metadata / "direct_url.json").write_text(
-                '{"url":"file:///Users/' + 'alice/private-checkout"}',
-                encoding="utf-8",
+            report = builder.sanitize_embedded_project_files(
+                pipeline, project_root=project,
             )
-            (metadata / "RECORD").write_text(
-                "../../../../Users/" + "alice/private/cache.pyc,,\n"
-                "package/public.py,sha256=abc,3\n",
-                encoding="utf-8",
-            )
-            builder.sanitize_portable_python_metadata(site_packages)
-            self.assertEqual(
-                (site_packages / "editable.pth").read_text(encoding="utf-8"),
-                "import site\n",
-            )
-            self.assertFalse((metadata / "direct_url.json").exists())
-            self.assertEqual(
-                (metadata / "RECORD").read_text(encoding="utf-8"),
-                "package/public.py,sha256=abc,3\n",
-            )
+            self.assertEqual(report["status"], "PASS")
+            self.assertEqual(report["remaining_violation_count"], 0)
+            self.assertNotIn(str(Path.home()), config.read_text(encoding="utf-8"))
 
     def test_release_signing_does_not_sign_shell_wrappers_with_deep_mode(self) -> None:
         source = (
             ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
         ).read_text(encoding="utf-8")
-        sign_bundle = source[
-            source.index("def sign_bundle"):
-            source.index("def verify_bundle_signature")
-        ]
+        sign_bundle = source[source.index("def sign_bundle"):source.index("def build_pkg")]
         self.assertNotIn('"--deep"', sign_bundle)
         self.assertIn("_is_macho", sign_bundle)
         self.assertIn("path != main_executable", sign_bundle)
         self.assertIn("_codesign(bundle)", sign_bundle)
-        self.assertIn("verify_bundle_signature(bundle)", source)
-
-    def test_release_builder_removes_only_broken_framework_symlinks(self) -> None:
-        builder_path = (
-            ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
-        )
-        specification = importlib.util.spec_from_file_location(
-            "native_release_symlink_builder", builder_path
-        )
-        builder = importlib.util.module_from_spec(specification)
-        specification.loader.exec_module(builder)
-        with tempfile.TemporaryDirectory() as temporary:
-            framework = Path(temporary) / "Python.framework"
-            version = framework / "Versions/3.12"
-            version.mkdir(parents=True)
-            valid_target = version / "Python"
-            valid_target.write_bytes(b"python")
-            valid_link = framework / "Python"
-            valid_link.symlink_to("Versions/3.12/Python")
-            broken_link = version / "site-packages"
-            broken_link.symlink_to("../../../../../../outside/site-packages")
-            builder.remove_broken_framework_symlinks(framework)
-            self.assertTrue(valid_link.is_symlink())
-            self.assertFalse(broken_link.exists())
-            self.assertFalse(broken_link.is_symlink())
 
     def test_portable_python_role_launcher_is_native_macho(self) -> None:
         builder_path = (

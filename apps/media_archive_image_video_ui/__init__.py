@@ -1,5 +1,5 @@
-"""Image/video-only local UI for the frozen media archive pipeline."""
+"""Local image, video, and speech-evidence media archive UI."""
 
 __all__ = ["__version__"]
 
-__version__ = "1.1.4"
+__version__ = "1.2.0"

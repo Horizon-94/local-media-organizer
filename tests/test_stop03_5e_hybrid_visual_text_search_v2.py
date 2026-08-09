@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -132,6 +133,47 @@ class Stop035EHybridVisualTextSearchV2Tests(unittest.TestCase):
         finally:
             con.close()
 
+    def test_audio_transcript_maps_to_nearest_video_frame(self) -> None:
+        con = sqlite3.connect(str(self.db))
+        try:
+            con.executescript((ROOT / "migrations/20260809_audio_speech_search_v1.sql").read_text())
+            con.execute(
+                """INSERT INTO audio_speech_evidence(
+                       evidence_id,source_content_id,source_path,start_time_ms,end_time_ms,
+                       hit_time_ms,transcript_text,preview_windows_json,transcript_sha256
+                   ) VALUES('speech1','source1','video.mp4',9000,12000,10500,
+                            '麦子已经成熟，今天开始收割','[]','sha')"""
+            )
+            blob = struct.pack("<2f", 1.0, 0.0)
+            con.execute(
+                """INSERT INTO audio_text_embeddings(
+                       evidence_id,model_name,model_path,dimension,vector_dtype,
+                       normalized,vector_blob,vector_sha256,status
+                   ) VALUES('speech1','fixture','fixture',2,'float32',1,?,'sha','success')""",
+                (blob,),
+            )
+            con.commit()
+        finally:
+            con.close()
+        visual_rows = {
+            "frame-1": {
+                "visual_unit_id": "frame-1", "source_content_id": "source1",
+                "media_type": "video", "time_position_ms": 3000,
+            },
+            "frame-2": {
+                "visual_unit_id": "frame-2", "source_content_id": "source1",
+                "media_type": "video", "time_position_ms": 10000,
+            },
+        }
+        scores, evidence, scanned = hybrid.score_audio_evidence(
+            self.db, "麦子", [1.0, 0.0], visual_rows
+        )
+        self.assertEqual(scanned, 1)
+        self.assertEqual(set(scores), {"frame-2"})
+        self.assertTrue(evidence["frame-2"]["audio_transcript_match"])
+        self.assertEqual(evidence["frame-2"]["time_position_ms"], 10500)
+        self.assertTrue(evidence["frame-2"]["text_exact_match"])
+
     @staticmethod
     def _normalized(values: list[float]) -> list[float]:
         norm = math.sqrt(sum(value * value for value in values))
@@ -145,6 +187,9 @@ class Stop035EHybridVisualTextSearchV2Tests(unittest.TestCase):
             "device": "cpu", "media_type": None, "source_content_id": None,
             "source_relative_path_prefix": None, "time_position_ms_min": None,
             "time_position_ms_max": None,
+            "source_mtime_min": None, "source_mtime_max": None,
+            "has_ocr": False, "has_person": False,
+            "audio_evidence_only": False,
         }
         values.update(overrides)
         return argparse.Namespace(**values)
@@ -214,6 +259,14 @@ class Stop035EHybridVisualTextSearchV2Tests(unittest.TestCase):
         self.assertTrue(hybrid.text_has_exact_query("人", "相邻对象：人（person）"))
         self.assertTrue(hybrid.text_has_exact_query("小麦", "画面里有成熟的小麦田"))
 
+    def test_common_image_queries_include_conservative_domain_aliases(self) -> None:
+        self.assertIn("麦田", hybrid.matching_text_terms("麦子", "金色麦田"))
+        self.assertIn("树木", hybrid.matching_text_terms("树", "道路两旁有树木"))
+        self.assertIn("道路", hybrid.matching_text_terms("路", "乡村道路延伸到远方"))
+        # Arbitrary one-character input stays conservative; aliases are an
+        # explicit, small domain vocabulary rather than a broad substring rule.
+        self.assertEqual(hybrid.matching_text_terms("人", "人民公园"), [])
+
     def test_object_label_requires_independent_semantic_support(self) -> None:
         config = hybrid.load_config(self.config)
         source = {
@@ -279,6 +332,52 @@ class Stop035EHybridVisualTextSearchV2Tests(unittest.TestCase):
         self.assertEqual(ranking["post_temporal_dedup_result_count"], 1)
         self.assertEqual(ranking["post_temporal_dedup_count_by_media"], {"image": 1})
         self.assertIsNone(ranking["next_result_offset"])
+
+    def test_audio_only_filter_excludes_visual_and_description_only_hits(self) -> None:
+        config = hybrid.load_config(self.config)
+        sources = {
+            "audio": {
+                "visual_unit_id": "audio", "source_content_id": "video-1",
+                "derived_id": "d1", "media_type": "video", "time_position_ms": 2000,
+            },
+            "visual": {
+                "visual_unit_id": "visual", "source_content_id": "video-2",
+                "derived_id": "d2", "media_type": "video", "time_position_ms": 2000,
+            },
+        }
+        rows, ranking = hybrid.fuse_results(
+            sources, {"audio": [0.2, 0.0], "visual": [1.0, 0.0]}, [1.0, 0.0],
+            {"audio": 0.9},
+            {"audio": {
+                "text_semantic_score": 0.9, "text_exact_match": True,
+                "text_preview": "开始收割", "audio_transcript_match": True,
+                "audio_start_time_ms": 1000, "audio_end_time_ms": 3000,
+            }},
+            {}, {}, config, self.args(query="收割", audio_evidence_only=True),
+        )
+        self.assertEqual([row["visual_unit_id"] for row in rows], ["audio"])
+        self.assertIn("audio_transcript_exact", rows[0]["relevance_reasons"])
+        self.assertEqual(ranking["post_temporal_dedup_result_count"], 1)
+
+    def test_low_score_audio_evidence_is_rejected_without_empty_score_crash(self) -> None:
+        config = hybrid.load_config(self.config)
+        sources = {
+            "audio": {
+                "visual_unit_id": "audio", "source_content_id": "video-1",
+                "derived_id": "d1", "media_type": "video", "time_position_ms": 2000,
+            },
+        }
+        rows, ranking = hybrid.fuse_results(
+            sources, {"audio": [0.0, 1.0]}, [1.0, 0.0],
+            {"audio": -0.5},
+            {"audio": {
+                "text_semantic_score": -0.5, "text_exact_match": False,
+                "text_preview": "无关转写", "audio_transcript_match": True,
+            }},
+            {}, {}, config, self.args(query="收割机", audio_evidence_only=True),
+        )
+        self.assertEqual(rows, [])
+        self.assertEqual(ranking["relevance_eligible_result_count"], 0)
 
     def test_query_text_is_private_and_assets_are_relative(self) -> None:
         private = "不允许写入报告的查询词"
@@ -349,8 +448,8 @@ class Stop035EHybridVisualTextSearchV2Tests(unittest.TestCase):
         source = (SCRIPT_DIR / "stop03_5e_hybrid_visual_text_search_v2.py").read_text(encoding="utf-8")
         config = self.config.read_text(encoding="utf-8")
         for forbidden in (
-            "stop03_5d_db064", "1628", "758", "407", "/Users/yourname",
-            "MEDIA_ARCHIVE_TEST_SOURCE", "VideoCapture(", "requests.", "CREATE VIRTUAL TABLE",
+            "stop03_5d_db064", "1628", "758", "407", str(Path.home()),
+            "AI_Media_Test_Source", "VideoCapture(", "requests.", "CREATE VIRTUAL TABLE",
         ):
             self.assertNotIn(forbidden, source)
             self.assertNotIn(forbidden, config)

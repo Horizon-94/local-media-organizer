@@ -35,8 +35,11 @@ Models/
 ├── ocr/
 │   ├── PP-OCRv6_medium_det/
 │   └── PP-OCRv6_medium_rec/
-└── insightface/
-    └── buffalo_l/                 # 可选；单独核对许可
+├── insightface/
+│   └── buffalo_l/                 # 可选；单独核对许可
+├── silero-vad/
+├── whisper-large-v3-turbo/
+└── DeepFilterNet3_onnx.tar.gz     # 可选降噪模型
 ```
 
 ## 3. 上游下载页面
@@ -51,6 +54,9 @@ Models/
 | OCR 检测 | [PP-OCRv6_medium_det](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det) | `ocr/PP-OCRv6_medium_det/` |
 | OCR 识别 | [PP-OCRv6_medium_rec](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec) | `ocr/PP-OCRv6_medium_rec/` |
 | 人物归并（可选） | [InsightFace v0.7 model packs](https://github.com/deepinsight/insightface/releases/tag/v0.7) | `insightface/buffalo_l/` |
+| 语音活动检测 | [Silero VAD](https://github.com/snakers4/silero-vad) | `silero-vad/` |
+| 人声转写 | [MLX Whisper large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) | `whisper-large-v3-turbo/` |
+| 人声降噪（可选） | [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) | `DeepFilterNet3_onnx.tar.gz` |
 
 机器可读的同一清单位于 `configs/model_sources_v1.json`。
 

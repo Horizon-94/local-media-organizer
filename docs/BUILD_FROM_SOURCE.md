@@ -1,4 +1,4 @@
-# 从源码构建 1.1.4
+# 从源码构建 1.2.0
 
 官方源码只来自：
 
@@ -7,7 +7,7 @@
 ## 能复现到什么程度
 
 - 不加载模型即可安装源码、运行核心测试并构建原生 macOS 应用。
-- `--portable-runtimes` 会把五套 Python 环境装入 DMG，模型仍保持外置。
+- `--portable-runtimes` 会把六套 Python 环境装入 DMG，模型仍保持外置。
 - 当前依赖采用版本范围而非完整哈希锁，因此可以构建功能等价版本，但不能保证与官方 DMG 逐字节一致。
 - 官方 DMG 使用 ad-hoc 签名。没有 Apple Developer ID 和公证时，其他 Mac 可能显示 Gatekeeper 提示。
 
@@ -19,7 +19,7 @@
 - Homebrew 的 `ffmpeg` 与 `ffprobe`；
 - 约 15 GB 临时磁盘空间。
 
-32 GB 是官方 1.1.4 的开发与验收基准，不是硬性要求。应用会按本机 CPU
+32 GB 是官方 1.2.0 的开发与验收基准，不是硬性要求。应用会按本机 CPU
 核数和统一内存选择保守默认并发；16 GB 机器应从 1 路模型并发开始，
 64 GB 或更高配置可在设置页显示的估算上限内逐步提高。
 
@@ -38,7 +38,7 @@ python -m pytest -q
 
 这些测试不应下载或加载模型。
 
-## 创建五套可携带环境
+## 创建六套可携带环境
 
 下面的目录名是 1.1.4 构建合同的一部分。`/path/to/envs` 可以换成任意本地目录。
 
@@ -49,12 +49,14 @@ python3 -m venv "$ENV_ROOT/media-archive-v06-yolo"
 python3 -m venv "$ENV_ROOT/qwen-vl"
 python3 -m venv "$ENV_ROOT/media-archive-v06-ocr"
 python3 -m venv "$ENV_ROOT/media-archive-embedding"
+python3 -m venv "$ENV_ROOT/whisper"
 
 "$ENV_ROOT/media-archive-v06-visual/bin/pip" install -e '.[visual]'
 "$ENV_ROOT/media-archive-v06-yolo/bin/pip" install -e '.[yolo]'
 "$ENV_ROOT/qwen-vl/bin/pip" install -e '.[qwen]'
 "$ENV_ROOT/media-archive-v06-ocr/bin/pip" install -e '.[ocr]'
 "$ENV_ROOT/media-archive-embedding/bin/pip" install -e '.[embedding]'
+"$ENV_ROOT/whisper/bin/pip" install mlx-whisper torch torchaudio
 ```
 
 ## 构建
@@ -86,7 +88,7 @@ python scripts/04_media_archive_app/build_native_image_video_app_v1.py \
 ```bash
 python scripts/release_artifact_audit.py dist/本地数据库.app
 codesign --verify --deep --strict --verbose=2 dist/本地数据库.app
-shasum -a 256 dist/本地数据库-1.1.4.dmg
+shasum -a 256 dist/本地数据库-1.2.0.dmg
 ```
 
 发布附件应同时提供 SHA-256、当前提交号、GPL-3.0 许可证和“未公证”提示。

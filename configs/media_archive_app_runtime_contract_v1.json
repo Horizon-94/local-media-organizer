@@ -8,12 +8,14 @@
     "person_reid": "$ENV_ROOT/media-archive-v06-yolo/bin/python",
     "qwen": "$ENV_ROOT/qwen-vl/bin/python",
     "ocr": "$ENV_ROOT/media-archive-v06-ocr/bin/python",
-    "embedding": "$ENV_ROOT/media-archive-embedding/bin/python"
+    "embedding": "$ENV_ROOT/media-archive-embedding/bin/python",
+    "whisper": "$ENV_ROOT/whisper/bin/python"
   },
   "tools": {
     "ffmpeg": "$FFMPEG",
     "ffprobe": "$FFPROBE",
-    "sips": "$SIPS"
+    "sips": "$SIPS",
+    "deep_filter": "$DEEP_FILTER"
   },
   "models": {
     "yoloe": {
@@ -47,6 +49,18 @@
     "text_embedding": {
       "path": "$MODEL_ROOT/Qwen3-Embedding-0.6B",
       "kind": "directory"
+    },
+    "silero_vad": {
+      "path": "$MODEL_ROOT/silero-vad",
+      "kind": "directory"
+    },
+    "whisper": {
+      "path": "$MODEL_ROOT/whisper-large-v3-turbo",
+      "kind": "directory"
+    },
+    "deep_filter": {
+      "path": "$MODEL_ROOT/DeepFilterNet3_onnx.tar.gz",
+      "kind": "file"
     }
   },
   "scripts": {
@@ -72,7 +86,10 @@
     "finder_tag_refresh": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/refresh_existing_library_finder_tags_v1.py",
     "supplement_contract": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_contract_v1.py",
     "supplement_qwen": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_orchestrator_v1.py",
-    "supplement_evidence_merge": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_5b_merge_qwenvl_supplement_v1.py"
+    "supplement_evidence_merge": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_5b_merge_qwenvl_supplement_v1.py",
+    "audio_enrichment": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py",
+    "audio_pilot": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_audio_search_pilot_v1.py",
+    "audio_embedding_commit": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_audio_embedding_commit_v1.py"
   },
   "configs": {
     "candidate": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_2_high_value_policy_v25.json",
@@ -92,7 +109,8 @@
     "evidence": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql",
     "propagation": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql",
     "embedding": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql",
-    "supplement": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260720_stop03_3_qwenvl_supplement_v1.sql"
+    "supplement": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260720_stop03_3_qwenvl_supplement_v1.sql",
+    "audio_speech_search": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260809_audio_speech_search_v1.sql"
   },
   "policies": {
     "original_media_access": "read_only",

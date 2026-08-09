@@ -2,33 +2,35 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
 
 CONTRACT_VERSION = "media_archive_app_runtime_contract_v1"
-REQUIRED_PYTHON = ("system", "visual", "yolo", "qwen", "ocr", "embedding")
-REQUIRED_TOOLS = ("ffmpeg", "ffprobe", "sips")
+REQUIRED_PYTHON = ("system", "visual", "yolo", "qwen", "ocr", "embedding", "whisper")
+REQUIRED_TOOLS = ("ffmpeg", "ffprobe", "sips", "deep_filter")
 REQUIRED_MODELS = (
     "yoloe", "yoloe_mobileclip", "openclip", "qwen",
     "ocr_detection", "ocr_recognition", "text_embedding", "person_reid",
+    "silero_vad", "whisper", "deep_filter",
 )
 REQUIRED_SCRIPTS = (
     "stage_runner", "source_scan", "image_preview", "video_frames",
     "prepare_visual_schema", "yoloe", "openclip", "dedup", "person_reid",
     "candidate_snapshot", "candidate_select", "optional_stage", "qwen",
     "ocr", "evidence", "propagation", "embedding", "search_adapter",
-    "search_engine", "finder_tag_refresh", "supplement_contract",
-    "supplement_qwen", "supplement_evidence_merge",
+    "search_engine", "search_rebuild", "finder_tag_refresh", "supplement_contract",
+    "supplement_qwen", "supplement_evidence_merge", "audio_enrichment",
+    "audio_pilot", "audio_embedding_commit",
 )
 REQUIRED_CONFIGS = (
     "candidate", "person_reid", "qwen", "qwen_prompt", "ocr", "evidence", "propagation",
     "embedding_contract", "embedding_runtime", "hybrid_search",
 )
 REQUIRED_MIGRATIONS = (
-    "person_reid", "ocr", "evidence", "propagation", "embedding", "supplement",
+    "person_reid", "ocr", "evidence", "propagation", "embedding", "supplement", "audio",
 )
+REQUIRED_DOCUMENTS = ("model_registry", "runtime_model_script_inventory")
 
 
 def default_model_root() -> Path:
@@ -65,36 +67,11 @@ def load_runtime_contract(
         if contract_path.parent.name == "Resources"
         else contract_path.parent
     )
-    source_project_root = (
-        contract_path.parent.parent
-        if contract_path.parent.name == "configs"
-        else app_contents / "Resources" / "Pipeline"
-    )
-    selected_project_root = Path(
-        os.environ.get("MEDIA_ARCHIVE_PROJECT_ROOT", str(source_project_root))
-    ).expanduser().absolute()
-    selected_env_root = Path(
-        os.environ.get(
-            "MEDIA_ARCHIVE_ENV_ROOT",
-            str(selected_project_root.parent / "envs"),
-        )
-    ).expanduser().absolute()
     selected_model_root = (model_root or default_model_root()).expanduser().absolute()
-    ffmpeg = os.environ.get("MEDIA_ARCHIVE_FFMPEG") or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
-    ffprobe = os.environ.get("MEDIA_ARCHIVE_FFPROBE") or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
-    sips = os.environ.get("MEDIA_ARCHIVE_SIPS") or shutil.which("sips") or "/usr/bin/sips"
     payload = _replace_placeholders(payload, {
         "$APP_CONTENTS": str(app_contents),
         "$APP_RESOURCES": str(app_contents / "Resources"),
-        "$PROJECT_ROOT": str(selected_project_root),
-        "$ENV_ROOT": str(selected_env_root),
         "$MODEL_ROOT": str(selected_model_root),
-        "$FFMPEG": ffmpeg,
-        "$FFPROBE": ffprobe,
-        "$SIPS": sips,
-        "/Users/yourname/Documents/AI-Local/media-archive-clean": str(selected_project_root),
-        "/Users/yourname/Documents/AI-Local/envs": str(selected_env_root),
-        "/Users/yourname/Documents/model": str(selected_model_root),
     })
     payload["contract_path"] = str(contract_path)
     payload["model_root"] = str(selected_model_root)
@@ -151,6 +128,7 @@ def validate_runtime_contract(
         ("scripts", REQUIRED_SCRIPTS),
         ("configs", REQUIRED_CONFIGS),
         ("migrations", REQUIRED_MIGRATIONS),
+        ("documents", REQUIRED_DOCUMENTS),
     ):
         rows = payload.get(section) or {}
         for key in required:
@@ -217,7 +195,7 @@ def validate_runtime_contract(
         "counts": {
             "python": len(REQUIRED_PYTHON), "tools": len(REQUIRED_TOOLS), "models": len(REQUIRED_MODELS),
             "scripts": len(REQUIRED_SCRIPTS), "configs": len(REQUIRED_CONFIGS),
-            "migrations": len(REQUIRED_MIGRATIONS),
+            "migrations": len(REQUIRED_MIGRATIONS), "documents": len(REQUIRED_DOCUMENTS),
         },
     }
 
@@ -297,9 +275,15 @@ def task_runtime_from_contract(
         materialize_runtime_configs(payload, effective_config_dir)
         if effective_config_dir is not None else payload["configs"]
     )
+    # Contracts created before model_root became a first-class field remain
+    # valid for history browsing and checkpoint recovery.  New contracts are
+    # populated by load_runtime_contract(); this fallback is only for legacy
+    # persisted payloads and tests that exercise that compatibility path.
+    model_root = payload.get("model_root") or default_model_root()
     return {
         "runtime_contract_version": payload["contract_version"],
         "runtime_contract_path": payload["contract_path"],
+        "model_root": str(Path(model_root).expanduser().absolute()),
         "project_root": str(Path(payload["project_root"]).expanduser().absolute()),
         "python": {key: str(Path(value).expanduser().absolute()) for key, value in payload["python"].items()},
         "tools": {key: str(Path(value).expanduser().absolute()) for key, value in payload["tools"].items()},

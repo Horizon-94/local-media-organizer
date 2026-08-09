@@ -15,10 +15,13 @@ private var bundledAppVersion: String {
 private var bundledAppName: String {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "本地数据库"
 }
+private var bundledBuildDate: String {
+    Bundle.main.object(forInfoDictionaryKey: "HorizonBuildDate") as? String ?? "开发构建"
+}
 
 private func formatBytes(_ value: Int64) -> String {
     let formatter = ByteCountFormatter()
-    formatter.allowedUnits = [.useGB, .useTB]
+    formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB, .useTB]
     formatter.countStyle = .file
     return formatter.string(fromByteCount: value)
 }
@@ -59,6 +62,14 @@ struct PipelineStage: Decodable, Identifiable {
     let key: String; let name: String; let status: String
     let done: Int; let total: Int; let percent: Double; let description: String
     let errorSummary: String?; let logPath: String?
+    let currentItem: String?; let successCount: Int?; let skippedCount: Int?
+    let failedCount: Int?; let etaSeconds: Double?; let etaBasis: String?
+    let configuredWorkers: Int?; let actualWorkers: Int?; let ffmpegProcesses: Int?
+    let modelWorkers: Int?; let bytesProcessed: Int64?; let outputFiles: Int?
+    let startedWorkers: Int?; let aliveWorkers: Int?; let activeWorkers: Int?
+    let idleWorkers: Int?; let crashedWorkers: Int?; let restartCount: Int?
+    let queuePending: Int?; let queueRunning: Int?
+    let reportPaths: [String: String]?
     var id: String { key }
 }
 struct PipelineState: Decodable {
@@ -76,9 +87,14 @@ struct PipelineState: Decodable {
     let errorLogPath: String?
 }
 struct DatabaseState: Decodable { let integrityCheck: String; let foreignKeyErrorCount: Int }
+struct DatabasePreflight: Decodable {
+    let databasePath: String?
+    let databaseError: String?
+}
 struct RuntimeState: Decodable {
     let ready: Bool; let checks: [String: Bool]
     let uncoveredVideoSourceCount: Int?
+    let databasePreflight: DatabasePreflight?
 }
 struct RuntimeModelItem: Decodable, Identifiable {
     let key: String; let path: String; let ready: Bool
@@ -100,6 +116,11 @@ struct HardwareState: Decodable {
     let gpuName: String; let gpuCores: Int?; let unifiedMemoryGb: Double?
     let recommendation: HardwareRecommendation
 }
+struct LiveResources: Decodable {
+    let activePid: Int?; let processAlive: Bool; let cpuPercent: Double
+    let memoryBytes: Int64; let processCount: Int?; let swapUsedBytes: Int64?; let processState: String?
+    let sampleError: String?; let sourceScanned: Bool
+}
 struct RecentRun: Decodable, Identifiable {
     let runId: String?; let stage: String?; let status: String?
     let inputCount: Int?; let outputCount: Int?; let startedAt: String?
@@ -111,6 +132,7 @@ struct ExistingLibrary: Decodable, Identifiable {
     let database: String; let sourceRoot: String; let createdAt: String
     let status: String; let imageCount: Int; let videoCount: Int
     let elapsedSeconds: Double?; let elapsedHuman: String?
+    let isActive: Bool
     var id: String { taskPath }
     var displayName: String {
         "\(taskName)｜图片 \(imageCount)｜视频 \(videoCount)｜\(createdAt)"
@@ -122,9 +144,16 @@ struct ActiveRun: Decodable, Identifiable {
     let percent: Double?; let etaSeconds: Double?
     var id: String { runId ?? UUID().uuidString }
 }
+struct DuplicateMember: Decodable, Identifiable {
+    let sourceFileId: String; let sourceContentId: String?; let fileName: String
+    let relativePath: String; let absolutePath: String; let folderPath: String
+    let sizeBytes: Int64; let identityStatus: String; let isCanonical: Bool
+    var id: String { sourceFileId }
+}
 struct DuplicateItem: Decodable, Identifiable {
     let duplicateGroupId: String; let memberCount: Int?; let totalBytes: Int64?
     let canonicalReason: String?; let fileName: String?; let relativePath: String?
+    let members: [DuplicateMember]
     var id: String { duplicateGroupId }
 }
 struct DuplicatePayload: Decodable { let total: Int; let items: [DuplicateItem] }
@@ -161,7 +190,8 @@ struct Snapshot: Decodable {
     let configurationState: String
     let pipeline: PipelineState; let database: DatabaseState; let searchRuntime: RuntimeState
     let runtimeContract: RuntimeContractState
-    let hardware: HardwareState; let recentRuns: [RecentRun]; let existingLibraries: [ExistingLibrary]; let activeRuns: [ActiveRun]
+    let hardware: HardwareState; let resources: LiveResources
+    let recentRuns: [RecentRun]; let existingLibraries: [ExistingLibrary]; let activeRuns: [ActiveRun]
     let duplicateGroups: DuplicatePayload; let timelapseGroups: TimelapsePayload
     let savedProfilePath: String; let hasSavedProfile: Bool
     let savedProfile: SavedProcessingProfile?
@@ -173,6 +203,40 @@ struct TaskDetailResponse: Decodable {
     let startedAt: String?; let finishedAt: String?; let pipeline: PipelineState
     let elapsedSeconds: Double?; let elapsedHuman: String?
     let error: String?
+}
+struct StorageCategory: Decodable {
+    let bytes: Int64; let fileCount: Int
+    let safeToRemoveCount: Int; let affectsResumeCount: Int
+}
+struct StorageAuditResponse: Decodable {
+    let status: String; let taskId: String; let taskName: String
+    let totalBytes: Int64; let totalFileCount: Int
+    let categories: [String: StorageCategory]
+    let readOnly: Bool; let deletionPerformed: Bool; let policy: String
+}
+struct StorageCleanupItem: Decodable, Identifiable {
+    let path: String; let relativePath: String; let bytes: Int64
+    let category: String; let affectsResume: Bool; let reason: String
+    var id: String { path }
+}
+struct StorageCleanupPlan: Decodable {
+    let status: String; let planId: String; let taskId: String; let taskPath: String
+    let candidateCount: Int; let candidateBytes: Int64
+    let excludedResumeAffectingCount: Int; let items: [StorageCleanupItem]
+    let confirmationPhrase: String; let readOnly: Bool; let policy: String
+}
+struct StorageCleanupResult: Decodable {
+    let status: String; let planId: String; let removedCount: Int
+    let removedBytes: Int64; let deletionPerformed: Bool
+    let originalMediaTouched: Bool; let taskDatabaseTouched: Bool
+}
+struct StorageDifference: Decodable {
+    let fileCountDeltaRightMinusLeft: Int
+    let bytesDeltaRightMinusLeft: Int64
+}
+struct TaskComparisonResponse: Decodable {
+    let status: String; let categoryDifference: [String: StorageDifference]
+    let interpretation: String; let readOnly: Bool; let deletionPerformed: Bool
 }
 struct SearchCoverage: Decodable {
     let eligibleVisualUnitCount: Int
@@ -195,6 +259,7 @@ struct PersonClusterSummary: Decodable, Identifiable {
     let memberCount: Int; let distinctSourceCount: Int
     let clusterConfidence: String; let humanReviewStatus: String
     let previewPath: String?; let mediaType: String?; let timePositionMs: Int?
+    let tags: [String]?; let mergedClusterCount: Int?; let isLocalIdentity: Bool?
     var id: String { personClusterId }
 }
 struct PersonClusterCatalogResponse: Decodable {
@@ -206,6 +271,7 @@ struct SearchResult: Decodable, Identifiable {
         let label: String?; let labelZh: String?; let confidence: Double?
     }
     let resultId: String?; let sourceRelativePath: String?; let mediaType: String?
+    let sourceContentId: String?; let sourceFrameCount: Int?; let resultLevel: String?
     let timecode: String?; let previewSegmentStartTimecode: String?
     let previewSegmentEndTimecode: String?; let previewSegmentStartMs: Int?
     let hybridScore: Double?; let openclipCosine: Double?; let textSemanticScore: Double?
@@ -215,14 +281,41 @@ struct SearchResult: Decodable, Identifiable {
     let score: Double?; let hitReason: String?; let hitField: String?
     let sourceOnline: Bool?; let canOpenOriginal: Bool?
     let matchedObjectLabels: [ObjectLabelHit]?
+    let matchedTextTerms: [String]?
+    let audioTranscriptMatch: Bool?; let audioEvidenceId: String?
+    let audioStartTimeMs: Int?; let audioEndTimeMs: Int?; let audioHitTimeMs: Int?
     let personClusters: [PersonClusterLink]?
+    let userAnnotation: UserAssetAnnotation?
     var id: String { resultId ?? UUID().uuidString }
+}
+struct UserAssetAnnotation: Decodable {
+    let tags: [String]; let note: String; let favorite: Bool
+    let rating: Int; let ignored: Bool; let updatedAt: Double?
 }
 struct SearchResponse: Decodable {
     let status: String; let elapsedSeconds: Double?; let coverage: SearchCoverage?
     let resultCount: Int?; let resultItems: [SearchResult]?; let error: String?
     let resultTotalCount: Int?; let resultOffset: Int?; let resultLimit: Int?
     let nextResultOffset: Int?; let resultCountByMedia: [String: Int]?
+}
+struct SearchMetadataFilters: Decodable {
+    let mediaType: String?; let previewWindowMs: Int?; let pathPrefix: String?
+    let sourceMtimeMin: Int?; let sourceMtimeMax: Int?
+    let hasOcr: Bool?; let hasPerson: Bool?
+}
+struct SearchHistoryItem: Decodable, Identifiable {
+    let queryId: String; let queryText: String; let filters: SearchMetadataFilters
+    let resultCount: Int; let elapsedSeconds: Double; let createdAt: Double
+    var id: String { queryId }
+}
+struct SavedSearchItem: Decodable, Identifiable {
+    let savedSearchId: String; let displayName: String; let queryText: String
+    let filters: SearchMetadataFilters; let updatedAt: Double
+    var id: String { savedSearchId }
+}
+struct SearchMetadataResponse: Decodable {
+    let status: String; let taskId: String
+    let history: [SearchHistoryItem]; let savedSearches: [SavedSearchItem]
 }
 struct ActionResponse: Decodable {
     let status: String; let message: String?; let path: String?
@@ -268,6 +361,11 @@ final class ArchiveModel: ObservableObject {
     @Published var query = ""
     @Published var mediaType = "全部"
     @Published var previewWindow = "10 秒"
+    @Published var searchPathPrefix = ""
+    @Published var searchDateFrom = ""
+    @Published var searchDateTo = ""
+    @Published var searchRequireOCR = false
+    @Published var searchRequirePerson = false
     @Published var searching = false
     @Published var searchStatus = ""
     @Published var searchDiagnostic = ""
@@ -281,11 +379,20 @@ final class ArchiveModel: ObservableObject {
     @Published var searchCancelling = false
     @Published var searchPrewarmStatus = "搜索模型将在后台预热"
     @Published var searchPrewarmReady = false
+    @Published var searchHistory: [SearchHistoryItem] = []
+    @Published var savedSearches: [SavedSearchItem] = []
+    @Published var savedSearchName = ""
+    @Published var searchMetadataStatus = ""
     @Published var activePersonClusterId = ""
+    @Published var activePersonSourceId = ""
     @Published var selectedPersonClusterId = ""
     @Published var personClusterCatalog: [PersonClusterSummary] = []
     @Published var personClusterLoading = false
     @Published var personCapabilityNote = ""
+    @Published var personDisplayName = ""
+    @Published var personTags = ""
+    @Published var personMergeTargetId = ""
+    @Published var personEditStatus = ""
     @Published var sourceFolder = ""
     @Published var libraryFolder = ""
     @Published var taskName: String = {
@@ -307,6 +414,14 @@ final class ArchiveModel: ObservableObject {
     @Published var historyDetail: TaskDetailResponse?
     @Published var historyLoading = false
     @Published var historyError = ""
+    @Published var storageAudit: StorageAuditResponse?
+    @Published var storageAuditError = ""
+    @Published var storageCleanupPlan: StorageCleanupPlan?
+    @Published var storageCleanupConfirmation = ""
+    @Published var storageCleanupResult = ""
+    @Published var comparisonLeftTaskPath = ""
+    @Published var comparisonRightTaskPath = ""
+    @Published var taskComparison: TaskComparisonResponse?
     private var videoPreviewControllers: [NSWindowController] = []
     private var activeSearchProcess: Process?
     private var searchElapsedTimer: Timer?
@@ -317,22 +432,26 @@ final class ArchiveModel: ObservableObject {
     private var lastSearchMediaSummary = ""
     private var searchPrewarmAttempted = false
 
-    let taskModes = ["第一次完整整理", "增量整理", "修复缺失内容", "重建搜索入口"]
+    let taskModes = ["第一次完整整理", "增量整理", "修复缺失内容", "重建搜索入口", "补充音频搜索"]
 
     var taskActionTitle: String {
         switch taskMode {
+        case "增量整理（尚未开放）": return "增量整理尚未开放"
         case "增量整理": return "开始增量整理"
         case "修复缺失内容": return "开始修复缺失内容"
         case "重建搜索入口": return "开始重建搜索入口"
+        case "补充音频搜索": return "开始补充音频搜索"
         default: return "开始第一次完整整理"
         }
     }
 
     var taskModeExplanation: String {
         switch taskMode {
-        case "增量整理": return "扫描新增或发生变化的素材；已经成功的项目不会重复处理。"
-        case "修复缺失内容": return "补做当前素材库中缺失的派生产物或模型结果；已经成功的项目不会重跑。"
-        case "重建搜索入口": return "保留已有识别结果，只重建搜索所需的向量和入口。"
+        case "增量整理（尚未开放）": return "计划用于扫描新增或变化素材并复用已有结果；当前版本尚未开放，避免误以为已可安全使用。"
+        case "增量整理": return "在原素材库中重新对账，只处理新增、变更或缺少结果的素材；已完成且有效的结果不会重跑。"
+        case "修复缺失内容": return "逐阶段核对数据库与正式产物；只补缺失或无效结果，已有成功记录不重跑。"
+        case "重建搜索入口": return "只复用现有描述、OCR、标签和向量，重建数据库搜索入口；不读取原始素材，也不运行识别模型。"
+        case "补充音频搜索": return "只读取所选索引中的视频，提取人声、转写文字并建立音频文本向量；不会重跑前19阶段。临时音频在逐视频写库后立即删除，只保留文本、时间点和向量。"
         default: return "从素材扫描开始建立一个新的完整素材库。"
         }
     }
@@ -340,10 +459,15 @@ final class ArchiveModel: ObservableObject {
     private var helperURL: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/素材大整理Python") }
     private var configURL: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/app_config.json") }
     private var refreshTimer: Timer?
+    private var lastSnapshotRequestAt = Date.distantPast
+    private var snapshotGeneration = 0
     init() {
         loadSnapshot()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self, self.page == .running || !(self.snapshot?.activeRuns.isEmpty ?? true) else { return }
+            let minimumInterval = NSApp.isActive ? 2.0 : 5.0
+            guard Date().timeIntervalSince(self.lastSnapshotRequestAt) >= minimumInterval else { return }
+            self.lastSnapshotRequestAt = Date()
             self.loadSnapshot()
         }
     }
@@ -511,7 +635,10 @@ final class ArchiveModel: ObservableObject {
     }
 
     func loadSnapshot() {
+        snapshotGeneration += 1
+        let requestedGeneration = snapshotGeneration
         runHelper(["snapshot"]) { data, error in
+            guard requestedGeneration == self.snapshotGeneration else { return }
             guard let data else {
                 self.loadError = error ?? "无法读取中心数据库状态"
                 return
@@ -550,6 +677,7 @@ final class ArchiveModel: ObservableObject {
                         self.frameWorkers = state.hardware.recommendation.frameExtractWorkers
                     }
                     self.selectedExistingTaskPath = state.existingLibraries.first?.taskPath ?? ""
+                    if state.searchRuntime.ready { self.loadSearchMetadata() }
                 }
                 let pipelineJustCompleted = (
                     !wasPipelineComplete
@@ -577,6 +705,78 @@ final class ArchiveModel: ObservableObject {
                 self.historyError = error.localizedDescription
             }
         }
+    }
+
+    func loadStorageAudit(_ library: ExistingLibrary) {
+        storageAuditError = "正在只读统计任务目录…"; storageAudit = nil
+        runHelper(["storage-audit", "--task", library.taskPath]) { data, error in
+            guard let data else { self.storageAuditError = error ?? "无法读取存储审计"; return }
+            do {
+                self.storageAudit = try self.decoder().decode(StorageAuditResponse.self, from: data)
+                self.storageAuditError = ""
+            } catch { self.storageAuditError = error.localizedDescription }
+        }
+    }
+
+    func loadStorageCleanupPlan(_ library: ExistingLibrary) {
+        storageAuditError = "正在生成只读清理计划…"
+        storageCleanupPlan = nil; storageCleanupConfirmation = ""; storageCleanupResult = ""
+        runHelper(["storage-cleanup-plan", "--task", library.taskPath]) { data, error in
+            guard let data else { self.storageAuditError = error ?? "无法生成清理计划"; return }
+            do {
+                self.storageCleanupPlan = try self.decoder().decode(StorageCleanupPlan.self, from: data)
+                self.storageAuditError = ""
+            } catch { self.storageAuditError = error.localizedDescription }
+        }
+    }
+
+    func applyStorageCleanup(_ library: ExistingLibrary) {
+        guard let plan = storageCleanupPlan,
+              storageCleanupConfirmation == plan.confirmationPhrase else {
+            storageAuditError = "确认短语不匹配；没有删除任何内容"; return
+        }
+        storageAuditError = "正在重新核对计划并清理明确候选…"
+        runHelper([
+            "storage-cleanup-apply", "--task", library.taskPath,
+            "--plan-id", plan.planId,
+            "--confirmation-phrase", storageCleanupConfirmation,
+        ]) { data, error in
+            guard let data else { self.storageAuditError = error ?? "清理未执行"; return }
+            do {
+                let result = try self.decoder().decode(StorageCleanupResult.self, from: data)
+                self.storageCleanupResult = "已删除 \(result.removedCount) 项，释放 \(formatBytes(result.removedBytes))；原始素材和任务数据库未触碰。"
+                self.storageCleanupPlan = nil; self.storageCleanupConfirmation = ""
+                self.storageAuditError = ""
+                self.loadStorageAudit(library)
+            } catch { self.storageAuditError = error.localizedDescription }
+        }
+    }
+
+    func compareSelectedTasks() {
+        guard !comparisonLeftTaskPath.isEmpty, !comparisonRightTaskPath.isEmpty,
+              comparisonLeftTaskPath != comparisonRightTaskPath else {
+            storageAuditError = "请选择两个不同的历史任务"; return
+        }
+        storageAuditError = "正在只读比较两个任务…"; taskComparison = nil
+        runHelper([
+            "compare-tasks", "--left-task", comparisonLeftTaskPath,
+            "--right-task", comparisonRightTaskPath,
+        ]) { data, error in
+            guard let data else { self.storageAuditError = error ?? "无法比较任务"; return }
+            do {
+                self.taskComparison = try self.decoder().decode(TaskComparisonResponse.self, from: data)
+                self.storageAuditError = ""
+            } catch { self.storageAuditError = error.localizedDescription }
+        }
+    }
+
+    func activateLibrary(_ library: ExistingLibrary) {
+        runAction(
+            ["activate-library", "--task", library.taskPath],
+            pendingMessage: "正在切换搜索素材库…",
+            successPage: .search,
+            clearSearchOnSuccess: true
+        )
     }
 
     func chooseSourceFolder() {
@@ -614,7 +814,7 @@ final class ArchiveModel: ObservableObject {
             guard !selectedExistingTaskPath.isEmpty else {
                 actionFailed = true; actionMessage = "请先选择一个已有素材库"; return
             }
-            let modeMap = ["增量整理":"incremental", "修复缺失内容":"repair", "重建搜索入口":"rebuild_search"]
+            let modeMap = ["增量整理":"incremental", "修复缺失内容":"repair", "重建搜索入口":"rebuild_search", "补充音频搜索":"audio_enrichment"]
             runAction(
                 ["start-existing-task", "--task", selectedExistingTaskPath, "--task-mode", modeMap[taskMode] ?? "repair"],
                 pendingMessage: "正在准备\(taskMode)…",
@@ -626,7 +826,7 @@ final class ArchiveModel: ObservableObject {
         guard !sourceFolder.isEmpty, !libraryFolder.isEmpty, !cleanName.isEmpty else {
             actionFailed = true; actionMessage = "请选择素材文件夹、索引保存位置并填写任务名称"; return
         }
-        let modeMap = ["第一次完整整理":"full", "增量整理":"incremental", "修复缺失内容":"repair", "重建搜索入口":"rebuild_search"]
+        let modeMap = ["第一次完整整理":"full"]
         runAction(
             ["start-task", "--source", sourceFolder, "--workspace-root", libraryFolder, "--name", cleanName, "--task-mode", modeMap[taskMode] ?? "full"],
             pendingMessage: "正在准备\(taskMode)…",
@@ -658,7 +858,25 @@ final class ArchiveModel: ObservableObject {
         runAction(["save-profile", "--scheduler-mode", scheduler, "--model-workers", String(modelWorkers), "--frame-extract-workers", String(frameWorkers), "--frame-interval-seconds", interval, "--high-value-mode", highValue, "--image-scope", scope], pendingMessage: "正在保存设置…")
     }
 
-    private func runAction(_ arguments: [String], pendingMessage: String, successPage: ArchivePage? = nil) {
+    private func clearSearchForLibraryChange() {
+        activeSearchProcess?.terminate()
+        activeSearchProcess = nil
+        searching = false; searchCancelling = false; stopSearchTimer()
+        searchResults = []; bufferedSearchResults = []
+        searchCoverage = nil; searchTotalCount = 0; nextSearchOffset = nil
+        serverNextSearchOffset = nil; lastSearchSignature = ""
+        activePersonClusterId = ""; activePersonSourceId = ""
+        selectedPersonClusterId = ""; searchDiagnostic = ""
+        searchHistory = []; savedSearches = []; savedSearchName = ""
+        searchStatus = "已切换搜索素材库；请输入关键词开始搜索"
+    }
+
+    private func runAction(
+        _ arguments: [String],
+        pendingMessage: String,
+        successPage: ArchivePage? = nil,
+        clearSearchOnSuccess: Bool = false
+    ) {
         guard !actionInProgress else { return }
         actionInProgress = true
         actionFailed = false; actionMessage = pendingMessage
@@ -667,6 +885,11 @@ final class ArchiveModel: ObservableObject {
             if let data, let response = try? self.decoder().decode(ActionResponse.self, from: data), response.status == "PASS" {
                 self.actionMessage = [response.message, response.path].compactMap { $0 }.joined(separator: " · ")
                 self.actionFailed = false
+                if clearSearchOnSuccess {
+                    self.clearSearchForLibraryChange()
+                    self.loadSearchMetadata()
+                    self.loadPersonClusters()
+                }
                 if let successPage { self.page = successPage }
                 self.loadSnapshot()
             } else if let data, let response = try? self.decoder().decode(ErrorResponse.self, from: data) {
@@ -702,17 +925,23 @@ final class ArchiveModel: ObservableObject {
         } ?? ""
         searchStatus = searchTotalCount == 0
             ? "没有找到匹配素材"
-            : "共 \(searchTotalCount) 条可靠结果\(lastSearchMediaSummary) · 当前显示 \(searchResults.count) 条\(reused ? " · 已即时复用本次结果" : elapsed) · 查询没有写入中心数据库"
+            : "共 \(searchTotalCount) 条可靠结果\(lastSearchMediaSummary) · 当前显示 \(searchResults.count) 条\(reused ? " · 已即时复用本次结果" : elapsed) · 搜索结果只读，查询历史仅保存在当前素材库"
     }
 
     func search(loadMore: Bool = false) {
         if loadMore, !activePersonClusterId.isEmpty {
-            searchPersonCluster(activePersonClusterId, loadMore: true)
+            searchPersonCluster(activePersonClusterId, loadMore: true, sourceContentId: activePersonSourceId.isEmpty ? nil : activePersonSourceId)
+            return
+        }
+        guard !searching else { return }
+        guard snapshot?.searchRuntime.ready == true else {
+            searchStatus = "当前素材库尚未通过搜索预检"
             return
         }
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { searchStatus = "请输入要搜索的内容"; return }
-        let signature = "\(clean)\u{0}\(mediaType)\u{0}\(previewWindow)"
+        guard let advancedArguments = searchAdvancedArguments() else { return }
+        let signature = "\(clean)\u{0}\(mediaType)\u{0}\(previewWindow)\u{0}\(searchPathPrefix)\u{0}\(searchDateFrom)\u{0}\(searchDateTo)\u{0}\(searchRequireOCR)\u{0}\(searchRequirePerson)"
         let continuing = loadMore && signature == lastSearchSignature
         if continuing && searchResults.count < bufferedSearchResults.count {
             showNextBufferedSearchPage()
@@ -738,7 +967,11 @@ final class ArchiveModel: ObservableObject {
         startSearchTimer()
         if !continuing {
             searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
+            // A new query must not display coverage from the previous media
+            // filter while the replacement search is still running.
+            searchCoverage = nil
             lastSearchSignature = signature; activePersonClusterId = ""
+            activePersonSourceId = ""
             selectedPersonClusterId = ""; searchDiagnostic = ""
             bufferedSearchResults = []; serverNextSearchOffset = nil
             lastSearchMediaSummary = ""
@@ -746,13 +979,13 @@ final class ArchiveModel: ObservableObject {
         searchStatus = continuing
             ? "正在获取下一批结果；已有结果会继续保留…"
             : "正在搜索“\(clean)”；下方会实时显示范围、阶段和耗时…"
-        let media = mediaType == "视频" ? "video" : (mediaType == "图片" ? "image" : "all")
+        let media = mediaType == "视频" ? "video" : (mediaType == "图片" ? "image" : (mediaType == "音频（人声转写）" ? "audio" : "all"))
         let window = previewWindow == "5 秒" ? "5000" : "10000"
         runSearchHelper([
             "search", "--query", clean, "--media-type", media,
             "--preview-window-ms", window, "--result-offset", String(offset),
             "--result-limit", "200",
-        ], progress: { event in
+        ] + advancedArguments, progress: { event in
             self.searchProgress = event
             if let elapsed = event.elapsedSeconds {
                 self.searchElapsedSeconds = max(self.searchElapsedSeconds, elapsed)
@@ -764,6 +997,7 @@ final class ArchiveModel: ObservableObject {
             self.stopSearchTimer()
             if wasCancelled {
                 self.searchProgress = nil
+                self.loadSearchMetadata()
                 self.searchStatus = "已取消本次搜索；已有结果未受影响"
                 return
             }
@@ -804,6 +1038,112 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
+    func loadSearchMetadata() {
+        runHelper(["search-metadata"]) { data, error in
+            guard let data else {
+                self.searchMetadataStatus = error ?? "无法读取搜索历史"
+                return
+            }
+            do {
+                let response = try self.decoder().decode(SearchMetadataResponse.self, from: data)
+                self.searchHistory = response.history
+                self.savedSearches = response.savedSearches
+                self.searchMetadataStatus = ""
+            } catch {
+                self.searchMetadataStatus = "搜索历史解析失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func applySearchMetadata(_ queryText: String, filters: SearchMetadataFilters) {
+        query = queryText
+        mediaType = filters.mediaType == "video" ? "视频" : (filters.mediaType == "image" ? "图片" : (filters.mediaType == "audio" ? "音频（人声转写）" : "全部"))
+        previewWindow = filters.previewWindowMs == 5000 ? "5 秒" : "10 秒"
+        searchPathPrefix = filters.pathPrefix ?? ""
+        searchRequireOCR = filters.hasOcr ?? false
+        searchRequirePerson = filters.hasPerson ?? false
+        searchDateFrom = filters.sourceMtimeMin.map(dateText) ?? ""
+        searchDateTo = filters.sourceMtimeMax.map(dateText) ?? ""
+    }
+
+    private func dateText(_ epoch: Int) -> String {
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(epoch)))
+    }
+
+    private func searchAdvancedArguments() -> [String]? {
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        var arguments: [String] = []
+        let prefix = searchPathPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !prefix.isEmpty { arguments += ["--path-prefix", prefix] }
+        if !searchDateFrom.isEmpty {
+            guard let date = formatter.date(from: searchDateFrom) else {
+                searchStatus = "开始日期请使用 YYYY-MM-DD"; return nil
+            }
+            arguments += ["--source-mtime-min", String(Int(date.timeIntervalSince1970))]
+        }
+        if !searchDateTo.isEmpty {
+            guard let date = formatter.date(from: searchDateTo),
+                  let end = Calendar.current.date(byAdding: .day, value: 1, to: date) else {
+                searchStatus = "结束日期请使用 YYYY-MM-DD"; return nil
+            }
+            arguments += ["--source-mtime-max", String(Int(end.timeIntervalSince1970) - 1)]
+        }
+        if searchRequireOCR { arguments.append("--has-ocr") }
+        if searchRequirePerson { arguments.append("--has-person") }
+        return arguments
+    }
+
+    func saveCurrentSearch() {
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanName = savedSearchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanQuery.isEmpty, !cleanName.isEmpty else {
+            searchMetadataStatus = "请填写保存名称并输入搜索词"
+            return
+        }
+        let media = mediaType == "视频" ? "video" : (mediaType == "图片" ? "image" : (mediaType == "音频（人声转写）" ? "audio" : "all"))
+        let window = previewWindow == "5 秒" ? "5000" : "10000"
+        guard let advancedArguments = searchAdvancedArguments() else { return }
+        runHelper([
+            "save-search", "--name", cleanName, "--query", cleanQuery,
+            "--media-type", media, "--preview-window-ms", window,
+        ] + advancedArguments) { data, error in
+            if data != nil {
+                self.searchMetadataStatus = "已保存到当前素材库"
+                self.savedSearchName = ""
+                self.loadSearchMetadata()
+            } else {
+                self.searchMetadataStatus = error ?? "保存搜索失败"
+            }
+        }
+    }
+
+    func saveResultAnnotation(
+        _ result: SearchResult,
+        tags: String,
+        note: String,
+        favorite: Bool,
+        rating: Int,
+        ignored: Bool
+    ) {
+        guard let sourceId = result.sourceContentId, !sourceId.isEmpty else {
+            searchMetadataStatus = "当前结果缺少来源标识，无法保存备注"
+            return
+        }
+        runHelper([
+            "annotate-source", "--source-content-id", sourceId,
+            "--tags", tags, "--note", note,
+            "--favorite", favorite ? "true" : "false",
+            "--rating", String(rating),
+            "--ignored", ignored ? "true" : "false",
+        ]) { data, error in
+            self.searchMetadataStatus = data != nil
+                ? "素材标签、备注和星标已保存；模型结果未修改"
+                : (error ?? "保存素材备注失败")
+        }
+    }
+
     func loadPersonClusters() {
         guard !personClusterLoading else { return }
         personClusterLoading = true
@@ -823,7 +1163,60 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
-    func searchPersonCluster(_ clusterId: String, loadMore: Bool = false) {
+    func preparePersonEditor() {
+        guard let person = personClusterCatalog.first(where: { $0.personClusterId == selectedPersonClusterId }) else {
+            personDisplayName = ""; personTags = ""; personMergeTargetId = ""; return
+        }
+        personDisplayName = person.displayName.hasPrefix("匿名人物 ") ? "" : person.displayName
+        personTags = (person.tags ?? []).joined(separator: "，")
+        if personMergeTargetId == selectedPersonClusterId { personMergeTargetId = "" }
+    }
+
+    func savePersonName() {
+        let name = personDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedPersonClusterId.isEmpty, !name.isEmpty else {
+            personEditStatus = "请先选择人物组并填写名称"; return
+        }
+        runHelper([
+            "person-name", "--person-id", selectedPersonClusterId,
+            "--display-name", name, "--tags", personTags,
+        ]) { data, error in
+            if data != nil {
+                self.personEditStatus = "名称与标签已保存在本机"
+                self.loadPersonClusters()
+            } else { self.personEditStatus = error ?? "保存失败" }
+        }
+    }
+
+    func mergeSelectedPerson() {
+        guard !selectedPersonClusterId.isEmpty, !personMergeTargetId.isEmpty else {
+            personEditStatus = "请选择要归入的目标人物"; return
+        }
+        runHelper([
+            "person-merge", "--source-person-id", selectedPersonClusterId,
+            "--target-person-id", personMergeTargetId,
+        ]) { data, error in
+            if data != nil {
+                self.selectedPersonClusterId = self.personMergeTargetId
+                self.personMergeTargetId = ""
+                self.personEditStatus = "已合并为同一个本地人物；可随时拆分"
+                self.loadPersonClusters()
+            } else { self.personEditStatus = error ?? "合并失败" }
+        }
+    }
+
+    func detachSelectedPerson() {
+        guard !selectedPersonClusterId.isEmpty else { return }
+        runHelper(["person-detach", "--person-id", selectedPersonClusterId]) { data, error in
+            if data != nil {
+                self.personEditStatus = "已取消人工合并，恢复为独立机器人物组"
+                self.selectedPersonClusterId = ""
+                self.loadPersonClusters()
+            } else { self.personEditStatus = error ?? "拆分失败" }
+        }
+    }
+
+    func searchPersonCluster(_ clusterId: String, loadMore: Bool = false, sourceContentId: String? = nil) {
         let cleanId = clusterId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanId.isEmpty else { return }
         let continuing = loadMore && activePersonClusterId == cleanId
@@ -833,17 +1226,22 @@ final class ArchiveModel: ObservableObject {
         if !continuing {
             searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
             searchCoverage = nil; searchDiagnostic = ""; activePersonClusterId = cleanId
+            activePersonSourceId = sourceContentId ?? ""
             selectedPersonClusterId = cleanId
             lastSearchSignature = "person:\(cleanId)"
         }
-        searchStatus = continuing ? "正在加载更多同一人物画面…" : "正在从中心数据库读取同一匿名人物的画面…"
-        let media = mediaType == "视频" ? "video" : (mediaType == "图片" ? "image" : "all")
+        searchStatus = continuing ? "正在加载更多结果…" : (sourceContentId == nil ? "正在按素材归并待确认人物组…" : "正在展开这个素材中的人物画面…")
+        let media = mediaType == "视频" ? "video" : (mediaType == "图片" ? "image" : (mediaType == "音频（人声转写）" ? "audio" : "all"))
         let window = previewWindow == "5 秒" ? "5000" : "10000"
-        runHelper([
+        var arguments = [
             "person-cluster", "--cluster-id", cleanId, "--media-type", media,
             "--preview-window-ms", window, "--result-offset", String(offset),
             "--result-limit", "30",
-        ]) { data, error in
+        ]
+        if let sourceContentId, !sourceContentId.isEmpty {
+            arguments += ["--source-content-id", sourceContentId]
+        }
+        runHelper(arguments) { data, error in
             self.searching = false
             if let data, let response = try? self.decoder().decode(SearchResponse.self, from: data),
                response.status == "PASS" {
@@ -858,7 +1256,9 @@ final class ArchiveModel: ObservableObject {
                 self.nextSearchOffset = response.nextResultOffset
                 self.searchStatus = self.searchTotalCount == 0
                     ? "没有找到可确认的同一人物画面"
-                    : "同一匿名人物共有 \(self.searchTotalCount) 个画面 · 当前显示 \(self.searchResults.count) 个 · 只读中心数据库，未运行模型"
+                    : (sourceContentId == nil
+                        ? "待确认人物组涉及 \(self.searchTotalCount) 个素材 · 当前显示 \(self.searchResults.count) 个；可继续展开素材内画面"
+                        : "这个素材中共有 \(self.searchTotalCount) 个相关画面 · 当前显示 \(self.searchResults.count) 个")
             } else if let data, let failure = try? self.decoder().decode(ErrorResponse.self, from: data) {
                 self.searchStatus = failure.displayMessage.isEmpty ? "读取同一人物失败" : failure.displayMessage
                 self.searchDiagnostic = failure.diagnosticText
@@ -917,6 +1317,18 @@ final class ArchiveModel: ObservableObject {
         if let path = group.frames.compactMap({ $0.sourcePath }).first, !path.isEmpty {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
+    }
+
+    func revealDuplicate(_ member: DuplicateMember) {
+        guard !member.absolutePath.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([
+            URL(fileURLWithPath: member.absolutePath)
+        ])
+    }
+
+    func openDuplicateFolder(_ member: DuplicateMember) {
+        guard !member.folderPath.isEmpty else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: member.folderPath, isDirectory: true))
     }
 }
 
@@ -988,8 +1400,11 @@ struct Sidebar: View {
                 Label(libraryReady ? (state.database.integrityCheck == "ok" ? "中心数据库正常" : "数据库需要检查") : "尚未创建素材库", systemImage: libraryReady ? "checkmark.shield" : "tray")
                     .font(.caption).foregroundStyle(libraryReady && state.database.integrityCheck == "ok" ? archiveGreen : archiveMuted)
             }
-            Text("版本 \(bundledAppVersion)").font(.caption2).foregroundStyle(archiveMuted)
-            Text("© 2026 Horizon-94 · GPL-3.0").font(.caption2).foregroundStyle(archiveMuted)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("© 2026 Horizon-94 · GPL-3.0").font(.caption2).foregroundStyle(archiveMuted)
+                Text("版本 \(bundledAppVersion)").font(.caption2).foregroundStyle(archiveMuted)
+                Text("构建 \(bundledBuildDate)").font(.system(size: 9)).foregroundStyle(archiveMuted)
+            }
         }.padding(24).frame(width: 250).background(Color.white.opacity(0.78))
     }
 }
@@ -1026,6 +1441,10 @@ struct NewTaskPage: View {
                             FormRow(number: "3", title: "索引保存位置") {
                                 HStack { TextField("选择派生文件、数据库和报告的保存位置", text: $model.libraryFolder).textFieldStyle(.roundedBorder); Button("浏览…") { model.chooseLibraryFolder() } }
                             }
+                            if !model.libraryFolder.isEmpty {
+                                Text("软件会在这里创建 tasks/时间_任务名，用它隔离数据库、日志、阶段产物和断点；原始素材不放入其中。")
+                                    .font(.caption).foregroundStyle(archiveMuted).padding(.leading, 154)
+                            }
                             FormRow(number: "4", title: "任务名称") { TextField("任务名称", text: $model.taskName).textFieldStyle(.roundedBorder) }
                         } else {
                             FormRow(number: "2", title: "已有素材库") {
@@ -1059,7 +1478,7 @@ struct NewTaskPage: View {
                             SummaryRow("GPU", state.hardware.gpuCores.map { "\($0) 核" } ?? "系统未公开")
                             SummaryRow("统一内存", state.hardware.unifiedMemoryGb.map { String(format: "%.0f GB", $0) } ?? "系统未公开")
                             Divider(); Text("保守推荐模型并发 \(state.hardware.recommendation.modelWorkers) 路 · 本机估算上限 \(state.hardware.recommendation.estimatedMaxModelWorkers) 路").font(.caption).foregroundStyle(archiveBlue)
-                            Text("抽帧推荐 \(state.hardware.recommendation.frameExtractWorkers) 路；若出现内存压力，请在设置中降低并发。").font(.caption2).foregroundStyle(archiveMuted)
+                            Text("抽帧推荐 \(state.hardware.recommendation.frameExtractWorkers) 路；实际运行遇到内存压力会自动降低。").font(.caption2).foregroundStyle(archiveMuted)
                             Button("查看并调整设置") { model.page = .settings }.buttonStyle(.link)
                         } }
                         Panel { VStack(alignment: .leading, spacing: 11) {
@@ -1113,8 +1532,11 @@ struct RunningPage: View {
                     HStack { Text(state.activeRuns.isEmpty ? "当前没有正在运行的任务" : "正在处理 \(state.activeRuns.count) 个阶段").font(.title3.bold()); Spacer(); Text(String(format: "%.1f%%", state.pipeline.overallPercent)).font(.title2.bold()).foregroundStyle(archiveBlue) }
                     ProgressView(value: state.pipeline.overallPercent, total: 100).tint(archiveBlue)
                     Text(state.pipeline.searchReady ? "图片与视频搜索已经可用" : "搜索将在所需阶段完成后开放").font(.subheadline).foregroundStyle(archiveMuted)
+                    if !state.searchRuntime.ready, let error = state.searchRuntime.databasePreflight?.databaseError, !error.isEmpty {
+                        Text("搜索数据库不可用：\(error)").font(.caption).foregroundStyle(archiveOrange)
+                    }
                     if let eta = state.pipeline.overallEtaSeconds {
-                        Text("全任务预计剩余 \(formatSeconds(eta))").font(.headline).foregroundStyle(archiveBlue)
+                        Text("当前阶段预计剩余 \(formatSeconds(eta))").font(.headline).foregroundStyle(archiveBlue)
                         Text(state.pipeline.overallEtaBasis ?? "按当前剩余工作量动态估算").font(.caption).foregroundStyle(archiveMuted)
                     }
                     HStack {
@@ -1130,6 +1552,20 @@ struct RunningPage: View {
                         }
                     }
                     } }
+                    if state.resources.processAlive {
+                        Panel { VStack(alignment: .leading, spacing: 8) {
+                            Label("当前子进程资源", systemImage: "gauge.with.dots.needle.67percent").font(.headline)
+                            HStack(spacing: 24) {
+                                SummaryRow("PID", String(state.resources.activePid ?? 0))
+                                SummaryRow("进程树节点", String(state.resources.processCount ?? 1))
+                                SummaryRow("CPU 总和（100%=1核）", String(format: "%.1f%%", state.resources.cpuPercent))
+                                SummaryRow("进程树 RSS（近似）", formatBytes(state.resources.memoryBytes))
+                                SummaryRow("系统 Swap", state.resources.swapUsedBytes.map(formatBytes) ?? "系统未公开")
+                            }
+                            Text("CPU 与内存汇总当前阶段的完整进程树；Swap 是整台 Mac 的系统值。任务结束后本卡片自动隐藏。")
+                                .font(.caption).foregroundStyle(archiveMuted)
+                        } }
+                    }
                 if let failedStage = state.pipeline.failedStageName, !failedStage.isEmpty {
                     Panel { VStack(alignment: .leading, spacing: 9) {
                         Label("任务在“\(failedStage)”失败", systemImage: "exclamationmark.triangle.fill")
@@ -1172,6 +1608,35 @@ struct RunningPage: View {
                                     .font(.caption)
                                     .foregroundStyle(stage.status == "failed" ? Color.red : archiveMuted)
                                     .textSelection(.enabled)
+                                if stage.status == "running" {
+                                    if let item = stage.currentItem, !item.isEmpty {
+                                        Text("当前：\(item)").font(.caption2).foregroundStyle(archiveBlue).lineLimit(2)
+                                    }
+                                    HStack(spacing: 12) {
+                                        Text("成功 \(stage.successCount ?? 0)")
+                                        Text("跳过 \(stage.skippedCount ?? 0)")
+                                        Text("失败 \(stage.failedCount ?? 0)")
+                                        if let workers = stage.configuredWorkers { Text("并发上限 \(workers) 路") }
+                                        if let workers = stage.actualWorkers { Text("当前工作 \(workers) 路") }
+                                        if let ffmpeg = stage.ffmpegProcesses { Text("FFmpeg \(ffmpeg) 个") }
+                                        if let models = stage.modelWorkers { Text("模型并发 \(models) 路") }
+                                        if let active = stage.activeWorkers, let idle = stage.idleWorkers {
+                                            Text("活动 \(active) · 空闲 \(idle)")
+                                        }
+                                        if let pending = stage.queuePending, let running = stage.queueRunning {
+                                            Text("队列待处理 \(pending) · 运行中 \(running)")
+                                        }
+                                        if let restarts = stage.restartCount, restarts > 0 {
+                                            Text("已自动重启 \(restarts) 次").foregroundStyle(Color.orange)
+                                        }
+                                    }.font(.caption2).foregroundStyle(archiveMuted)
+                                    if let bytes = stage.bytesProcessed, bytes > 0 {
+                                        Text("本阶段已生成 \(stage.outputFiles ?? 0) 个文件 · \(formatBytes(bytes))")
+                                            .font(.caption2).foregroundStyle(archiveMuted)
+                                    }
+                                    Text(stage.etaSeconds.map { "预计剩余 \(formatSeconds($0))" } ?? (stage.etaBasis ?? "正在估算"))
+                                        .font(.caption2).foregroundStyle(archiveMuted)
+                                }
                             }
                             Spacer(); VStack(alignment: .trailing) {
                                 Text(stage.status == "success" ? "已完成" : (stage.status == "running" ? "进行中" : (stage.status == "failed" ? "失败" : "待处理")))
@@ -1208,10 +1673,87 @@ struct HistoryPage: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text(library.status).fontWeight(.semibold)
+                    Text(library.isActive ? "当前搜索库" : library.status).fontWeight(.semibold)
                     Button("查看阶段明细") { model.loadHistoryDetail(library) }
+                    Button("只读存储审计") { model.loadStorageAudit(library) }
+                    Button("生成安全清理计划") { model.loadStorageCleanupPlan(library) }
+                    if !library.isActive {
+                        Button("切换为当前搜索库") { model.activateLibrary(library) }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
             } } }
+            Panel { VStack(alignment: .leading, spacing: 10) {
+                Text("历史任务对比").font(.headline)
+                Text("分别比较正式产物、数据库、备份、日志和临时文件；不会删除任何内容。")
+                    .font(.caption).foregroundStyle(archiveMuted)
+                HStack {
+                    Picker("左侧任务", selection: $model.comparisonLeftTaskPath) {
+                        Text("请选择").tag("")
+                        ForEach(libraries) { Text($0.taskName).tag($0.taskPath) }
+                    }
+                    Picker("右侧任务", selection: $model.comparisonRightTaskPath) {
+                        Text("请选择").tag("")
+                        ForEach(libraries) { Text($0.taskName).tag($0.taskPath) }
+                    }
+                    Button("开始只读比较") { model.compareSelectedTasks() }
+                }
+                if let comparison = model.taskComparison {
+                    Text(comparison.interpretation).font(.caption).foregroundStyle(archiveMuted)
+                    ForEach(comparison.categoryDifference.keys.sorted(), id: \.self) { key in
+                        if let row = comparison.categoryDifference[key] {
+                            Text("\(key)：文件 \(row.fileCountDeltaRightMinusLeft >= 0 ? "+" : "")\(row.fileCountDeltaRightMinusLeft)，容量 \(formatBytes(row.bytesDeltaRightMinusLeft))")
+                                .font(.caption).textSelection(.enabled)
+                        }
+                    }
+                }
+            } }
+            if let audit = model.storageAudit {
+                Panel { VStack(alignment: .leading, spacing: 8) {
+                    Text("\(audit.taskName) · 只读存储审计").font(.headline)
+                    Text("共 \(audit.totalFileCount.formatted()) 个文件，\(formatBytes(audit.totalBytes)) · \(audit.policy)")
+                        .font(.caption).foregroundStyle(archiveMuted)
+                    ForEach(audit.categories.keys.sorted(), id: \.self) { key in
+                        if let row = audit.categories[key] {
+                            HStack {
+                                Text(key); Spacer()
+                                Text("\(row.fileCount.formatted()) 项 · \(formatBytes(row.bytes))")
+                                if row.safeToRemoveCount > 0 { Text("候选 \(row.safeToRemoveCount)").foregroundStyle(archiveOrange) }
+                                if row.affectsResumeCount > 0 { Text("影响恢复").foregroundStyle(Color.red) }
+                            }.font(.caption)
+                        }
+                    }
+                } }
+            }
+            if let plan = model.storageCleanupPlan,
+               let library = libraries.first(where: { $0.taskPath == plan.taskPath }) {
+                Panel { VStack(alignment: .leading, spacing: 8) {
+                    Label("待确认的安全清理计划", systemImage: "trash.slash").font(.headline)
+                    Text("候选 \(plan.candidateCount) 项 · \(formatBytes(plan.candidateBytes))；已排除 \(plan.excludedResumeAffectingCount) 项可能影响断点恢复的缓存。")
+                        .font(.caption).foregroundStyle(archiveMuted)
+                    Text(plan.policy).font(.caption).foregroundStyle(archiveMuted)
+                    ForEach(plan.items.prefix(20)) { item in
+                        Text("\(item.relativePath) · \(formatBytes(item.bytes)) · \(item.category) · \(item.reason)")
+                            .font(.caption2).textSelection(.enabled)
+                    }
+                    if plan.items.count > 20 {
+                        Text("另有 \(plan.items.count - 20) 项；执行时仍逐项重新核对路径、大小和修改时间。")
+                            .font(.caption2).foregroundStyle(archiveMuted)
+                    }
+                    Divider()
+                    Text("此操作会永久删除上面明确列出的候选。请输入完整确认短语后按钮才会启用：")
+                        .font(.caption).foregroundStyle(Color.red)
+                    Text(plan.confirmationPhrase).font(.caption.monospaced()).textSelection(.enabled)
+                    TextField("输入确认短语", text: $model.storageCleanupConfirmation)
+                    Button("执行已核对的永久清理") { model.applyStorageCleanup(library) }
+                        .disabled(model.storageCleanupConfirmation != plan.confirmationPhrase)
+                        .foregroundStyle(Color.red)
+                } }
+            }
+            if !model.storageCleanupResult.isEmpty {
+                Text(model.storageCleanupResult).foregroundStyle(archiveGreen)
+            }
+            if !model.storageAuditError.isEmpty { Text(model.storageAuditError).foregroundStyle(archiveOrange) }
             if model.historyLoading { ProgressView("读取所选历史任务…") }
             if !model.historyError.isEmpty { Text(model.historyError).foregroundStyle(.red) }
             if let detail = model.historyDetail {
@@ -1265,158 +1807,183 @@ struct HistoryPage: View {
 
 struct SearchResultCard: View {
     @EnvironmentObject var model: ArchiveModel; let result: SearchResult
+    @State private var annotationTags: String
+    @State private var annotationNote: String
+    @State private var annotationFavorite: Bool
+    @State private var annotationRating: Int
+    @State private var annotationIgnored: Bool
+    init(result: SearchResult) {
+        self.result = result
+        _annotationTags = State(initialValue: (result.userAnnotation?.tags ?? []).joined(separator: "，"))
+        _annotationNote = State(initialValue: result.userAnnotation?.note ?? "")
+        _annotationFavorite = State(initialValue: result.userAnnotation?.favorite ?? false)
+        _annotationRating = State(initialValue: result.userAnnotation?.rating ?? 0)
+        _annotationIgnored = State(initialValue: result.userAnnotation?.ignored ?? false)
+    }
     private var visibleReasons: [String] {
         (result.relevanceReasons ?? []).filter {
             $0 != "exact_object_label" || !(result.matchedObjectLabels ?? []).isEmpty
         }
     }
-
-    private var channelScores: [String] {
-        [
-            result.openclipCosine.map { "画面原始相似度 \(String(format: "%.3f", $0))" },
-            result.textSemanticScore.map { "描述原始相似度 \(String(format: "%.3f", $0))" },
-        ].compactMap { $0 }
+    private func audioTimecode(_ milliseconds: Int?) -> String {
+        guard let milliseconds else { return "--" }
+        let value = max(0, milliseconds)
+        let hours = value / 3_600_000
+        let minutes = (value % 3_600_000) / 60_000
+        let seconds = (value % 60_000) / 1_000
+        let millis = value % 1_000
+        return hours > 0
+            ? String(format: "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
+            : String(format: "%02d:%02d.%03d", minutes, seconds, millis)
     }
-
-    private var thumbnail: some View {
-        Group {
-            if let path = result.previewPath, let image = NSImage(contentsOfFile: path) {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else {
-                ZStack {
-                    Color.gray.opacity(0.15)
-                    Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted)
-                }
-            }
-        }
-        .frame(width: 250, height: 150)
-        .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-    }
-
-    private var resultHeader: some View {
-        HStack {
-            Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill")
-                .foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen)
-            Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent)
-                .font(.headline)
-            Spacer()
-            Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100))
-                .font(.caption)
-                .foregroundStyle(archiveBlue)
-        }
-    }
-
-    @ViewBuilder
-    private var videoTimecode: some View {
-        if result.mediaType == "video" {
-            Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")")
-                .font(.subheadline)
-                .foregroundStyle(archiveMuted)
-        }
-    }
-
-    @ViewBuilder
-    private var matchEvidence: some View {
-        if !visibleReasons.isEmpty {
-            Text("命中依据：" + visibleReasons.map {
-                [
-                    "exact_text": "文字直接命中",
-                    "exact_object_label": "物体标签直接命中",
-                    "strong_visual_semantic": "画面语义强匹配",
-                    "strong_text_semantic": "描述语义强匹配",
-                    "combined_visual_text": "画面与描述共同匹配",
-                    "same_person_reid": "本地人脸特征属于同一匿名人物簇",
-                ][$0] ?? $0
-            }.joined(separator: "、"))
-            .font(.caption)
-            .foregroundStyle(archiveBlue)
-        }
-        if let labels = result.matchedObjectLabels, !labels.isEmpty {
-            Text("物体标签证据：" + labels.prefix(3).map {
-                "\($0.labelZh ?? $0.label ?? "未知标签")（\(Int(($0.confidence ?? 0) * 100))%）"
-            }.joined(separator: "、"))
-            .font(.caption)
-            .foregroundStyle(archiveMuted)
-        }
-        if !channelScores.isEmpty {
-            Text(channelScores.joined(separator: " · ") + "；综合匹配仅用于结果排序，不是识别概率。")
-                .font(.caption2)
-                .foregroundStyle(archiveMuted)
-        }
-    }
-
-    @ViewBuilder
-    private var personClusterActions: some View {
-        if let clusters = result.personClusters, !clusters.isEmpty {
-            ForEach(clusters) { cluster in
-                Button("查找同一人物（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
-                    model.searchPersonCluster(cluster.personClusterId)
-                }
-                .buttonStyle(.bordered)
-                .help("只读取本地匿名人脸簇；不会识别或显示人物姓名")
-            }
-        }
-    }
-
-    private var openActions: some View {
-        HStack {
-            Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") {
-                model.open(result)
-            }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled(result.canOpenOriginal != true)
-            Button("在 Finder 中显示") {
-                model.reveal(result)
-            }
-            .disabled(result.canOpenOriginal != true)
-        }
-    }
-
-    private var resultDetails: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            resultHeader
-            videoTimecode
-            Text("场景：\(result.environmentLabel ?? "未标注")")
-                .font(.caption)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(Color.orange.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-            Text(result.textPreview ?? "该画面通过全视觉通道召回。")
-                .font(.subheadline)
-                .lineLimit(3)
-            matchEvidence
-            personClusterActions
-            Text("所属位置：\(result.sourceRelativePath ?? "")")
-                .font(.caption2)
-                .foregroundStyle(archiveMuted)
-            openActions
-        }
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
-            thumbnail
-            resultDetails
-        }
-        .padding(14)
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
+            Group {
+                if let path = result.previewPath, let image = NSImage(contentsOfFile: path) { Image(nsImage: image).resizable().scaledToFill() }
+                else { ZStack { Color.gray.opacity(0.15); Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted) } }
+            }.frame(width: 250, height: 150).clipped().clipShape(RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 8) {
+                HStack { Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill").foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen); Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent).font(.headline); Spacer(); Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100)).font(.caption).foregroundStyle(archiveBlue) }
+                if result.mediaType == "video" { Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")").font(.subheadline).foregroundStyle(archiveMuted) }
+                if result.audioTranscriptMatch == true {
+                    Label(
+                        "人声转写命中 · 音频时间 \(audioTimecode(result.audioStartTimeMs)) – \(audioTimecode(result.audioEndTimeMs))",
+                        systemImage: "waveform"
+                    ).font(.subheadline).foregroundStyle(.purple)
+                }
+                Text("场景：\(result.environmentLabel ?? "未标注")").font(.caption).padding(.horizontal, 7).padding(.vertical, 4).background(Color.orange.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 5))
+                Text((result.audioTranscriptMatch == true ? "人声转写：" : "描述证据：") + (result.textPreview ?? "该画面通过全视觉通道召回。"))
+                    .font(.subheadline).lineLimit(3)
+                if !visibleReasons.isEmpty {
+                    Text("命中依据：" + visibleReasons.map { ["exact_text":"文字直接命中", "exact_object_label":"物体标签直接命中", "strong_visual_semantic":"画面语义强匹配", "strong_text_semantic":"描述语义强匹配", "combined_visual_text":"画面与描述共同匹配", "audio_transcript_exact":"音频转写文字直接命中", "audio_transcript_semantic":"音频转写语义匹配", "same_person_reid":"本地人脸特征属于同一匿名人物簇"][$0] ?? $0 }.joined(separator: "、"))
+                        .font(.caption).foregroundStyle(archiveBlue)
+                }
+                if let labels = result.matchedObjectLabels, !labels.isEmpty {
+                    Text("物体标签证据：" + labels.prefix(3).map {
+                        "\($0.labelZh ?? $0.label ?? "未知标签")（\(Int(($0.confidence ?? 0) * 100))%）"
+                    }.joined(separator: "、"))
+                        .font(.caption).foregroundStyle(archiveMuted)
+                }
+                if let terms = result.matchedTextTerms, !terms.isEmpty {
+                    Text((result.audioTranscriptMatch == true ? "音频转写命中词：" : "文字证据：") + terms.prefix(4).joined(separator: "、"))
+                        .font(.caption).foregroundStyle(archiveMuted)
+                }
+                let channelScores = [
+                    result.openclipCosine.map { "画面原始相似度 \(String(format: "%.3f", $0))" },
+                    result.textSemanticScore.map { "描述原始相似度 \(String(format: "%.3f", $0))" },
+                ].compactMap { $0 }
+                if !channelScores.isEmpty {
+                    Text(channelScores.joined(separator: " · ") + "；综合匹配仅用于结果排序，不是识别概率。")
+                        .font(.caption2).foregroundStyle(archiveMuted)
+                }
+                if let clusters = result.personClusters, !clusters.isEmpty {
+                    ForEach(clusters) { cluster in
+                        Button("查找同一人物（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
+                            model.searchPersonCluster(cluster.personClusterId)
+                        }
+                        .buttonStyle(.bordered)
+                        .help("只读取本地匿名人脸簇；不会识别或显示人物姓名")
+                    }
+                }
+                if result.resultLevel == "source", let frames = result.sourceFrameCount, frames > 1,
+                   let cluster = result.personClusters?.first, let sourceId = result.sourceContentId {
+                    Button("展开这个素材中的 \(frames) 个画面") {
+                        model.searchPersonCluster(cluster.personClusterId, sourceContentId: sourceId)
+                    }.buttonStyle(.bordered)
+                }
+                Text("所属位置：\(result.sourceRelativePath ?? "")").font(.caption2).foregroundStyle(archiveMuted)
+                DisclosureGroup("本地标签、备注与收藏") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("标签，用逗号分隔", text: $annotationTags)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("备注", text: $annotationNote)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Toggle("收藏", isOn: $annotationFavorite).toggleStyle(.checkbox)
+                            Picker("星级", selection: $annotationRating) {
+                                ForEach(0...5, id: \.self) { Text($0 == 0 ? "未评分" : "\($0) 星").tag($0) }
+                            }.frame(width: 150)
+                            Toggle("忽略", isOn: $annotationIgnored).toggleStyle(.checkbox)
+                            Button("保存") {
+                                model.saveResultAnnotation(
+                                    result, tags: annotationTags, note: annotationNote,
+                                    favorite: annotationFavorite, rating: annotationRating,
+                                    ignored: annotationIgnored
+                                )
+                            }
+                        }
+                    }.padding(.top, 8)
+                }
+                HStack { Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") { model.open(result) }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true); Button("在 Finder 中显示") { model.reveal(result) }.disabled(result.canOpenOriginal != true) }
+            }
+        }.padding(14).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
     }
 }
 
 struct SearchPage: View {
     @EnvironmentObject var model: ArchiveModel
-
-    private var searchControls: some View {
+    var body: some View { ScrollView { VStack(alignment: .leading, spacing: 18) {
+        PageHeader(title: "搜索素材", subtitle: "搜索当前选中的素材库；可在任务历史中切换到另一个已完成项目。")
+        if let activeLibrary = model.snapshot?.existingLibraries.first(where: { $0.isActive }) {
+            Label("当前搜索库：\(activeLibrary.taskName)（图片 \(activeLibrary.imageCount)，视频 \(activeLibrary.videoCount)）", systemImage: "externaldrive.fill")
+                .font(.subheadline).foregroundStyle(archiveBlue)
+        }
         Panel { VStack(spacing: 14) {
-            HStack { Image(systemName: "magnifyingglass").foregroundStyle(archiveMuted); TextField("例如：夜间户外戴眼镜的人物", text: $model.query).textFieldStyle(.plain).font(.title3); Button(model.searching ? "搜索中…" : "搜索") { model.search() }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching || model.snapshot?.searchRuntime.ready != true) }
+            HStack { Image(systemName: "magnifyingglass").foregroundStyle(archiveMuted); TextField("例如：夜间户外戴眼镜的人物", text: $model.query).textFieldStyle(.plain).font(.title3).onSubmit { model.search() }; Button(model.searching ? "搜索中…" : "搜索") { model.search() }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching || model.snapshot?.searchRuntime.ready != true) }
             Divider(); HStack {
-                Picker("素材类型", selection: $model.mediaType) { ForEach(["全部", "视频", "图片"], id: \.self) { Text($0) } }.frame(width: 180)
+                Picker("素材类型", selection: $model.mediaType) { ForEach(["全部", "视频", "图片", "音频（人声转写）"], id: \.self) { Text($0) } }.frame(width: 220)
                 Picker("预览区间", selection: $model.previewWindow) { ForEach(["5 秒", "10 秒"], id: \.self) { Text($0) } }.frame(width: 180)
                 Spacer()
+            }
+            DisclosureGroup("高级过滤（由数据库查询执行）") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        TextField("文件夹相对路径前缀", text: $model.searchPathPrefix)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("开始日期 YYYY-MM-DD", text: $model.searchDateFrom)
+                            .textFieldStyle(.roundedBorder).frame(width: 180)
+                        TextField("结束日期 YYYY-MM-DD", text: $model.searchDateTo)
+                            .textFieldStyle(.roundedBorder).frame(width: 180)
+                    }
+                    HStack {
+                        Toggle("只看含 OCR 文字的画面", isOn: $model.searchRequireOCR)
+                        Toggle("只看检测到有效人脸的画面", isOn: $model.searchRequirePerson)
+                        Spacer()
+                    }
+                    Text("路径、日期、OCR 与人物条件在读取向量前进入 SQLite 查询，不在界面层过滤。")
+                        .font(.caption).foregroundStyle(archiveMuted)
+                }.padding(.top, 8)
+            }
+            DisclosureGroup("当前素材库的搜索历史与保存查询") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        TextField("保存名称", text: $model.savedSearchName)
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                        Button("保存当前搜索") { model.saveCurrentSearch() }
+                            .disabled(model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("刷新") { model.loadSearchMetadata() }
+                        Spacer()
+                    }
+                    if !model.savedSearches.isEmpty {
+                        Text("已保存").font(.caption.bold()).foregroundStyle(archiveMuted)
+                        ForEach(model.savedSearches.prefix(8)) { item in
+                            Button("\(item.displayName)：\(item.queryText)") {
+                                model.applySearchMetadata(item.queryText, filters: item.filters)
+                            }.buttonStyle(.plain).foregroundStyle(archiveBlue)
+                        }
+                    }
+                    if !model.searchHistory.isEmpty {
+                        Text("最近搜索").font(.caption.bold()).foregroundStyle(archiveMuted)
+                        ForEach(model.searchHistory.prefix(8)) { item in
+                            Button("\(item.queryText) · \(item.resultCount) 条 · \(String(format: "%.1f", item.elapsedSeconds)) 秒") {
+                                model.applySearchMetadata(item.queryText, filters: item.filters)
+                            }.buttonStyle(.plain).foregroundStyle(.primary)
+                        }
+                    }
+                    if !model.searchMetadataStatus.isEmpty {
+                        Text(model.searchMetadataStatus).font(.caption).foregroundStyle(archiveMuted)
+                    }
+                }.padding(.top, 8)
             }
             Divider()
             HStack(spacing: 12) {
@@ -1434,7 +2001,9 @@ struct SearchPage: View {
                             Text("\(person.displayName) · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
                                 .tag(person.personClusterId)
                         }
-                    }.frame(maxWidth: 430)
+                    }.frame(maxWidth: 430).onChange(of: model.selectedPersonClusterId) { _ in
+                        model.preparePersonEditor()
+                    }
                     Button("查看同一人物") {
                         model.searchPersonCluster(model.selectedPersonClusterId)
                     }
@@ -1443,32 +2012,51 @@ struct SearchPage: View {
                     Spacer()
                 }
             }
+            if !model.selectedPersonClusterId.isEmpty {
+                Divider()
+                DisclosureGroup("本地人物名称、标签与人工合并") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("这些修改只保存在本机，不改写机器识别记录；把多个机器组归到同一人物后仍可取消合并。")
+                            .font(.caption).foregroundStyle(archiveMuted)
+                        HStack {
+                            TextField("人物名称，例如：张老师", text: $model.personDisplayName)
+                                .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                            TextField("标签，用逗号分隔", text: $model.personTags)
+                                .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
+                            Button("保存名称和标签") { model.savePersonName() }
+                        }
+                        HStack {
+                            Picker("归入", selection: $model.personMergeTargetId) {
+                                Text("请选择另一个人物").tag("")
+                                ForEach(model.personClusterCatalog.filter { $0.personClusterId != model.selectedPersonClusterId }) { person in
+                                    Text(person.displayName).tag(person.personClusterId)
+                                }
+                            }.frame(maxWidth: 330)
+                            Button("确认属于同一人物") { model.mergeSelectedPerson() }
+                                .disabled(model.personMergeTargetId.isEmpty)
+                            Button("取消该人物的人工合并") { model.detachSelectedPerson() }
+                            Spacer()
+                        }
+                        if !model.personEditStatus.isEmpty {
+                            Text(model.personEditStatus).font(.caption).foregroundStyle(archiveBlue)
+                        }
+                    }.padding(.top, 8)
+                }
+            }
         } }
-    }
-
-    private var searchCapabilityNotice: some View {
-        Text(model.snapshot?.searchRuntime.ready == true ? "全量视觉搜索已启用；只显示图片和视频，查询原文与查询向量不会写入中心数据库。" : "首次素材整理完成后，搜索会在这里自动开放。")
+        Text(model.snapshot?.searchRuntime.ready == true ? "全量视觉搜索已启用；搜索结果只读，查询向量不持久化；搜索历史和保存查询仅写入当前素材库的本地用户元数据。" : (model.snapshot?.searchRuntime.databasePreflight?.databaseError.flatMap { $0.isEmpty ? nil : "搜索数据库不可用：\($0)" } ?? "首次素材整理完成后，搜索会在这里自动开放。"))
             .font(.subheadline).foregroundStyle(archiveBlue).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.blue.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var searchPrewarmSummary: some View {
         HStack(spacing: 7) {
             Image(systemName: model.searchPrewarmReady ? "bolt.fill" : "bolt")
                 .foregroundStyle(model.searchPrewarmReady ? archiveGreen : archiveMuted)
             Text(model.searchPrewarmStatus).font(.caption).foregroundStyle(archiveMuted)
         }
-    }
-
-    @ViewBuilder
-    private var personCapabilityNote: some View {
+        Text("搜索会扫描全量画面向量，并融合 AI 描述、OCR 文字和物体标签。宽泛词与具体描述会重新排序；同一素材的不同时间点仍是独立画面。")
+            .font(.caption).foregroundStyle(archiveMuted)
         if !model.personCapabilityNote.isEmpty {
             Label(model.personCapabilityNote, systemImage: "person.crop.circle.badge.questionmark")
                 .font(.caption).foregroundStyle(archiveMuted)
         }
-    }
-
-    @ViewBuilder
-    private var searchProgressSection: some View {
         if model.searching, let progress = model.searchProgress {
             Panel { VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -1516,19 +2104,14 @@ struct SearchPage: View {
                 }
             } }
         }
-    }
-
-    @ViewBuilder
-    private var searchStatusSection: some View {
         if !model.searchStatus.isEmpty { Text(model.searchStatus).font(.subheadline).foregroundStyle(archiveMuted) }
-        if let coverage = model.searchCoverage {
+        if model.searching {
+            Text("本次扫描统计：正在计算当前搜索范围…")
+                .font(.caption).foregroundStyle(archiveMuted)
+        } else if let coverage = model.searchCoverage {
             Text("本次已扫描：画面向量 \(coverage.scannedVisualVectorCount) / \(coverage.eligibleVisualUnitCount) · 文本向量 \(coverage.scannedTextVectorCount)")
                 .font(.caption).foregroundStyle(archiveMuted)
         }
-    }
-
-    @ViewBuilder
-    private var searchDiagnosticSection: some View {
         if !model.searchDiagnostic.isEmpty {
             DisclosureGroup("展开诊断") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1540,10 +2123,6 @@ struct SearchPage: View {
                 }.padding(.top, 8)
             }.padding(12).background(Color.red.opacity(0.05)).clipShape(RoundedRectangle(cornerRadius: 8))
         }
-    }
-
-    @ViewBuilder
-    private var searchResultsSection: some View {
         if model.searchResults.isEmpty, let overview = model.snapshot?.overview, model.snapshot?.configurationState == "configured" {
             HStack { MetricCard(title: "可搜索画面", value: overview.visualUnitTotalCount.formatted()); MetricCard(title: "图片素材", value: (overview.source["image"]?.count ?? 0).formatted()); MetricCard(title: "视频素材", value: (overview.source["video"]?.count ?? 0).formatted()); MetricCard(title: "文本向量", value: overview.recognition.textVectors.formatted()) }
         } else if model.snapshot?.configurationState != "configured" {
@@ -1553,30 +2132,10 @@ struct SearchPage: View {
         if model.nextSearchOffset != nil {
             HStack { Spacer(); Button(model.searching ? "加载中…" : "加载更多") { model.search(loadMore: true) }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching); Spacer() }.padding(.vertical, 12)
         }
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                PageHeader(title: "搜索素材", subtitle: "同时搜索全部派生画面、AI 描述、OCR 文字和物体标签。")
-                searchControls
-                searchCapabilityNotice
-                searchPrewarmSummary
-                Text("搜索会扫描全量画面向量，并融合 AI 描述、OCR 文字和物体标签。宽泛词与具体描述会重新排序；同一素材的不同时间点仍是独立画面。")
-                    .font(.caption).foregroundStyle(archiveMuted)
-                personCapabilityNote
-                searchProgressSection
-                searchStatusSection
-                searchDiagnosticSection
-                searchResultsSection
-            }
-            .padding(34)
-        }
-        .onAppear {
+    }.padding(34) }.onAppear {
         if model.personClusterCatalog.isEmpty { model.loadPersonClusters() }
         model.prewarmSearch()
-        }
-    }
+    } }
 }
 
 struct DuplicatesPage: View {
@@ -1587,10 +2146,41 @@ struct DuplicatesPage: View {
             Panel { Text("完成第一次素材整理后，重复文件组会显示在这里。") }
         } else if let payload = model.snapshot?.duplicateGroups {
             HStack { MetricCard(title: "完全重复组", value: payload.total.formatted(), icon: "square.on.square"); MetricCard(title: "当前显示", value: payload.items.count.formatted(), icon: "list.bullet.rectangle") }
-            ForEach(payload.items) { item in Panel { HStack {
-                Text("完全相同").font(.caption.bold()).foregroundStyle(archiveBlue).padding(7).background(Color.blue.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
-                VStack(alignment: .leading, spacing: 4) { Text(item.fileName ?? item.duplicateGroupId).font(.headline); Text(item.relativePath ?? "路径待确认").font(.caption).foregroundStyle(archiveMuted) }
-                Spacer(); VStack(alignment: .trailing) { Text("\(item.memberCount ?? 0) 个文件"); Text(formatBytes(item.totalBytes ?? 0)).font(.caption).foregroundStyle(archiveMuted) }
+            ForEach(payload.items) { item in Panel { VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("内容完全相同").font(.caption.bold()).foregroundStyle(archiveBlue).padding(7).background(Color.blue.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+                    Text("\(item.memberCount ?? item.members.count) 个真实文件").font(.headline)
+                    Spacer()
+                    Text(formatBytes(item.totalBytes ?? 0)).font(.caption).foregroundStyle(archiveMuted)
+                }
+                Text("请对照所在文件夹后自行决定保留哪份；软件不会自动删除。标记“建议保留”的只是稳定路径建议。")
+                    .font(.caption).foregroundStyle(archiveMuted)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
+                    ForEach(Array(item.members.enumerated()), id: \.element.id) { index, member in
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Text(index == 0 ? "左侧文件" : (index == 1 ? "右侧文件" : "第 \(index + 1) 个文件"))
+                                    .font(.caption.bold()).foregroundStyle(archiveBlue)
+                                Spacer()
+                                if member.isCanonical { Text("建议保留").font(.caption2.bold()).foregroundStyle(archiveGreen) }
+                            }
+                            Text(member.fileName).font(.subheadline.bold()).lineLimit(2)
+                            Text("所在文件夹：\(member.folderPath)")
+                                .font(.caption).foregroundStyle(archiveMuted).textSelection(.enabled)
+                            Text("文件：\(member.relativePath)")
+                                .font(.caption2).foregroundStyle(archiveMuted).textSelection(.enabled)
+                            Text("大小：\(formatBytes(member.sizeBytes))").font(.caption2).foregroundStyle(archiveMuted)
+                            HStack {
+                                Button("打开这个文件夹") { model.openDuplicateFolder(member) }
+                                Button("选中这个文件") { model.revealDuplicate(member) }
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.gray.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                }
             } } }
         }
     }.padding(34) } }
@@ -1635,14 +2225,12 @@ struct SettingsPage: View {
             HStack { MetricCard(title: "芯片", value: state.hardware.chip, tint: archiveBlue, icon: "cpu"); MetricCard(title: "CPU", value: "\(state.hardware.cpuCoresTotal) 核"); MetricCard(title: "GPU", value: state.hardware.gpuCores.map { "\($0) 核" } ?? "未公开"); MetricCard(title: "统一内存", value: state.hardware.unifiedMemoryGb.map { String(format: "%.0f GB", $0) } ?? "未公开") }
             Panel { VStack(alignment: .leading, spacing: 13) {
                 Text("新任务处理方案").font(.title3.bold())
-                Text("应用会读取芯片、CPU 核数和统一内存，给出保守默认值与估算上限；不会静默提高并发。").font(.subheadline).foregroundStyle(archiveMuted)
+                Text("默认值按本机能力保守推荐。遇到内存压力时只能自动降低并发，不会静默提高。").font(.subheadline).foregroundStyle(archiveMuted)
                 Divider()
                 SettingPicker(title: "运行方式", selection: $model.schedulerMode, values: ["自动选择（推荐）", "数据库流水线异步（尚未开放）", "按阶段串行"])
                 Label("数据库流水线异步尚未开放：当前只能保存未来方案，不会启动异步总编排器。", systemImage: "clock.badge.exclamationmark")
                     .font(.caption).foregroundStyle(archiveOrange)
                 SettingStepper(title: "模型并发路数", value: $model.modelWorkers, range: 1...8, hint: "保守推荐 \(state.hardware.recommendation.modelWorkers) 路 · 估算上限 \(state.hardware.recommendation.estimatedMaxModelWorkers) 路")
-                Text("32 GB 只是开发基准。更高配置可以在估算上限内提高；若出现交换内存增长、卡顿或模型退出，应立即降低。")
-                    .font(.caption).foregroundStyle(archiveMuted)
                 SettingStepper(title: "抽帧并发路数", value: $model.frameWorkers, range: 1...16, hint: "推荐 \(state.hardware.recommendation.frameExtractWorkers) 路")
                 SettingPicker(title: "视频抽帧间隔", selection: $model.frameInterval, values: ["1 秒", "2 秒", "3 秒", "4 秒", "5 秒"])
                 SettingPicker(title: "高价值分析密度", selection: $model.highValueMode, values: ["兼容当前规则", "目标 15%", "目标 20%", "目标 30%"])
@@ -1689,14 +2277,6 @@ struct SettingsPage: View {
                 SafetyCard(title: "原始素材保护", detail: "只读；仅在用户主动打开时访问", passed: true)
             }
             Panel { VStack(alignment: .leading, spacing: 8) { Text("模型更新闸门").font(.headline); Text("登记模型指纹  →  离线小样本测试  →  与当前模型对比  →  人工确认  →  明确启用").font(.subheadline).foregroundStyle(archiveMuted); Text("应用不会联网下载模型，也不会自动替换正式模型。").font(.caption).foregroundStyle(archiveBlue) } }
-            Panel { VStack(alignment: .leading, spacing: 8) {
-                Text("关于本软件").font(.headline)
-                Text("Copyright © 2026 Horizon-94")
-                Text("GNU GPL v3.0 only · 修改版本必须注明修改，并按许可证提供对应源码。")
-                    .font(.caption).foregroundStyle(archiveMuted)
-                Link("官方源码：github.com/Horizon-94/local-media-organizer", destination: URL(string: "https://github.com/Horizon-94/local-media-organizer")!)
-                    .font(.caption)
-            } }
             if !model.actionMessage.isEmpty { Label(model.actionMessage, systemImage: model.actionFailed ? "xmark.circle" : "checkmark.circle").font(.subheadline).foregroundStyle(model.actionFailed ? Color.red : archiveGreen) }
         } else {
             Panel { VStack(alignment: .leading, spacing: 10) {

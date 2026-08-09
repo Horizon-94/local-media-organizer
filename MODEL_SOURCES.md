@@ -18,6 +18,9 @@
 | `ocr/PP-OCRv6_medium_det/` | OCR 检测 | [PaddlePaddle/PP-OCRv6_medium_det](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det) |
 | `ocr/PP-OCRv6_medium_rec/` | OCR 识别 | [PaddlePaddle/PP-OCRv6_medium_rec](https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec) |
 | `insightface/buffalo_l/` | 可选人物归并 | [InsightFace v0.7 模型包](https://github.com/deepinsight/insightface/releases/tag/v0.7) |
+| `silero-vad/` | 本地语音活动检测 | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) |
+| `whisper-large-v3-turbo/` | 本地人声转写 | [mlx-community/whisper-large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) |
+| `DeepFilterNet3_onnx.tar.gz` | 可选人声降噪模型 | [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) |
 
 `buffalo_l` 是可选项。InsightFace 对代码与预训练模型有不同许可说明，尤其是商业使用；使用前必须向上游确认单独授权。
 

@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from .pipeline_orchestrator import (
     atomic_json,
@@ -24,8 +24,24 @@ from .pipeline_orchestrator import (
     stop_pipeline,
     validate_stage_acceptance,
 )
+from .local_person_annotations import (
+    annotation_path, detach_cluster, grouped_catalog, load_annotations,
+    merge_identity, name_identity, resolve_clusters,
+)
+from .central_database import (
+    asset_annotations,
+    ensure_schema as ensure_central_schema,
+    list_saved_searches,
+    list_search_history,
+    load_person_annotations as load_central_person_annotations,
+    record_search_history,
+    save_search as save_central_search,
+    upsert_asset_annotation,
+    save_person_annotations as save_central_person_annotations,
+    task_id_for_database,
+)
 from .processing_profile import build_processing_profile, detect_hardware, save_processing_profile
-from .repository import MODEL_SECONDS_PER_ITEM_PER_WORKER, ReadonlyMediaRepository
+from .repository import ReadonlyMediaRepository
 from .runtime_contract import (
     default_model_root,
     load_runtime_contract,
@@ -33,10 +49,80 @@ from .runtime_contract import (
     validate_runtime_contract,
 )
 from .search_jobs import SearchJobManager, offline_search_environment
+from .storage_audit import (
+    apply_cleanup_plan,
+    audit_task_storage,
+    build_cleanup_plan,
+    compare_task_storage,
+)
 
 
 APP_NAME = "本地数据库"
-APP_VERSION = "1.1.4-search-progress-warm-cache"
+APP_VERSION = "1.2.0"
+_RESOURCE_CACHE: tuple[float, int | None, dict[str, Any]] = (0.0, None, {})
+
+
+def live_resource_snapshot(current_task: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Small, read-only process sample for the run page (never scans source)."""
+    global _RESOURCE_CACHE
+    pid = int((current_task or {}).get("current_child_pid") or 0) or None
+    now = time.monotonic()
+    cached_at, cached_pid, cached = _RESOURCE_CACHE
+    if cached and pid == cached_pid and now - cached_at < 2.0:
+        return dict(cached)
+    report: dict[str, Any] = {
+        "active_pid": pid, "process_alive": False, "cpu_percent": 0.0,
+        "memory_bytes": 0, "process_count": 0, "swap_used_bytes": None,
+        "sample_error": "",
+        "source_scanned": False,
+    }
+    if pid:
+        try:
+            sample = subprocess.run(
+                ["/bin/ps", "-axo", "pid=,ppid=,%cpu=,rss=,state="],
+                capture_output=True, text=True, timeout=2.0, check=False,
+            )
+            rows: dict[int, tuple[int, float, int, str]] = {}
+            for line in sample.stdout.splitlines():
+                fields = line.split(None, 4)
+                if len(fields) != 5:
+                    continue
+                child_pid, parent_pid = int(fields[0]), int(fields[1])
+                rows[child_pid] = (
+                    parent_pid, float(fields[2]), int(fields[3]), fields[4],
+                )
+            process_ids = {pid}
+            changed = True
+            while changed:
+                changed = False
+                for child_pid, (parent_pid, _, _, _) in rows.items():
+                    if parent_pid in process_ids and child_pid not in process_ids:
+                        process_ids.add(child_pid)
+                        changed = True
+            live_rows = [rows[item] for item in process_ids if item in rows]
+            if sample.returncode == 0 and live_rows:
+                report.update({
+                    "process_alive": True,
+                    "cpu_percent": round(sum(row[1] for row in live_rows), 1),
+                    "memory_bytes": sum(row[2] for row in live_rows) * 1024,
+                    "process_count": len(live_rows),
+                    "process_state": rows.get(pid, live_rows[0])[3],
+                })
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            report["sample_error"] = str(exc)
+    try:
+        swap = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "vm.swapusage"], capture_output=True,
+            text=True, timeout=2.0, check=False,
+        ).stdout
+        match = re.search(r"used\s*=\s*([0-9.]+)([MG])", swap)
+        if match:
+            scale = 1024 ** (2 if match.group(2) == "M" else 3)
+            report["swap_used_bytes"] = int(float(match.group(1)) * scale)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    _RESOURCE_CACHE = (now, pid, dict(report))
+    return report
 
 
 def runtime_output_root(config: dict[str, Any]) -> Path:
@@ -113,13 +199,41 @@ def load_active_library(config: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _library_task_path_from_config(config: dict[str, Any]) -> str:
+    """Return the owning library task, not a short-lived maintenance task."""
+    return str(config.get("library_task_path") or config.get("task_path") or "").strip()
+
+
+def _controlled_library_task_paths(candidates: Sequence[Path]) -> list[Path]:
+    """Discover sibling tasks only below already-known index roots.
+
+    This deliberately never walks an arbitrary user folder.  A task created by
+    the app lives in ``<index-root>/tasks/<task>/task.json``; once one task in
+    that index root is known, its siblings are safe, small metadata reads.
+    """
+    discovered: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve(strict=True)
+        except OSError:
+            continue
+        tasks_root = resolved.parent.parent if resolved.parent.parent.name == "tasks" else None
+        if tasks_root is None or not tasks_root.is_dir():
+            continue
+        for child in sorted(tasks_root.iterdir()):
+            task_path = child / "task.json"
+            if child.is_dir() and task_path.is_file():
+                discovered.append(task_path)
+    return discovered
+
+
 def _existing_library_record(task_path: Path) -> dict[str, Any] | None:
     try:
         task = load_json(task_path.expanduser().resolve(strict=True))
         database = Path(str(task["database"])).expanduser().resolve(strict=True)
         state_path = Path(str(task.get("state_path") or "")).expanduser()
         state = load_json(state_path) if state_path.is_file() else {}
-        with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as con:
+        with ReadonlyMediaRepository(database).connect() as con:
             source_counts = {
                 str(media_type): int(count)
                 for media_type, count in con.execute(
@@ -145,9 +259,9 @@ def _existing_library_record(task_path: Path) -> dict[str, Any] | None:
 
 
 def existing_libraries(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return human-readable known libraries without scanning arbitrary folders."""
+    """Return registered libraries plus sibling tasks below known index roots."""
     candidates: list[Path] = []
-    current = str(config.get("library_task_path") or config.get("task_path") or "").strip()
+    current = _library_task_path_from_config(config)
     if current:
         candidates.append(Path(current))
     registry = library_registry_path()
@@ -161,6 +275,8 @@ def existing_libraries(config: dict[str, Any]) -> list[dict[str, Any]]:
             )
         except (OSError, ValueError, json.JSONDecodeError):
             pass
+    candidates.extend(_controlled_library_task_paths(candidates))
+    active_task_path = _library_task_path_from_config(config)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -168,6 +284,7 @@ def existing_libraries(config: dict[str, Any]) -> list[dict[str, Any]]:
         if row is None or row["database"] in seen:
             continue
         seen.add(row["database"])
+        row["is_active"] = str(row["task_path"]) == active_task_path
         rows.append(row)
     rows.sort(key=lambda row: (row["created_at"], row["task_name"]), reverse=True)
     return rows
@@ -264,6 +381,55 @@ def register_library(task_path: Path) -> None:
     rows = [row for row in rows if str(row.get("task_path") or "") != resolved]
     rows.append({"task_path": resolved, "registered_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
     atomic_json(path, {"contract": "media_archive_library_registry_v1", "libraries": rows})
+
+
+def activate_library(config: dict[str, Any], task_path: Path) -> dict[str, Any]:
+    """Switch all read-only library views to one completed, registered task.
+
+    The pointer is intentionally tiny and stores absolute paths taken from the
+    selected task contract.  It neither rewrites the task nor touches its
+    SQLite database, source material, models, or stage outputs.
+    """
+    selected = task_path.expanduser().resolve(strict=True)
+    known = {str(row["task_path"]) for row in existing_libraries(config)}
+    if str(selected) not in known:
+        raise RuntimeError("请选择当前索引位置中由本软件建立的素材库")
+    record = _existing_library_record(selected)
+    if record is None:
+        raise RuntimeError("所选素材库的任务清单或数据库不可读取")
+    task = load_json(selected)
+    task["task_path"] = str(selected)
+    task.setdefault("software_version", APP_VERSION)
+    central_schema = ensure_central_schema(
+        Path(str(task["database"])), task=task,
+        backup_dir=selected.parent / "backups" / "central_schema",
+    )
+    state_text = str(task.get("state_path") or "").strip()
+    state_path = Path(state_text).expanduser() if state_text else selected.parent / "pipeline_state.json"
+    active = {
+        "active_library_contract": "media_archive_active_library_v2",
+        "library_task_path": str(selected),
+        "task_path": str(selected),
+        "database": str(Path(str(task["database"])).expanduser().resolve(strict=True)),
+        "output_root": str(Path(str(task.get("workspace") or selected.parent / "workspace")).expanduser().absolute()),
+        "task_id": str(task.get("task_id") or selected.parent.name),
+        "task_state_path": str(state_path),
+        "task_name": str(task.get("name") or "未命名素材库"),
+        "task_directory": str(selected.parent),
+        "activated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    atomic_json(active_library_path(), active)
+    register_library(selected)
+    return {
+        "status": "PASS",
+        "message": f"已切换到素材库“{active['task_name']}”；搜索和浏览将只读取该任务数据库",
+        "task_path": str(selected),
+        "database": active["database"],
+        "database_write": True,
+        "central_schema": central_schema,
+        "original_media_read": False,
+        "model_run": False,
+    }
 
 
 def load_runtime(
@@ -419,12 +585,12 @@ def task_pipeline(
         "scan": "素材扫描",
         "image_preview": "图片预览与延时摄影分组",
         "video_frames": "视频抽帧",
-        "visual_schema_v3": "准备视觉分析数据库",
+        "visual_schema_v3": "初始化视觉分析数据库结构",
         "yoloe": "物体识别（YOLOE）",
         "openclip": "全量视觉向量（OpenCLIP）",
         "dedup": "来源与画面去重",
-        "person_reid_optional_v1": "同一人物归并（InsightFace，本地匿名）",
-        "candidate_schema": "准备候选数据库",
+        "person_reid_optional_v1": "可见人脸待确认人物组（InsightFace，本地匿名）",
+        "candidate_schema": "初始化候选队列数据库结构",
         "candidates_generic_v2": "高价值画面与 OCR 候选筛选",
         "candidate_snapshot": "冻结当前候选快照",
         "qwen_optional_v2": "高价值画面描述（Qwen-VL）",
@@ -447,14 +613,18 @@ def task_pipeline(
         "rebuild_restore_lineage": "恢复重扫前的历史文件引用",
         "rebuild_visual_schema": "用当前分组替换旧的特殊素材入口",
         "rebuild_openclip": "补齐新增画面的视觉向量（OpenCLIP）",
+        "rebuild_search_index": "从已有数据库重建搜索入口",
+        "audio_search_enrichment": "提取人声并建立音频文本搜索",
     }
     rows = []
     for stage in state.get("stages", []):
         key = str(stage.get("key") or "stage")
         status = "failed" if key in acceptance_errors else str(stage.get("status") or "pending")
         metric = metrics.get(key, {})
-        done = int(metric.get("done") or 0)
-        total_items = int(metric.get("total") or 0)
+        live_total = int(stage.get("live_total") or 0)
+        use_live = status == "running" and live_total > 0
+        done = int(stage.get("live_completed") or 0) if use_live else int(metric.get("done") or 0)
+        total_items = live_total if use_live else int(metric.get("total") or 0)
         detail = str(metric.get("description") or "").strip()
         duration = (
             f"用时 {human_duration(stage.get('elapsed_seconds'))}"
@@ -475,6 +645,19 @@ def task_pipeline(
             ),
             "error_summary": str(stage.get("error_summary") or ""),
             "log_path": str(stage.get("log_path") or state.get("error_log_path") or ""),
+            "current_item": str(stage.get("current_item") or ""),
+            "success_count": int(stage.get("live_success") or 0),
+            "skipped_count": int(stage.get("live_skipped") or 0),
+            "failed_count": int(stage.get("live_failed") or 0),
+            "eta_seconds": stage.get("eta_seconds"),
+            "eta_basis": str(stage.get("eta_basis") or ""),
+            "configured_workers": stage.get("configured_workers"),
+            "actual_workers": stage.get("actual_workers"),
+            "ffmpeg_processes": stage.get("ffmpeg_processes"),
+            "model_workers": stage.get("model_workers"),
+            "bytes_processed": int(stage.get("bytes_processed") or 0),
+            "output_files": int(stage.get("output_files") or 0),
+            "report_paths": dict(stage.get("report_paths") or {}),
         })
     total = int(state.get("stage_count") or len(rows))
     completed = sum(row["status"] == "success" for row in rows)
@@ -502,67 +685,30 @@ def task_pipeline(
 def estimate_task_remaining(
     state: dict[str, Any], metrics: dict[str, dict[str, Any]], task: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Estimate remaining model time from this task's live counts, never fixed totals."""
-    task = task or {}
-    profile_scheduler = dict((task.get("profile") or {}).get("scheduler") or {})
-    runtime = dict(task.get("runtime") or {})
-    model_workers = max(1, int(profile_scheduler.get("model_workers") or 1))
-    ocr_workers = max(1, int(runtime.get("ocr_workers") or model_workers))
-    embedding_workers = max(1, int(runtime.get("embedding_workers") or model_workers))
-    person_reid_workers = max(
-        1, int(runtime.get("person_reid_workers") or min(8, model_workers * 3)),
-    )
-    statuses = {str(row.get("key") or ""): str(row.get("status") or "pending") for row in state.get("stages", [])}
+    """Expose only an ETA backed by this run's observed throughput.
 
-    def remaining(stage_key: str, metric_key: str) -> int:
-        if statuses.get(stage_key) == "success":
-            return 0
-        metric = metrics.get(metric_key) or {}
-        return max(0, int(metric.get("total") or 0) - int(metric.get("done") or 0))
-
-    qwen_remaining = remaining("qwen_optional_v2", "qwen_optional_v2")
-    qwen_remaining += remaining("all_image_supplement_qwen", "all_image_supplement_qwen")
-    qwen_remaining += remaining("repair_supplement_qwen", "repair_supplement_qwen")
-    ocr_remaining = remaining("ocr_optional_v2", "ocr_optional_v2")
-    person_reid_remaining = remaining(
-        "person_reid_optional_v1", "person_reid_optional_v1",
+    Different stages, files and devices vary by orders of magnitude.  Fixed
+    per-model constants produced confident but visibly wrong countdowns.  The
+    stage runner now waits for a minimum live sample before publishing an ETA.
+    Unknown future stages are deliberately not guessed.
+    """
+    running = next(
+        (row for row in state.get("stages", []) if row.get("status") == "running"),
+        None,
     )
-    embedding_remaining = remaining("embedding_optional_v2", "embedding_optional_v2")
-    embedding_remaining += remaining("repair_embedding", "repair_embedding")
-    if embedding_remaining == 0 and any(
-        statuses.get(key) not in (None, "success")
-        for key in ("embedding_optional_v2", "repair_embedding")
-    ):
-        # The final number of distinct texts is unknown before evidence merge.
-        # Use this task's current candidate population as a transparent upper estimate.
-        embedding_remaining = max(
-            int((metrics.get("qwen_optional_v2") or {}).get("total") or 0),
-            int((metrics.get("ocr_optional_v2") or {}).get("total") or 0),
-            int((metrics.get("repair_supplement_qwen") or {}).get("total") or 0),
-            int((metrics.get("all_image_supplement_qwen") or {}).get("total") or 0),
-        )
-    seconds = (
-        person_reid_remaining
-        * MODEL_SECONDS_PER_ITEM_PER_WORKER["person_reid"]
-        / person_reid_workers
-        + qwen_remaining * MODEL_SECONDS_PER_ITEM_PER_WORKER["qwen_vl"] / model_workers
-        + ocr_remaining * MODEL_SECONDS_PER_ITEM_PER_WORKER["ocr"] / ocr_workers
-        + embedding_remaining * MODEL_SECONDS_PER_ITEM_PER_WORKER["embedding"] / embedding_workers
-    )
-    if seconds <= 0:
+    if running and running.get("eta_seconds") is not None:
         return {
-            "overall_eta_seconds": None,
-            "overall_eta_basis": "等待产生可计数的模型任务",
+            "overall_eta_seconds": float(running["eta_seconds"]),
+            "overall_eta_basis": (
+                f"当前阶段估算：{running.get('eta_basis') or '按本次实际吞吐量'}；"
+                "尚未开始的阶段不做虚假预测"
+            ),
         }
     return {
-        "overall_eta_seconds": round(seconds, 1),
-        "overall_eta_basis": "按当前任务剩余数量、历史单项平均速度和实际并发动态估算",
-        "overall_eta_item_counts": {
-            "person_reid": person_reid_remaining,
-            "qwen_vl": qwen_remaining,
-            "ocr": ocr_remaining,
-            "embedding_estimate": embedding_remaining,
-        },
+        "overall_eta_seconds": None,
+        "overall_eta_basis": (
+            str((running or {}).get("eta_basis") or "正在估算；尚未开始的阶段不做虚假预测")
+        ),
     }
 
 
@@ -577,7 +723,7 @@ def task_output_acceptance(config: dict[str, Any], state: dict[str, Any] | None)
         # Maintenance tasks have their own smaller plan and acceptance rules.
         # Applying the full 15-stage contract here incorrectly turns a
         # successful repair/rebuild into FAILED_OUTPUT_ACCEPTANCE.
-        if str(task.get("mode") or "full") in {"repair", "rebuild_search"}:
+        if str(task.get("mode") or "full") in {"repair_images", "rebuild_search", "audio_enrichment"}:
             return {}
         return {
             key: reason for key in ("scan", "image_preview", "video_frames", "openclip")
@@ -597,7 +743,7 @@ def reconcile_task_pipeline_with_library(
     result = dict(pipeline)
     result["search_ready"] = bool(readiness.get("ready"))
     mode = str(task_definition.get("mode") or "full")
-    if mode in {"repair", "rebuild_search"}:
+    if mode in {"repair", "repair_images", "rebuild_search", "audio_enrichment"}:
         result["failed_record_count"] = int(
             repository_pipeline.get("failed_record_count") or 0
         )
@@ -668,6 +814,16 @@ def snapshot(
         {"ready": False, "checks": {"library_configured": repository is not None}},
         manager.readiness if manager else None,
     )
+    if current_task and current_task.get("status") != "success":
+        readiness["ready"] = False
+        readiness.setdefault("checks", {})["pipeline_complete"] = False
+    elif current_task:
+        readiness.setdefault("checks", {})["pipeline_complete"] = True
+    if database.get("integrity_check") != "ok" or int(database.get("foreign_key_error_count") or 0) != 0:
+        readiness["ready"] = False
+        readiness.setdefault("checks", {})["database_integrity"] = False
+    else:
+        readiness.setdefault("checks", {})["database_integrity"] = True
     if acceptance_errors:
         readiness["ready"] = False
         readiness.setdefault("checks", {})["pipeline_output_acceptance"] = False
@@ -736,6 +892,7 @@ def snapshot(
         "search_runtime": readiness,
         "runtime_contract": contract_status,
         "hardware": detect_hardware(),
+        "resources": live_resource_snapshot(current_task),
         "recent_runs": recent_runs,
         "existing_libraries": existing_libraries(config),
         "active_runs": active_runs,
@@ -887,9 +1044,8 @@ def start_task(config: dict[str, Any], config_path: Path, args: argparse.Namespa
 def start_existing_task(
     config: dict[str, Any], config_path: Path, args: argparse.Namespace,
 ) -> dict[str, Any]:
-    if args.task_mode not in {"repair", "rebuild_search"}:
-        labels = {"incremental": "增量整理"}
-        raise ValueError(f"{labels.get(args.task_mode, args.task_mode)}尚未开放")
+    if args.task_mode not in {"incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"}:
+        raise ValueError(f"不支持的已有素材库维护方式：{args.task_mode}")
     library_task_path = Path(args.task).expanduser().resolve(strict=True)
     library_record = _existing_library_record(library_task_path)
     if library_record is None:
@@ -934,8 +1090,22 @@ def start_existing_task(
         hardware = detect_hardware()
         created_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         directory_time = time.strftime("%Y%m%d_%H%M%S")
-        mode_label = "修复缺失内容" if args.task_mode == "repair" else "重建素材位置与特殊素材入口"
-        task_prefix = "repair_" if args.task_mode == "repair" else "rebuild_"
+        mode_labels = {
+            "incremental": "增量整理",
+            "repair": "修复缺失内容",
+            "repair_images": "补充缺失图片描述",
+            "rebuild_search": "重建搜索入口",
+            "audio_enrichment": "补充音频搜索",
+        }
+        task_prefixes = {
+            "incremental": "incremental_",
+            "repair": "repair_",
+            "repair_images": "repair_images_",
+            "rebuild_search": "rebuild_",
+            "audio_enrichment": "audio_",
+        }
+        mode_label = mode_labels[args.task_mode]
+        task_prefix = task_prefixes[args.task_mode]
         task_id = task_prefix + hashlib.sha256(
             f"{library_task_path}\0{time.time_ns()}".encode("utf-8")
         ).hexdigest()[:20]
@@ -960,11 +1130,19 @@ def start_existing_task(
             "task_contract": "media_archive_image_video_maintenance_task_v1",
             "task_id": task_id, "name": str(library_task.get("name") or "未命名素材库"),
             "mode": args.task_mode, "library_task_path": str(library_task_path),
+            "central_library_task_id": str(
+                library_task.get("central_library_task_id")
+                or library_task.get("task_id")
+                or library_task_path.parent.name
+            ),
             "source_root": str(source), "source_access": "read_only",
             "workspace": str(workspace), "database": str(database),
             "stage_output_root": str(stage_output_root),
             "state_path": str(state_path), "log_path": str(log_path),
             "profile": profile, "runtime": runtime, "status": "queued",
+            "software_version": "1.2.0",
+            "central_contract_required": True,
+            "strong_fingerprint_required": True,
             "created_at": created_at,
         }
         task_path = repair_dir / "task.json"
@@ -981,15 +1159,18 @@ def start_existing_task(
         register_library(library_task_path)
         pid = _launch_task_worker(config_path, task_path, log_path, resume=False)
         (repair_dir / "pipeline.pid").write_text(f"{pid}\n", encoding="utf-8")
-    message = (
-        "缺失内容修复已启动；已有成功结果不会重跑"
-        if args.task_mode == "repair"
-        else "素材位置与特殊素材分组重建已启动；不运行识别模型"
-    )
+    messages = {
+        "incremental": "增量整理已启动；沿用所选素材库，只处理新增、变更或缺失结果",
+        "repair": "缺失内容修复已启动；已有成功结果不会重跑",
+        "repair_images": "图片描述专项修复已启动；已有成功结果不会重跑",
+        "rebuild_search": "搜索入口重建已启动；只复用已有数据库，不读取素材、不运行识别模型",
+        "audio_enrichment": "音频搜索补充已启动；只处理视频人声并写入当前索引，前19阶段不会重跑，临时音频会在转写落账后删除",
+    }
     return {
-        "status": "PASS", "message": message,
+        "status": "PASS", "message": messages[args.task_mode],
         "path": str(task_path), "identifier": task_id,
-        "central_database_write": True, "model_run": args.task_mode == "repair",
+        "central_database_write": True,
+        "model_run": args.task_mode in {"incremental", "repair", "repair_images", "audio_enrichment"},
     }
 
 
@@ -1070,6 +1251,9 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
         "status": "queued",
         "profile": profile,
         "runtime": runtime,
+        "software_version": "1.2.0",
+        "central_contract_required": True,
+        "strong_fingerprint_required": True,
         "created_at": created_at,
     }
     task_path = task_dir / "task.json"
@@ -1194,6 +1378,7 @@ def _search_environment(
     # Keep the Unix socket path short enough for macOS' AF_UNIX limit.
     worker_root = Path("/tmp") / f"mo-search-{os.getuid()}-{namespace}"
     environment["MEDIA_ARCHIVE_SEARCH_WORKER_ROOT"] = str(worker_root)
+    environment["MEDIA_ARCHIVE_SEARCH_DATA_CACHE"] = str(cache_root / "data_cache_v1")
     return environment
 
 
@@ -1332,6 +1517,79 @@ def _media_timecode(milliseconds: int) -> str:
     return f"{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
+def _legacy_person_annotations(database: Path) -> tuple[Path, dict[str, Any]]:
+    path = annotation_path(application_state_root(), database)
+    return path, load_annotations(path)
+
+
+def _load_person_annotation_payload(database: Path) -> tuple[dict[str, Any], str, str]:
+    """Read task-owned metadata first without modifying a legacy library."""
+    try:
+        task_id = task_id_for_database(database)
+        central = load_central_person_annotations(database, task_id)
+        if central.get("identities") or central.get("cluster_to_identity"):
+            return central, "central_database", task_id
+        legacy_path, legacy = _legacy_person_annotations(database)
+        if legacy.get("identities") or legacy.get("cluster_to_identity"):
+            return legacy, str(legacy_path), task_id
+        return central, "central_database", task_id
+    except (OSError, RuntimeError, sqlite3.Error):
+        path, payload = _legacy_person_annotations(database)
+        return payload, str(path), ""
+
+
+def _task_payload_for_database(database: Path) -> dict[str, Any]:
+    task_path = database.parent.parent / "task.json"
+    if task_path.is_file():
+        try:
+            payload = load_json(task_path)
+            payload["task_path"] = str(task_path)
+            payload.setdefault("software_version", APP_VERSION)
+            return payload
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    stable = hashlib.sha256(str(database.resolve()).encode("utf-8")).hexdigest()[:20]
+    return {
+        "task_id": f"legacy_{stable}",
+        "name": database.parent.parent.name or "历史素材库",
+        "task_path": str(task_path) if task_path.is_file() else "",
+        "source_root": "",
+        "workspace": str(database.parent),
+        "database": str(database),
+        "software_version": APP_VERSION,
+        "mode": "legacy_migration",
+        "status": "completed",
+    }
+
+
+def _load_writable_person_annotation_payload(
+    database: Path,
+) -> tuple[dict[str, Any], str]:
+    """Migrate local person metadata once, with a SQLite backup, on first edit."""
+    legacy_path, legacy = _legacy_person_annotations(database)
+    report = ensure_central_schema(
+        database,
+        task=_task_payload_for_database(database),
+        backup_dir=database.parent.parent / "backups" / "central_schema",
+    )
+    task_id = task_id_for_database(database)
+    payload = load_central_person_annotations(database, task_id)
+    if (
+        not payload.get("identities")
+        and not payload.get("cluster_to_identity")
+        and (legacy.get("identities") or legacy.get("cluster_to_identity"))
+    ):
+        save_central_person_annotations(database, task_id, legacy)
+        payload = load_central_person_annotations(database, task_id)
+    return payload, task_id
+
+
+def _save_person_annotation_payload(
+    database: Path, task_id: str, payload: dict[str, Any]
+) -> None:
+    save_central_person_annotations(database, task_id, payload)
+
+
 def run_person_cluster_search(
     repository: ReadonlyMediaRepository,
     person_cluster_id: str,
@@ -1339,12 +1597,26 @@ def run_person_cluster_search(
     preview_window_ms: int,
     result_offset: int = 0,
     result_limit: int = 30,
+    source_content_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return existing ReID cluster members using a query-only DB connection."""
+    """Return machine clusters or one locally merged identity, read-only."""
     started = time.monotonic()
-    page = repository.person_cluster_results(
-        person_cluster_id, media_type, result_offset, result_limit,
+    repository_db = getattr(repository, "db_path", None)
+    annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
+        "contract": "media_archive_local_person_annotations_v1", "identities": {}, "cluster_to_identity": {}
+    }
+    resolved_cluster_ids = resolve_clusters(annotations, person_cluster_id)
+    cluster_selector: str | list[str] = (
+        resolved_cluster_ids[0] if len(resolved_cluster_ids) == 1 else resolved_cluster_ids
     )
+    if source_content_id:
+        page = repository.person_cluster_results(
+            cluster_selector, media_type, result_offset, result_limit, source_content_id,
+        )
+    else:
+        page = repository.person_cluster_results(
+            cluster_selector, media_type, result_offset, result_limit,
+        )
     half_window = max(0, int(preview_window_ms) // 2)
     items = []
     for row in page["items"]:
@@ -1357,6 +1629,8 @@ def run_person_cluster_search(
             "result_id": f"person5e_{cluster_id}_{visual_id}",
             "visual_unit_id": visual_id,
             "source_content_id": str(row["source_content_id"]),
+            "source_frame_count": int(row.get("source_frame_count") or 1),
+            "result_level": str(row.get("result_level") or "frame"),
             "derived_id": str(row["derived_id"]),
             "source_relative_path": str(row.get("relative_path") or ""),
             "media_type": str(row["media_type"]),
@@ -1374,9 +1648,10 @@ def run_person_cluster_search(
             "openclip_cosine": None,
             "text_semantic_score": None,
             "text_preview": (
-                "该画面与所选画面属于同一匿名人物簇；"
-                "这只表示本地人脸特征相似，不代表姓名、服装或场景相同。"
-            ),
+                f"该素材内有 {int(row.get('source_frame_count') or 1)} 个画面属于所选待确认人物组；"
+                if row.get("result_level") == "source" else
+                "该画面属于所选待确认人物组；"
+            ) + "这只表示本地人脸特征相似，不代表已确认真实身份。",
             "environment_label": "同一人物扩展",
             "hit_reason": "same_person_reid",
             "hit_field": "person_reid",
@@ -1402,6 +1677,8 @@ def run_person_cluster_search(
         "result_limit": int(page["limit"]),
         "next_result_offset": page["next_offset"],
         "result_count_by_media": page["count_by_media"],
+        "person_frame_total_count": int(page.get("frame_total") or page["total"]),
+        "result_level": "frame" if source_content_id else "source",
         "database_write": False,
         "model_run": False,
         "network_used": False,
@@ -1415,10 +1692,21 @@ def run_person_cluster_catalog(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Expose reliable anonymous-person groups as a query-only UI catalog."""
-    page = repository.person_cluster_catalog(offset, limit)
+    requested_limit = max(1, min(int(limit), 200))
+    page = repository.person_cluster_catalog(0, requested_limit)
+    repository_db = getattr(repository, "db_path", None)
+    annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
+        "contract": "media_archive_local_person_annotations_v1", "identities": {}, "cluster_to_identity": {}
+    }
+    grouped = grouped_catalog(page["items"], annotations)
+    page = {
+        "total": len(grouped), "offset": max(0, int(offset)),
+        "limit": requested_limit,
+        "items": grouped[max(0, int(offset)):max(0, int(offset)) + requested_limit],
+    }
     items = []
     for index, row in enumerate(page["items"], start=int(page["offset"]) + 1):
-        stored_name = str(row.get("anonymous_display_name") or "").strip()
+        stored_name = str(row.get("display_name") or row.get("anonymous_display_name") or "").strip()
         items.append({
             "person_cluster_id": str(row["person_cluster_id"]),
             "display_name": stored_name or f"匿名人物 {index:02d}",
@@ -1429,6 +1717,9 @@ def run_person_cluster_catalog(
             "preview_path": str(row.get("preview_path") or ""),
             "media_type": str(row.get("media_type") or ""),
             "time_position_ms": int(row.get("time_position_ms") or 0),
+            "tags": list(row.get("tags") or []),
+            "merged_cluster_count": int(row.get("merged_cluster_count") or 1),
+            "is_local_identity": bool(row.get("is_local_identity")),
         })
     return {
         "status": "PASS",
@@ -1446,6 +1737,51 @@ def run_person_cluster_catalog(
     }
 
 
+def update_person_name(
+    repository: ReadonlyMediaRepository, identifier: str, display_name: str, tags: str,
+) -> dict[str, Any]:
+    payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    identity_id = name_identity(
+        payload, identifier, display_name,
+        [value for value in re.split(r"[,，;；]", tags) if value.strip()],
+    )
+    _save_person_annotation_payload(repository.db_path, task_id, payload)
+    return {
+        "status": "PASS", "message": "人物名称与标签已保存在本机",
+        "person_identity_id": identity_id, "annotation_path": str(repository.db_path),
+        "database_write": True, "local_metadata_write": True,
+    }
+
+
+def update_person_merge(
+    repository: ReadonlyMediaRepository, source: str, target: str,
+) -> dict[str, Any]:
+    if source == target:
+        raise ValueError("请选择另一个人物组作为合并目标")
+    payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    identity_id = merge_identity(payload, source, target)
+    _save_person_annotation_payload(repository.db_path, task_id, payload)
+    return {
+        "status": "PASS", "message": "已归入同一个本地人物；机器识别原记录未修改",
+        "person_identity_id": identity_id, "annotation_path": str(repository.db_path),
+        "database_write": True, "local_metadata_write": True,
+    }
+
+
+def update_person_detach(
+    repository: ReadonlyMediaRepository, cluster_id: str,
+) -> dict[str, Any]:
+    payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    clusters = resolve_clusters(payload, cluster_id)
+    detached = [detach_cluster(payload, cluster_id) for cluster_id in clusters]
+    _save_person_annotation_payload(repository.db_path, task_id, payload)
+    return {
+        "status": "PASS", "message": f"已拆分为 {len(detached)} 个独立本地人物；机器识别原记录未修改",
+        "person_identity_id": detached[0] if detached else "", "annotation_path": str(repository.db_path),
+        "database_write": True, "local_metadata_write": True,
+    }
+
+
 def run_search(
     config: dict[str, Any],
     repository: ReadonlyMediaRepository,
@@ -1455,12 +1791,26 @@ def run_search(
     preview_window_ms: int,
     result_offset: int = 0,
     result_limit: int = 30,
+    path_prefix: str = "",
+    source_mtime_min: int | None = None,
+    source_mtime_max: int | None = None,
+    has_ocr: bool = False,
+    has_person: bool = False,
 ) -> dict[str, Any]:
     clean_query = " ".join(query.split())
     if not (1 <= len(clean_query) <= 512):
         raise ValueError("搜索文字长度必须在 1 到 512 个字符之间")
-    if not manager.readiness()["ready"]:
-        raise RuntimeError("搜索运行环境不完整")
+    readiness = manager.readiness()
+    if not readiness["ready"]:
+        preflight = dict(readiness.get("database_preflight") or {})
+        database_error = str(preflight.get("database_error") or "")
+        if database_error:
+            raise RuntimeError(
+                "搜索数据库不可用："
+                f"{database_error}（{preflight.get('database_path', '')}）"
+            )
+        missing = [name for name, passed in dict(readiness["checks"]).items() if not passed]
+        raise RuntimeError("搜索运行环境未通过预检：" + "、".join(missing))
 
     job_id = "native5e_" + uuid.uuid4().hex[:20]
     # Search is a read-only operation from the library's point of view.  Its
@@ -1480,6 +1830,11 @@ def run_search(
         "offset": max(0, int(result_offset)),
         "limit": max(1, min(int(result_limit), 200)),
         "device": "auto",
+        "path_prefix": path_prefix.strip(),
+        "source_mtime_min": source_mtime_min,
+        "source_mtime_max": source_mtime_max,
+        "has_ocr": bool(has_ocr),
+        "has_person": bool(has_person),
     }
     environment = _search_environment(shared_cache_root)
     disk_before = _search_file_snapshot(shared_cache_root)
@@ -1591,6 +1946,24 @@ def run_search(
             ),
         })
         public_results.append(item)
+    annotations: dict[str, dict[str, Any]] = {}
+    database_path = getattr(repository, "db_path", None)
+    if database_path:
+        try:
+            annotation_task_id = task_id_for_database(Path(database_path))
+            annotations = asset_annotations(
+                Path(database_path), task_id=annotation_task_id,
+                source_content_ids=[
+                    str(row.get("source_content_id") or "") for row in public_results
+                ],
+            )
+        except (OSError, RuntimeError, sqlite3.Error):
+            annotations = {}
+    for item in public_results:
+        item["user_annotation"] = annotations.get(
+            str(item.get("source_content_id") or ""),
+            {"tags": [], "note": "", "favorite": False, "rating": 0, "ignored": False},
+        )
     final_payload = {
         **payload,
         "result_count": len(public_results),
@@ -1613,11 +1986,34 @@ def run_search(
         "log_max_bytes": SEARCH_LOG_MAX_BYTES,
         "disk_audit": _search_disk_audit(disk_before, disk_after),
     })
+    elapsed_seconds = round(time.monotonic() - started, 3)
+    history_recorded = False
+    database_path = getattr(repository, "db_path", None)
+    if database_path:
+        try:
+            history_task_id = task_id_for_database(Path(database_path))
+            record_search_history(
+                Path(database_path),
+                task_id=history_task_id,
+                query_text=clean_query,
+                filters={
+                    "media_type": media_type, "preview_window_ms": preview_window_ms,
+                    "path_prefix": path_prefix.strip(),
+                    "source_mtime_min": source_mtime_min,
+                    "source_mtime_max": source_mtime_max,
+                    "has_ocr": bool(has_ocr), "has_person": bool(has_person),
+                },
+                result_count=int(payload.get("result_total_count") or len(public_results)),
+                elapsed_seconds=elapsed_seconds,
+            )
+            history_recorded = True
+        except (OSError, RuntimeError, sqlite3.Error):
+            pass
     return {
         "status": "PASS",
         "job_id": job_id,
         "query": clean_query,
-        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "elapsed_seconds": elapsed_seconds,
         "coverage": {
             "eligible_visual_unit_count": summary_payload.get(
                 "eligible_visual_unit_count",
@@ -1642,7 +2038,9 @@ def run_search(
         "result_path": str(stable_result_path),
         "summary_path": str(stable_summary_path),
         "log_path": str(stable_log_path),
-        "database_write": False,
+        "database_write": history_recorded,
+        "search_results_read_only": True,
+        "search_history_recorded": history_recorded,
         "network_used": False,
         "original_media_read": False,
     }
@@ -1700,29 +2098,159 @@ def run_search_prewarm(
     }
 
 
+def search_metadata(repository: ReadonlyMediaRepository) -> dict[str, Any]:
+    """Return per-library search history and saved queries without source reads."""
+    task_id = task_id_for_database(repository.db_path)
+    return {
+        "status": "PASS",
+        "task_id": task_id,
+        "history": list_search_history(repository.db_path, task_id, limit=30),
+        "saved_searches": list_saved_searches(repository.db_path, task_id),
+        "database_write": False,
+        "original_media_read": False,
+        "model_run": False,
+    }
+
+
+def save_search_metadata(
+    repository: ReadonlyMediaRepository,
+    *,
+    display_name: str,
+    query_text: str,
+    media_type: str,
+    preview_window_ms: int,
+    path_prefix: str = "",
+    source_mtime_min: int | None = None,
+    source_mtime_max: int | None = None,
+    has_ocr: bool = False,
+    has_person: bool = False,
+) -> dict[str, Any]:
+    task_id = task_id_for_database(repository.db_path)
+    saved_search_id = save_central_search(
+        repository.db_path,
+        task_id=task_id,
+        display_name=display_name,
+        query_text=query_text,
+        filters={
+            "media_type": media_type, "preview_window_ms": preview_window_ms,
+            "path_prefix": path_prefix.strip(),
+            "source_mtime_min": source_mtime_min,
+            "source_mtime_max": source_mtime_max,
+            "has_ocr": bool(has_ocr), "has_person": bool(has_person),
+        },
+    )
+    return {
+        "status": "PASS",
+        "message": "搜索条件已保存在当前素材库",
+        "saved_search_id": saved_search_id,
+        "database_write": True,
+        "original_media_read": False,
+        "model_run": False,
+    }
+
+
+def save_asset_annotation(
+    repository: ReadonlyMediaRepository,
+    *,
+    source_content_id: str,
+    tags: str,
+    note: str,
+    favorite: bool,
+    rating: int,
+    ignored: bool,
+) -> dict[str, Any]:
+    task_id = task_id_for_database(repository.db_path)
+    annotation_id = upsert_asset_annotation(
+        repository.db_path,
+        task_id=task_id,
+        source_content_id=source_content_id,
+        tags=[value for value in re.split(r"[,，]", tags) if value.strip()],
+        note=note,
+        favorite=favorite,
+        rating=rating,
+        ignored=ignored,
+    )
+    return {
+        "status": "PASS",
+        "message": "素材标签与备注已保存在当前素材库；模型结果未修改",
+        "identifier": annotation_id,
+        "database_write": True,
+        "original_media_read": False,
+        "model_run": False,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Native macOS UI bridge")
     parser.add_argument("--config", type=Path, required=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("snapshot")
+    activate = subparsers.add_parser("activate-library")
+    activate.add_argument("--task", type=Path, required=True)
     subparsers.add_parser("search-prewarm")
+    subparsers.add_parser("search-metadata")
+    saved_search = subparsers.add_parser("save-search")
+    saved_search.add_argument("--name", required=True)
+    saved_search.add_argument("--query", required=True)
+    saved_search.add_argument("--media-type", choices=("all", "image", "video", "audio"), default="all")
+    saved_search.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
+    saved_search.add_argument("--path-prefix", default="")
+    saved_search.add_argument("--source-mtime-min", type=int)
+    saved_search.add_argument("--source-mtime-max", type=int)
+    saved_search.add_argument("--has-ocr", action="store_true")
+    saved_search.add_argument("--has-person", action="store_true")
+    annotation = subparsers.add_parser("annotate-source")
+    annotation.add_argument("--source-content-id", required=True)
+    annotation.add_argument("--tags", default="")
+    annotation.add_argument("--note", default="")
+    annotation.add_argument("--favorite", choices=("true", "false"), default="false")
+    annotation.add_argument("--rating", type=int, choices=range(0, 6), default=0)
+    annotation.add_argument("--ignored", choices=("true", "false"), default="false")
     history = subparsers.add_parser("task-detail")
     history.add_argument("--task", type=Path, required=True)
+    storage = subparsers.add_parser("storage-audit")
+    storage.add_argument("--task", type=Path, required=True)
+    storage.add_argument("--largest-limit", type=int, choices=range(1, 201), default=30)
+    cleanup_plan = subparsers.add_parser("storage-cleanup-plan")
+    cleanup_plan.add_argument("--task", type=Path, required=True)
+    cleanup_plan.add_argument("--include-resume-affecting", action="store_true")
+    cleanup_apply = subparsers.add_parser("storage-cleanup-apply")
+    cleanup_apply.add_argument("--task", type=Path, required=True)
+    cleanup_apply.add_argument("--plan-id", required=True)
+    cleanup_apply.add_argument("--confirmation-phrase", required=True)
+    comparison = subparsers.add_parser("compare-tasks")
+    comparison.add_argument("--left-task", type=Path, required=True)
+    comparison.add_argument("--right-task", type=Path, required=True)
     search = subparsers.add_parser("search")
     search.add_argument("--query", required=True)
-    search.add_argument("--media-type", choices=("all", "image", "video"), default="all")
+    search.add_argument("--media-type", choices=("all", "image", "video", "audio"), default="all")
     search.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
     search.add_argument("--result-offset", type=int, default=0)
     search.add_argument("--result-limit", type=int, choices=range(1, 201), default=30)
+    search.add_argument("--path-prefix", default="")
+    search.add_argument("--source-mtime-min", type=int)
+    search.add_argument("--source-mtime-max", type=int)
+    search.add_argument("--has-ocr", action="store_true")
+    search.add_argument("--has-person", action="store_true")
     person = subparsers.add_parser("person-cluster")
     person.add_argument("--cluster-id", required=True)
     person.add_argument("--media-type", choices=("all", "image", "video"), default="all")
     person.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
     person.add_argument("--result-offset", type=int, default=0)
     person.add_argument("--result-limit", type=int, choices=range(1, 101), default=30)
+    person.add_argument("--source-content-id", default="")
     people = subparsers.add_parser("person-clusters")
     people.add_argument("--result-offset", type=int, default=0)
     people.add_argument("--result-limit", type=int, choices=range(1, 201), default=100)
+    person_name = subparsers.add_parser("person-name")
+    person_name.add_argument("--person-id", required=True)
+    person_name.add_argument("--display-name", required=True)
+    person_name.add_argument("--tags", default="")
+    person_merge = subparsers.add_parser("person-merge")
+    person_merge.add_argument("--source-person-id", required=True)
+    person_merge.add_argument("--target-person-id", required=True)
+    person_detach = subparsers.add_parser("person-detach")
+    person_detach.add_argument("--person-id", required=True)
     profile = subparsers.add_parser("save-profile")
     profile.add_argument("--scheduler-mode", choices=("auto", "pipeline_async", "stage_serial"), required=True)
     profile.add_argument("--model-workers", type=int, required=True)
@@ -1735,16 +2263,16 @@ def build_parser() -> argparse.ArgumentParser:
     task = subparsers.add_parser("save-task")
     task.add_argument("--source", required=True)
     task.add_argument("--name", required=True)
-    task.add_argument("--task-mode", choices=("full", "incremental", "repair", "rebuild_search"), required=True)
+    task.add_argument("--task-mode", choices=("full", "incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"), required=True)
     task.add_argument("--workspace-root")
     start = subparsers.add_parser("start-task")
     start.add_argument("--source", required=True)
     start.add_argument("--name", required=True)
-    start.add_argument("--task-mode", choices=("full", "incremental", "repair", "rebuild_search"), required=True)
+    start.add_argument("--task-mode", choices=("full", "incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"), required=True)
     start.add_argument("--workspace-root", required=True)
     existing = subparsers.add_parser("start-existing-task")
     existing.add_argument("--task", required=True)
-    existing.add_argument("--task-mode", choices=("incremental", "repair", "rebuild_search"), required=True)
+    existing.add_argument("--task-mode", choices=("incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"), required=True)
     subparsers.add_parser("resume-task")
     subparsers.add_parser("stop-task")
     worker = subparsers.add_parser("pipeline-worker")
@@ -1759,18 +2287,71 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         if args.command == "snapshot":
             report = snapshot(config, repository, manager)
+        elif args.command == "activate-library":
+            report = activate_library(config, args.task)
         elif args.command == "search-prewarm":
             if manager is None:
                 raise RuntimeError("请先新建或连接一个素材库")
             report = run_search_prewarm(config, manager)
+        elif args.command == "search-metadata":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = search_metadata(repository)
+        elif args.command == "save-search":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = save_search_metadata(
+                repository,
+                display_name=args.name,
+                query_text=args.query,
+                media_type=args.media_type,
+                preview_window_ms=args.preview_window_ms,
+                path_prefix=args.path_prefix,
+                source_mtime_min=args.source_mtime_min,
+                source_mtime_max=args.source_mtime_max,
+                has_ocr=args.has_ocr,
+                has_person=args.has_person,
+            )
+        elif args.command == "annotate-source":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = save_asset_annotation(
+                repository,
+                source_content_id=args.source_content_id,
+                tags=args.tags,
+                note=args.note,
+                favorite=args.favorite == "true",
+                rating=args.rating,
+                ignored=args.ignored == "true",
+            )
         elif args.command == "task-detail":
             report = task_detail(args.task)
+        elif args.command == "storage-audit":
+            report = audit_task_storage(args.task, largest_limit=args.largest_limit)
+        elif args.command == "storage-cleanup-plan":
+            report = build_cleanup_plan(
+                args.task,
+                include_resume_affecting=args.include_resume_affecting,
+            )
+        elif args.command == "storage-cleanup-apply":
+            plan = build_cleanup_plan(args.task)
+            if str(plan.get("plan_id") or "") != args.plan_id:
+                raise RuntimeError("存储内容已变化，请重新生成并核对清理计划")
+            report = apply_cleanup_plan(
+                args.task,
+                plan,
+                confirmation_phrase=args.confirmation_phrase,
+            )
+        elif args.command == "compare-tasks":
+            report = compare_task_storage(args.left_task, args.right_task)
         elif args.command == "search":
             if repository is None or manager is None:
                 raise RuntimeError("请先新建或连接一个素材库")
             report = run_search(
                 config, repository, manager, args.query, args.media_type, args.preview_window_ms,
-                args.result_offset, args.result_limit,
+                args.result_offset, args.result_limit, args.path_prefix,
+                args.source_mtime_min, args.source_mtime_max,
+                args.has_ocr, args.has_person,
             )
         elif args.command == "person-cluster":
             if repository is None:
@@ -1778,6 +2359,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             report = run_person_cluster_search(
                 repository, args.cluster_id, args.media_type,
                 args.preview_window_ms, args.result_offset, args.result_limit,
+                args.source_content_id or None,
             )
         elif args.command == "person-clusters":
             if repository is None:
@@ -1785,6 +2367,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             report = run_person_cluster_catalog(
                 repository, args.result_offset, args.result_limit,
             )
+        elif args.command == "person-name":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = update_person_name(
+                repository, args.person_id, args.display_name, args.tags,
+            )
+        elif args.command == "person-merge":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = update_person_merge(
+                repository, args.source_person_id, args.target_person_id,
+            )
+        elif args.command == "person-detach":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = update_person_detach(repository, args.person_id)
         elif args.command == "save-profile":
             report = save_profile(config, args)
         elif args.command == "save-model-root":

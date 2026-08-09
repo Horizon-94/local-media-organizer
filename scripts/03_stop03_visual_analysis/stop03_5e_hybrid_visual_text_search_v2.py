@@ -23,6 +23,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - compatibility fallback
+    np = None
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -151,12 +156,35 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def readonly_database_identity(path: Path) -> tuple[int, int]:
+    """Cheap mutation guard for interactive read-only searches.
+
+    The task completion gate already performs the expensive integrity and hash
+    audits. Re-hashing a multi-GB SQLite file several times for every query made
+    an otherwise sub-second warm search take tens of seconds. The query opens
+    SQLite in mode=ro with query_only enabled, while this identity detects an
+    unexpected concurrent replacement or write during the request.
+    """
+    stat = path.stat()
+    return int(stat.st_size), int(stat.st_mtime_ns)
+
+
 def connect_ro(db: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30.0)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA query_only=ON")
-    con.execute("PRAGMA foreign_keys=ON")
-    return con
+    # The immutable fallback is only used for an existing, completed database
+    # when its external/APFS volume rejects SQLite's shared-lock sidecar.
+    path = Path(db).expanduser().resolve(strict=True)
+    errors: list[str] = []
+    for suffix in ("mode=ro", "mode=ro&immutable=1"):
+        try:
+            con = sqlite3.connect(f"{path.as_uri()}?{suffix}", uri=True, timeout=30.0)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA query_only=ON")
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            return con
+        except sqlite3.Error as exc:
+            errors.append(str(exc))
+    raise sqlite3.OperationalError("readonly_database_open_failed:" + " | ".join(errors))
 
 
 def object_exists(con: sqlite3.Connection, name: str) -> bool:
@@ -203,6 +231,85 @@ def parse_vector_key(value: str) -> tuple[Path, str]:
     return path, embedding_id
 
 
+def _visual_cache_paths() -> tuple[Path, Path, Path] | None:
+    configured = str(os.environ.get("MEDIA_ARCHIVE_SEARCH_DATA_CACHE") or "").strip()
+    if not configured or np is None:
+        return None
+    root = Path(configured).expanduser().absolute() / "current_visual"
+    return root / "metadata.json", root / "visual_ids.json", root / "vectors.npy"
+
+
+def _visual_cache_identity(
+    run_id: str, db_rows: Sequence[Mapping[str, Any]], paths: set[Path], dimension: int,
+) -> dict[str, Any]:
+    payloads = []
+    for path in sorted(paths):
+        stat = path.stat()
+        payloads.append({
+            "path": str(path.absolute()), "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        })
+    return {
+        "contract": "media_archive_visual_search_data_cache_v1",
+        "run_id": run_id, "vector_count": len(db_rows), "dimension": dimension,
+        "payloads": payloads,
+    }
+
+
+def _load_visual_cache(
+    identity: Mapping[str, Any], expected_visual_ids: set[str],
+) -> tuple[dict[str, Sequence[float]], dict[str, Any]] | None:
+    paths = _visual_cache_paths()
+    if paths is None:
+        return None
+    metadata_path, ids_path, vectors_path = paths
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata != dict(identity):
+            return None
+        visual_ids = json.loads(ids_path.read_text(encoding="utf-8"))
+        matrix = np.load(vectors_path, mmap_mode="r", allow_pickle=False)
+        if (
+            len(visual_ids) != int(identity["vector_count"])
+            or matrix.shape != (int(identity["vector_count"]), int(identity["dimension"]))
+            or set(map(str, visual_ids)) != expected_visual_ids
+        ):
+            return None
+        return (
+            {str(visual_id): matrix[index] for index, visual_id in enumerate(visual_ids)},
+            {"runtime_cache_hit": True, "runtime_cache_path": str(vectors_path)},
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _save_visual_cache(
+    identity: Mapping[str, Any], vectors: Mapping[str, Sequence[float]],
+) -> str:
+    paths = _visual_cache_paths()
+    if paths is None or np is None:
+        return ""
+    metadata_path, ids_path, vectors_path = paths
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    visual_ids = sorted(vectors)
+    matrix = np.asarray([vectors[visual_id] for visual_id in visual_ids], dtype=np.float32)
+    suffix = f".{os.getpid()}.tmp"
+    metadata_tmp = metadata_path.with_name(metadata_path.name + suffix)
+    ids_tmp = ids_path.with_name(ids_path.name + suffix)
+    vectors_tmp = vectors_path.with_name(vectors_path.name + suffix)
+    ids_tmp.write_text(json.dumps(visual_ids, separators=(",", ":")), encoding="utf-8")
+    with vectors_tmp.open("wb") as handle:
+        np.save(handle, matrix, allow_pickle=False)
+    metadata_tmp.write_text(
+        json.dumps(dict(identity), ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(ids_tmp, ids_path)
+    os.replace(vectors_tmp, vectors_path)
+    os.replace(metadata_tmp, metadata_path)
+    return str(vectors_path)
+
+
 def load_openclip_vectors(
     con: sqlite3.Connection, run_id: str
 ) -> tuple[dict[str, list[float]], dict[str, Any]]:
@@ -220,6 +327,24 @@ def load_openclip_vectors(
             raise RuntimeError("stop03_5e_v2_vector_key_id_mismatch")
         expected[key_id] = row
         paths.add(path)
+    dimensions = sorted({int(row["dimension"]) for row in db_rows})
+    if len(dimensions) != 1:
+        raise RuntimeError("stop03_5e_v2_openclip_dimension_mixed")
+    identity = _visual_cache_identity(run_id, db_rows, paths, dimensions[0])
+    cached = _load_visual_cache(
+        identity, {str(row["visual_unit_id"]) for row in db_rows},
+    )
+    if cached is not None:
+        vectors, cache_stats = cached
+        return vectors, {
+            "database_embedding_count": len(db_rows),
+            "payload_row_count": len(db_rows),
+            "validated_payload_vector_count": len(vectors),
+            "visual_vector_count": len(vectors),
+            "payload_file_count": len(paths), "dimension": dimensions[0],
+            "payload_paths": [str(path) for path in sorted(paths)],
+            **cache_stats,
+        }
     found: dict[str, list[float]] = {}
     payload_rows = 0
     invalid = 0
@@ -265,9 +390,7 @@ def load_openclip_vectors(
     }
     if len(vectors) != len(expected):
         raise RuntimeError("stop03_5e_v2_visual_vector_not_unique")
-    dimensions = sorted({int(row["dimension"]) for row in db_rows})
-    if len(dimensions) != 1:
-        raise RuntimeError("stop03_5e_v2_openclip_dimension_mixed")
+    cache_path = _save_visual_cache(identity, vectors)
     return vectors, {
         "database_embedding_count": len(db_rows),
         "payload_row_count": payload_rows,
@@ -276,6 +399,8 @@ def load_openclip_vectors(
         "payload_file_count": len(paths),
         "dimension": dimensions[0] if dimensions else 0,
         "payload_paths": [str(path) for path in sorted(paths)],
+        "runtime_cache_hit": False,
+        "runtime_cache_path": cache_path,
     }
 
 
@@ -289,7 +414,9 @@ def latest_text_run(con: sqlite3.Connection) -> Optional[dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
-def visual_filter_sql(args: argparse.Namespace) -> tuple[str, list[Any]]:
+def visual_filter_sql(
+    args: argparse.Namespace, *, source_columns: set[str], database_objects: set[str]
+) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     values: list[Any] = []
     if args.media_type:
@@ -303,6 +430,36 @@ def visual_filter_sql(args: argparse.Namespace) -> tuple[str, list[Any]]:
         escaped = escaped.replace("%", "\\%").replace("_", "\\_")
         clauses.append("s.relative_path LIKE ? ESCAPE '\\'")
         values.append(escaped + "%")
+    source_mtime_min = getattr(args, "source_mtime_min", None)
+    source_mtime_max = getattr(args, "source_mtime_max", None)
+    has_ocr = bool(getattr(args, "has_ocr", False))
+    has_person = bool(getattr(args, "has_person", False))
+    if source_mtime_min is not None:
+        if "mtime" not in source_columns:
+            raise RuntimeError("stop03_5e_v2_source_mtime_filter_unavailable")
+        clauses.append("s.mtime>=?")
+        values.append(source_mtime_min)
+    if source_mtime_max is not None:
+        if "mtime" not in source_columns:
+            raise RuntimeError("stop03_5e_v2_source_mtime_filter_unavailable")
+        clauses.append("s.mtime<=?")
+        values.append(source_mtime_max)
+    if has_ocr:
+        if "stop03_5d_text_documents" not in database_objects:
+            raise RuntimeError("stop03_5e_v2_ocr_filter_unavailable")
+        clauses.append(
+            "EXISTS(SELECT 1 FROM stop03_5d_text_documents td "
+            "WHERE td.canonical_visual_unit_id=v.visual_unit_id "
+            "AND length(trim(td.ocr_text))>0)"
+        )
+    if has_person:
+        if "stop03_1c_person_reid_run_items" not in database_objects:
+            raise RuntimeError("stop03_5e_v2_person_filter_unavailable")
+        clauses.append(
+            "EXISTS(SELECT 1 FROM stop03_1c_person_reid_run_items pi "
+            "WHERE pi.visual_unit_id=v.visual_unit_id AND pi.status='success' "
+            "AND pi.face_count>0)"
+        )
     if args.time_position_ms_min is not None:
         clauses.append("COALESCE(d.time_position_ms,-1)>=?")
         values.append(args.time_position_ms_min)
@@ -315,7 +472,17 @@ def visual_filter_sql(args: argparse.Namespace) -> tuple[str, list[Any]]:
 def load_visual_rows(
     con: sqlite3.Connection, args: argparse.Namespace
 ) -> dict[str, dict[str, Any]]:
-    where, values = visual_filter_sql(args)
+    objects = {
+        str(row[0]) for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+        )
+    }
+    source_columns = {
+        str(row[1]) for row in con.execute("PRAGMA table_info(source_assets)")
+    }
+    where, values = visual_filter_sql(
+        args, source_columns=source_columns, database_objects=objects,
+    )
     rows = con.execute(
         """SELECT v.visual_unit_id,v.derived_id,d.source_content_id,
                   d.derived_type,d.frame_index,COALESCE(d.time_position_ms,-1) time_position_ms,
@@ -351,7 +518,7 @@ def build_preflight(
         raise RuntimeError("stop03_5e_v2_preview_window_invalid")
     if not args.openclip_python.is_file():
         raise RuntimeError("stop03_5e_v2_openclip_python_missing")
-    db_before = sha256_file(db)
+    db_before = readonly_database_identity(db)
     with connect_ro(db) as con:
         required = (
             "visual_units", "derived_assets", "source_assets", "embeddings",
@@ -390,7 +557,7 @@ def build_preflight(
         ),
         "database_integrity_ok": integrity == "ok",
         "foreign_keys_ok": foreign_keys == 0,
-        "central_db_unchanged": db_before == sha256_file(db),
+        "central_db_unchanged": db_before == readonly_database_identity(db),
     }
     if not all(checks.values()):
         raise RuntimeError(
@@ -408,6 +575,11 @@ def build_preflight(
             "source_relative_path_prefix": args.source_relative_path_prefix,
             "time_position_ms_min": args.time_position_ms_min,
             "time_position_ms_max": args.time_position_ms_max,
+            "source_mtime_min": args.source_mtime_min,
+            "source_mtime_max": args.source_mtime_max,
+            "has_ocr": bool(args.has_ocr),
+            "has_person": bool(args.has_person),
+            "audio_evidence_only": bool(getattr(args, "audio_evidence_only", False)),
         },
         "pagination": {"result_offset": args.result_offset, "result_limit": args.result_limit},
         "temporal_dedup_ms": args.temporal_dedup_ms,
@@ -476,20 +648,41 @@ def ranks_desc(values: Mapping[str, float]) -> dict[str, int]:
     return {key: index for index, key in enumerate(ordered, 1)}
 
 
-def text_has_exact_query(query: str, text: str) -> bool:
-    """Avoid treating a single CJK character inside a longer word as exact."""
+SEARCH_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
+    # Local lexical aliases supplement semantic vectors. They are narrow,
+    # inspectable and query-only: no model result or task database is changed.
+    "麦子": ("麦田", "小麦", "麦穗", "麦地"),
+    "树": ("树木", "树林", "树叶", "树枝", "林木"),
+    "路": ("道路", "公路", "小路", "土路", "小径", "路面"),
+}
+
+
+def matching_text_terms(query: str, text: str) -> list[str]:
+    """Return direct query/alias evidence found in one stored description."""
     folded_query = text_search.normalize_query(query).casefold()
     folded_text = text_search.normalize_query(text).casefold()
     if not folded_query:
-        return False
-    if len(folded_query) == 1 and "\u3400" <= folded_query <= "\u9fff":
-        tokens = {
-            text_search.normalize_query(token).casefold()
-            for token in re.split(r"[\s,，。:：;；/|()（）\[\]{}<>《》]+", folded_text)
-            if text_search.normalize_query(token)
-        }
-        return folded_query in tokens
-    return folded_query in folded_text
+        return []
+    terms = (folded_query, *SEARCH_QUERY_ALIASES.get(folded_query, ()))
+    matches: list[str] = []
+    for term in dict.fromkeys(terms):
+        if len(term) == 1 and "\u3400" <= term <= "\u9fff":
+            # Retain the conservative rule for arbitrary single-character
+            # searches.  Concept aliases above still make “树”和“路” useful.
+            tokens = {
+                text_search.normalize_query(token).casefold()
+                for token in re.split(r"[\s,，。:：;；/|()（）\[\]{}<>《》]+", folded_text)
+                if text_search.normalize_query(token)
+            }
+            if term in tokens:
+                matches.append(term)
+        elif term in folded_text:
+            matches.append(term)
+    return matches
+
+
+def text_has_exact_query(query: str, text: str) -> bool:
+    return bool(matching_text_terms(query, text))
 
 
 def score_text_evidence(
@@ -503,25 +696,53 @@ def score_text_evidence(
     scores: dict[str, float] = {}
     evidence: dict[str, dict[str, Any]] = {}
     scanned = 0
+    query_array = (
+        np.asarray(query_vector, dtype=np.float32)
+        if np is not None else None
+    )
     for chunk in text_search.iter_vector_chunks(db, run_id, "", [], 2048):
-        for row in chunk:
+        chunk_scores: Sequence[float]
+        if np is not None and query_array is not None and chunk:
+            matrix = np.vstack([
+                np.frombuffer(
+                    row["vector_blob"], dtype="<f4", count=int(row["model_dimension"]),
+                )
+                for row in chunk
+            ])
+            chunk_scores = matrix @ query_array
+        else:
+            chunk_scores = [
+                sum(
+                    float(a) * float(b)
+                    for a, b in zip(
+                        query_vector,
+                        struct.unpack(
+                            "<" + str(int(row["model_dimension"])) + "f",
+                            row["vector_blob"],
+                        ),
+                    )
+                )
+                for row in chunk
+            ]
+        for row, raw_score in zip(chunk, chunk_scores):
             scanned += 1
-            dimension = int(row["model_dimension"])
-            vector = struct.unpack("<" + str(dimension) + "f", row["vector_blob"])
-            score = sum(float(a) * float(b) for a, b in zip(query_vector, vector))
+            score = float(raw_score)
             for document in documents[str(row["text_vector_id"])]:
                 visual_id = str(document["canonical_visual_unit_id"])
                 if visual_id not in eligible_ids:
                     continue
-                exact = text_has_exact_query(query, str(document["embedding_text"]))
+                exact_terms = matching_text_terms(query, str(document["embedding_text"]))
+                exact = bool(exact_terms)
                 if visual_id not in scores or score > scores[visual_id]:
                     previous_exact = bool(evidence.get(visual_id, {}).get("text_exact_match"))
                     previous_preview = evidence.get(visual_id, {}).get("text_preview")
+                    previous_terms = list(evidence.get(visual_id, {}).get("matched_text_terms") or [])
                     scores[visual_id] = score
                     evidence[visual_id] = {
                         "text_vector_id": row["text_vector_id"],
                         "text_semantic_score": score,
                         "text_exact_match": exact or previous_exact,
+                        "matched_text_terms": sorted(set(previous_terms + exact_terms)),
                         "text_preview": (
                             previous_preview if previous_exact and not exact
                             else str(document["embedding_text"])[:500]
@@ -531,8 +752,109 @@ def score_text_evidence(
                     # Exact evidence must not be hidden by a different document with a
                     # slightly higher semantic cosine for the same visual unit.
                     evidence[visual_id]["text_exact_match"] = True
+                    evidence[visual_id]["matched_text_terms"] = sorted(set(
+                        list(evidence[visual_id].get("matched_text_terms") or []) + exact_terms
+                    ))
                     evidence[visual_id]["text_preview"] = str(document["embedding_text"])[:500]
     return scores, evidence, scanned
+
+
+def score_audio_evidence(
+    db: Path, query: str, query_vector: Optional[Sequence[float]],
+    visual_rows: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, float], dict[str, dict[str, Any]], int]:
+    """Map transcript vectors to the nearest searchable frame in each video."""
+    if query_vector is None:
+        return {}, {}, 0
+    by_source: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for visual_id, row in visual_rows.items():
+        if str(row.get("media_type")) != "video":
+            continue
+        by_source[str(row["source_content_id"])].append(
+            (int(row.get("time_position_ms") or 0), str(visual_id))
+        )
+    if not by_source:
+        return {}, {}, 0
+    with connect_ro(db) as con:
+        objects = {
+            str(row[0]) for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if not {"audio_speech_evidence", "audio_text_embeddings"} <= objects:
+            return {}, {}, 0
+        rows = con.execute(
+            """SELECT e.evidence_id,e.source_content_id,e.start_time_ms,e.end_time_ms,
+                      e.hit_time_ms,e.transcript_text,v.dimension,v.vector_blob
+               FROM audio_speech_evidence e
+               JOIN audio_text_embeddings v USING(evidence_id)
+               WHERE v.status='success'
+               ORDER BY e.source_content_id,e.start_time_ms,e.evidence_id"""
+        ).fetchall()
+    query_array = np.asarray(query_vector, dtype=np.float32) if np is not None else None
+    scores: dict[str, float] = {}
+    evidence: dict[str, dict[str, Any]] = {}
+    scanned = 0
+    for row in rows:
+        source_id = str(row["source_content_id"])
+        candidates = by_source.get(source_id)
+        if not candidates:
+            continue
+        dimension = int(row["dimension"])
+        if dimension != len(query_vector):
+            continue
+        scanned += 1
+        if query_array is not None:
+            vector = np.frombuffer(row["vector_blob"], dtype="<f4", count=dimension)
+            score = float(vector @ query_array)
+        else:
+            vector = struct.unpack("<" + str(dimension) + "f", row["vector_blob"])
+            score = sum(float(a) * float(b) for a, b in zip(query_vector, vector))
+        hit_time = int(row["hit_time_ms"])
+        _frame_time, visual_id = min(candidates, key=lambda item: abs(item[0] - hit_time))
+        transcript = str(row["transcript_text"])
+        exact_terms = matching_text_terms(query, transcript)
+        exact = bool(exact_terms)
+        previous = evidence.get(visual_id, {})
+        if visual_id not in scores or score > scores[visual_id] or (exact and not previous.get("text_exact_match")):
+            scores[visual_id] = max(score, scores.get(visual_id, -1.0))
+            evidence[visual_id] = {
+                "text_vector_id": row["evidence_id"],
+                "text_semantic_score": score,
+                "text_exact_match": exact,
+                "matched_text_terms": exact_terms,
+                "text_preview": transcript[:500],
+                "audio_transcript_match": True,
+                "audio_evidence_id": row["evidence_id"],
+                "audio_start_time_ms": int(row["start_time_ms"]),
+                "audio_end_time_ms": int(row["end_time_ms"]),
+                "audio_hit_time_ms": hit_time,
+                "time_position_ms": hit_time,
+            }
+    return scores, evidence, scanned
+
+
+def merge_audio_text_evidence(
+    text_scores: dict[str, float], text_evidence: dict[str, dict[str, Any]],
+    audio_scores: Mapping[str, float], audio_evidence: Mapping[str, Mapping[str, Any]],
+) -> None:
+    for visual_id, audio_score in audio_scores.items():
+        audio_row = dict(audio_evidence[visual_id])
+        previous = text_evidence.get(visual_id)
+        if previous is None or audio_score > text_scores.get(visual_id, -1.0):
+            text_scores[visual_id] = float(audio_score)
+            text_evidence[visual_id] = audio_row
+        elif bool(audio_row.get("text_exact_match")):
+            merged = dict(previous)
+            merged.update(audio_row)
+            merged["text_semantic_score"] = max(
+                float(previous.get("text_semantic_score") or -1.0), float(audio_score)
+            )
+            merged["matched_text_terms"] = sorted(set(
+                list(previous.get("matched_text_terms") or [])
+                + list(audio_row.get("matched_text_terms") or [])
+            ))
+            text_evidence[visual_id] = merged
 
 
 def load_yoloe_evidence(
@@ -584,10 +906,22 @@ def fuse_results(
     yoloe_matches: Mapping[str, float], yoloe_labels: Mapping[str, Sequence[Mapping[str, Any]]],
     config: Mapping[str, Any], args: argparse.Namespace,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    visual_scores = {
-        visual_id: sum(float(a) * float(b) for a, b in zip(visual_query, vector))
-        for visual_id, vector in visual_vectors.items()
-    }
+    visual_ids = list(visual_vectors)
+    if np is not None and visual_ids:
+        matrix = np.asarray(
+            [visual_vectors[visual_id] for visual_id in visual_ids],
+            dtype=np.float32,
+        )
+        query_array = np.asarray(visual_query, dtype=np.float32)
+        visual_scores = {
+            visual_id: float(score)
+            for visual_id, score in zip(visual_ids, matrix @ query_array)
+        }
+    else:
+        visual_scores = {
+            visual_id: sum(float(a) * float(b) for a, b in zip(visual_query, vector))
+            for visual_id, vector in visual_vectors.items()
+        }
     if not all(math.isfinite(value) for value in visual_scores.values()):
         raise RuntimeError("stop03_5e_v2_visual_score_non_finite")
     visual_ranks = ranks_desc(visual_scores)
@@ -630,6 +964,21 @@ def fuse_results(
     for row in ordered:
         visual_score = float(row["openclip_cosine"])
         text_score = row.get("text_semantic_score")
+        audio_candidate = bool(row.get("audio_transcript_match"))
+        audio_exact = audio_candidate and bool(row.get("text_exact_match"))
+        audio_semantic = (
+            audio_candidate
+            and text_score is not None
+            and float(text_score) >= float(config["minimum_text_semantic_cosine"])
+        )
+        audio_relevant = audio_exact or audio_semantic
+        # ``audio_transcript_match`` is a user-facing claim, not merely a flag
+        # saying that some transcript exists near this frame.  Keep it false
+        # when the transcript did not pass either the exact or semantic gate.
+        row["audio_transcript_match"] = audio_relevant
+        if bool(getattr(args, "audio_evidence_only", False)) and not audio_relevant:
+            rejected += 1
+            continue
         object_confidence = float(yoloe_matches.get(str(row["visual_unit_id"]), 0.0))
         object_supported = (
             object_confidence >= float(config["minimum_object_label_confidence"])
@@ -644,6 +993,12 @@ def fuse_results(
         reasons: list[str] = []
         if bool(row.get("text_exact_match")):
             reasons.append("exact_text")
+        if audio_relevant:
+            reasons.append(
+                "audio_transcript_exact"
+                if audio_exact
+                else "audio_transcript_semantic"
+            )
         if bool(row.get("yoloe_query_match")) and object_supported:
             reasons.append("exact_object_label")
         if visual_score >= float(config["minimum_visual_cosine"]):
@@ -819,6 +1174,8 @@ def native_hit_field(reasons: Sequence[str]) -> str:
         "strong_visual_semantic": "visual_vector",
         "strong_text_semantic": "semantic_text",
         "combined_visual_text": "visual_and_text",
+        "audio_transcript_exact": "audio_transcript",
+        "audio_transcript_semantic": "audio_transcript",
     }
     for reason in reasons:
         field = mapping.get(str(reason), str(reason))
@@ -842,6 +1199,9 @@ def build_native_result_contract(
         )
         end = start + int(response["video_preview_window_ms"]) if start is not None else None
         reasons = [str(value) for value in row.get("relevance_reasons") or []]
+        hit_field = native_hit_field(reasons)
+        if row.get("audio_transcript_match"):
+            hit_field = "audio_transcript" + ("," + hit_field if hit_field else "")
         items.append({
             "result_id": row.get("result_id"),
             "source_content_id": row.get("source_content_id"),
@@ -868,7 +1228,7 @@ def build_native_result_contract(
                 if end is not None else None
             ),
             "hit_reason": ",".join(reasons) or "visual_vector",
-            "hit_field": native_hit_field(reasons),
+            "hit_field": hit_field,
             "score": row.get("relevance_score"),
             "source_online": None,
             "can_open_original": None,
@@ -880,6 +1240,12 @@ def build_native_result_contract(
             "relevance_reasons": reasons,
             "matched_object_labels": row.get("matched_object_labels") or [],
             "text_preview": row.get("text_preview"),
+            "matched_text_terms": row.get("matched_text_terms") or [],
+            "audio_transcript_match": bool(row.get("audio_transcript_match")),
+            "audio_evidence_id": row.get("audio_evidence_id"),
+            "audio_start_time_ms": row.get("audio_start_time_ms"),
+            "audio_end_time_ms": row.get("audio_end_time_ms"),
+            "audio_hit_time_ms": row.get("audio_hit_time_ms"),
             "environment_label": row.get("environment_label"),
             "environment_user_confirmation_required": row.get(
                 "environment_user_confirmation_required"
@@ -1251,10 +1617,15 @@ def prewarm_query_models(
     """Load both query models into short-lived local workers without a query."""
     if not openclip_python.is_file():
         raise RuntimeError("stop03_5e_v2_openclip_python_missing")
-    db_before = sha256_file(db)
+    db_before = readonly_database_identity(db)
     with connect_ro(db) as con:
         openclip_run, _visual_count = select_complete_openclip_run(con)
         text_run = latest_text_run(con)
+        cache_started = time.monotonic()
+        _cached_vectors, visual_cache = load_openclip_vectors(
+            con, str(openclip_run["run_id"]),
+        )
+        visual_cache_seconds = time.monotonic() - cache_started
     started = time.monotonic()
     openclip = prewarm_query_worker(
         "openclip",
@@ -1279,7 +1650,7 @@ def prewarm_query_models(
             "reason": "text_embedding_run_missing",
         }
     )
-    db_after = sha256_file(db)
+    db_after = readonly_database_identity(db)
     return {
         "status": (
             "PASS"
@@ -1291,6 +1662,14 @@ def prewarm_query_models(
         "contract": "media_archive_search_prewarm_v1",
         "openclip": openclip,
         "text": text,
+        "visual_data_cache": {
+            "ready": int(visual_cache.get("visual_vector_count") or 0) > 0,
+            "cache_hit": bool(visual_cache.get("runtime_cache_hit")),
+            "vector_count": int(visual_cache.get("visual_vector_count") or 0),
+            "path": str(visual_cache.get("runtime_cache_path") or ""),
+            "elapsed_seconds": visual_cache_seconds,
+            "contains_query_data": False,
+        },
         "elapsed_seconds": time.monotonic() - started,
         "database_write": False,
         "central_db_unchanged": db_before == db_after,
@@ -1455,7 +1834,7 @@ def execute_query(
         ),
         started=progress_started,
     )
-    db_before = sha256_file(db)
+    db_before = readonly_database_identity(db)
     started = time.monotonic()
     emit_search_progress(
         "visual_query", 2, 7, "正在生成视觉查询向量",
@@ -1521,6 +1900,11 @@ def execute_query(
     text_scores, text_evidence, text_vectors_scanned = score_text_evidence(
         db, runtime["text_run"], query, text_query, eligible_ids
     )
+    audio_scores, audio_evidence, audio_vectors_scanned = score_audio_evidence(
+        db, query, text_query, runtime["visual_rows"]
+    )
+    merge_audio_text_evidence(text_scores, text_evidence, audio_scores, audio_evidence)
+    text_vectors_scanned += audio_vectors_scanned
     emit_search_progress(
         "text_scan", 4, 7, "文本证据比对完成",
         completed=text_vectors_scanned, total=text_vectors_scanned,
@@ -1569,6 +1953,7 @@ def execute_query(
         "video_preview_window_ms": args.preview_window_ms,
         "scanned_visual_vector_count": ranking["scanned_visual_vector_count"],
         "scanned_text_vector_count": text_vectors_scanned,
+        "scanned_audio_text_vector_count": audio_vectors_scanned,
         "ranking": ranking, "results": results,
         "runtime": {**visual_runtime, **text_runtime, "total_query_seconds": time.monotonic() - started},
         "technical_checks": {
@@ -1578,9 +1963,10 @@ def execute_query(
             "result_page_valid": len(results) <= int(args.result_limit),
             "all_scores_finite": all(math.isfinite(float(row["hybrid_score"])) for row in results),
             "all_results_traceable": all(row["visual_unit_id"] and row["source_content_id"] and row["derived_id"] for row in results),
-            "central_db_unchanged": db_before == sha256_file(db),
+            "central_db_unchanged": db_before == readonly_database_identity(db),
         },
-        "central_db_sha256_before": db_before, "central_db_sha256_after": sha256_file(db),
+        "central_db_identity_before": list(db_before),
+        "central_db_identity_after": list(readonly_database_identity(db)),
         "database_write": False, "query_text_persisted": False, "query_vector_persisted": False,
         "network_used": False, "download_used": False, "original_media_read": False,
         "search_index_created": False,
@@ -1643,6 +2029,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-relative-path-prefix")
     parser.add_argument("--time-position-ms-min", type=int)
     parser.add_argument("--time-position-ms-max", type=int)
+    parser.add_argument("--source-mtime-min", type=int)
+    parser.add_argument("--source-mtime-max", type=int)
+    parser.add_argument("--has-ocr", action="store_true")
+    parser.add_argument("--has-person", action="store_true")
+    parser.add_argument("--audio-evidence-only", action="store_true")
     parser.add_argument("--confirm-real-local-query", action="store_true")
     parser.add_argument("--native-app-result-contract", action="store_true")
     return parser
