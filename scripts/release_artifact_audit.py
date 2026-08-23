@@ -23,8 +23,14 @@ SENSITIVE_PATTERNS = {
     "github_token": re.compile(rb"(?:github_pat_|gh[opusr]_)[A-Za-z0-9_]{16,}"),
     "aws_access_key": re.compile(rb"AKIA[0-9A-Z]{16}"),
 }
+_builder_home = str(Path.home()).encode("utf-8")
+# GitHub-hosted runners intentionally embed public checkout metadata beneath
+# ``/Users/runner/work`` in some third-party wheels.  That path contains no
+# developer identity and is reproducible from the public repository.  Other
+# files under the builder home remain forbidden.
 BUILDER_HOME_PATTERN = re.compile(
-    re.escape(str(Path.home()).encode("utf-8")) + rb"(?:/|\b)"
+    re.escape(_builder_home)
+    + (rb"/(?!work(?:/|\b))" if Path.home().name == "runner" else rb"(?:/|\b)")
 )
 CHUNK_SIZE = 1024 * 1024
 OVERLAP = 256

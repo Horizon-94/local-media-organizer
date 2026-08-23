@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -793,6 +794,11 @@ def sanitize_embedded_project_files(
         sanitized = source
         for original, replacement in replacements.items():
             sanitized = sanitized.replace(original, replacement)
+        sanitized = re.sub(
+            r"/Users/[A-Za-z0-9._-]+(?=/|\b)",
+            "$USER_HOME",
+            sanitized,
+        )
         if sanitized != source:
             path.write_text(sanitized, encoding="utf-8")
             changed_files.append(str(path.relative_to(pipeline_root)))

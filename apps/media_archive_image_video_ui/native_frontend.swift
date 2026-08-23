@@ -2335,172 +2335,217 @@ struct SearchResultCard: View {
             ? String(format: "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
             : String(format: "%02d:%02d.%03d", minutes, seconds, millis)
     }
+    private func reasonDisplayName(_ reason: String) -> String {
+        let labels = [
+            "exact_text": "文字直接命中", "exact_object_label": "物体标签直接命中",
+            "strong_visual_semantic": "画面语义强匹配", "strong_text_semantic": "描述语义强匹配",
+            "combined_visual_text": "画面与描述共同匹配", "audio_transcript_exact": "音频转写文字直接命中",
+            "audio_transcript_semantic": "音频转写语义匹配", "same_person_reid": "本地人脸特征属于同一人物组",
+            "same_person_track_suggestion": "同一视频中的人脸锚定人体轨迹候选",
+            "user_favorite": "本地收藏", "source_timeline": "同一视频的索引时间轴",
+        ]
+        return labels[reason] ?? reason
+    }
+    private var channelScores: [String] {
+        [
+            result.openclipCosine.map { "画面原始相似度 \(String(format: "%.3f", $0))" },
+            result.textSemanticScore.map { "描述原始相似度 \(String(format: "%.3f", $0))" },
+        ].compactMap { $0 }
+    }
+    @ViewBuilder private var preview: some View {
+        if let path = result.previewPath, let image = NSImage(contentsOfFile: path) {
+            Image(nsImage: image).resizable().scaledToFill()
+        } else {
+            ZStack {
+                Color.gray.opacity(0.15)
+                Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted)
+            }
+        }
+    }
+    private var heading: some View {
+        HStack {
+            Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill")
+                .foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen)
+            Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent)
+                .font(.headline)
+            Spacer()
+            Toggle("选入导出", isOn: Binding(
+                get: { model.isSelectedForExport(result) },
+                set: { model.setSelectedForExport(result, selected: $0) }
+            )).toggleStyle(.checkbox)
+            Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100))
+                .font(.caption).foregroundStyle(archiveBlue)
+        }
+    }
+    @ViewBuilder private var evidence: some View {
+        if result.mediaType == "video" {
+            Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")")
+                .font(.subheadline).foregroundStyle(archiveMuted)
+        }
+        if result.audioTranscriptMatch == true {
+            Label(
+                "人声转写命中 · 音频时间 \(audioTimecode(result.audioStartTimeMs)) – \(audioTimecode(result.audioEndTimeMs))",
+                systemImage: "waveform"
+            ).font(.subheadline).foregroundStyle(.purple)
+        }
+        Text("场景：\(result.environmentLabel ?? "未标注")")
+            .font(.caption).padding(.horizontal, 7).padding(.vertical, 4)
+            .background(Color.orange.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 5))
+        Text((result.audioTranscriptMatch == true ? "人声转写：" : "描述证据：") + (result.textPreview ?? "该画面通过全视觉通道召回。"))
+            .font(.subheadline).lineLimit(3)
+        if !visibleReasons.isEmpty {
+            Text("命中依据：" + visibleReasons.map(reasonDisplayName).joined(separator: "、"))
+                .font(.caption).foregroundStyle(archiveBlue)
+        }
+        if let labels = result.matchedObjectLabels, !labels.isEmpty {
+            Text("物体标签证据：" + labels.prefix(3).map {
+                "\($0.labelZh ?? $0.label ?? "未知标签")（\(Int(($0.confidence ?? 0) * 100))%）"
+            }.joined(separator: "、"))
+                .font(.caption).foregroundStyle(archiveMuted)
+        }
+        if let terms = result.matchedTextTerms, !terms.isEmpty {
+            Text((result.audioTranscriptMatch == true ? "音频转写命中词：" : "文字证据：") + terms.prefix(4).joined(separator: "、"))
+                .font(.caption).foregroundStyle(archiveMuted)
+        }
+        if !channelScores.isEmpty {
+            Text(channelScores.joined(separator: " · ") + "；综合匹配仅用于结果排序，不是识别概率。")
+                .font(.caption2).foregroundStyle(archiveMuted)
+        }
+    }
+    @ViewBuilder private var personControls: some View {
+        if let clusters = result.personClusters, !clusters.isEmpty {
+            ForEach(clusters) { cluster in
+                HStack {
+                    Button("查找 \(cluster.displayName.isEmpty ? "同一人物" : cluster.displayName)（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
+                        model.searchPersonCluster(cluster.personClusterId)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("只读取本地人物组；人工人物不会改写机器识别结果")
+                    if cluster.manualAssignment == true {
+                        Button("移出人工人物") {
+                            model.removeResult(result, fromPerson: cluster.personClusterId) { success, message in
+                                manualPersonFailed = !success; manualPersonStatus = message
+                            }
+                        }.buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        if result.resultLevel == "source", let frames = result.sourceFrameCount, frames > 1,
+           let cluster = result.personClusters?.first, let sourceId = result.sourceContentId {
+            Button("展开这个素材中的 \(frames) 个画面") {
+                model.searchPersonCluster(cluster.personClusterId, sourceContentId: sourceId)
+            }.buttonStyle(.bordered)
+        }
+        Text("所属位置：\(result.sourceRelativePath ?? "")")
+            .font(.caption2).foregroundStyle(archiveMuted)
+    }
+    @ViewBuilder private var manualPersonEditor: some View {
+        if result.visualUnitId?.isEmpty == false {
+            DisclosureGroup("人工人物归类") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("机器没有识别到正脸也可以人工归类；一张画面可加入多个人物，结果只保存在本机。")
+                        .font(.caption).foregroundStyle(archiveMuted)
+                    HStack {
+                        Picker("加入已有人物", selection: $manualPersonTargetId) {
+                            Text("请选择人物").tag("")
+                            ForEach(model.personClusterCatalog) { person in
+                                Text(person.displayName).tag(person.personClusterId)
+                            }
+                        }.frame(maxWidth: 340)
+                        Button("加入所选人物") {
+                            model.addResult(result, toPerson: manualPersonTargetId) { success, message in
+                                manualPersonFailed = !success; manualPersonStatus = message
+                            }
+                        }.disabled(manualPersonTargetId.isEmpty)
+                    }
+                    HStack {
+                        TextField("新人物名称", text: $manualPersonName)
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                        TextField("人物标签（可选）", text: $manualPersonTags)
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                        Button("用此画面新建人物") {
+                            let cleanName = manualPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !cleanName.isEmpty else {
+                                manualPersonFailed = true; manualPersonStatus = "请填写新人物名称"; return
+                            }
+                            model.createPerson(from: result, name: cleanName, tags: manualPersonTags) { success, message in
+                                manualPersonFailed = !success; manualPersonStatus = message
+                                if success { manualPersonName = ""; manualPersonTags = "" }
+                            }
+                        }
+                    }
+                    if !manualPersonStatus.isEmpty {
+                        Label(
+                            manualPersonStatus,
+                            systemImage: manualPersonFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                        ).font(.caption).foregroundStyle(manualPersonFailed ? .red : archiveGreen)
+                    }
+                }.padding(.top, 8)
+            }
+        }
+    }
+    private var annotationEditor: some View {
+        DisclosureGroup("本地标签、备注与收藏") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("标签，用逗号分隔", text: $annotationTags).textFieldStyle(.roundedBorder)
+                TextField("备注", text: $annotationNote).textFieldStyle(.roundedBorder)
+                HStack {
+                    Toggle("收藏", isOn: $annotationFavorite).toggleStyle(.checkbox)
+                    Picker("星级", selection: $annotationRating) {
+                        ForEach(0...5, id: \.self) { Text($0 == 0 ? "未评分" : "\($0) 星").tag($0) }
+                    }.frame(width: 150)
+                    Toggle("忽略", isOn: $annotationIgnored).toggleStyle(.checkbox)
+                    Button(annotationSaving ? "保存中…" : "保存") {
+                        annotationSaving = true
+                        annotationSaveState = ""
+                        annotationSaveMessage = ""
+                        model.saveResultAnnotation(
+                            result, tags: annotationTags, note: annotationNote,
+                            favorite: annotationFavorite, rating: annotationRating,
+                            ignored: annotationIgnored
+                        ) { success, message in
+                            annotationSaving = false
+                            annotationSaveState = success ? "success" : "failure"
+                            annotationSaveMessage = message
+                        }
+                    }.disabled(annotationSaving)
+                    if annotationSaving {
+                        ProgressView().controlSize(.small)
+                    } else if annotationSaveState == "success" {
+                        Label("已保存", systemImage: "checkmark.circle.fill")
+                            .font(.caption.bold()).foregroundStyle(archiveGreen)
+                    } else if annotationSaveState == "failure" {
+                        Label(annotationSaveMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                }
+            }.padding(.top, 8)
+        }
+    }
+    private var actions: some View {
+        HStack {
+            Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") {
+                model.open(result)
+            }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true)
+            Button("在 Finder 中显示") { model.reveal(result) }
+                .disabled(result.canOpenOriginal != true)
+            if result.mediaType == "video", let sourceId = result.sourceContentId {
+                Button("浏览该视频全部画面") { model.browseSourceFrames(sourceId) }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
-            Group {
-                if let path = result.previewPath, let image = NSImage(contentsOfFile: path) { Image(nsImage: image).resizable().scaledToFill() }
-                else { ZStack { Color.gray.opacity(0.15); Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted) } }
-            }.frame(width: 250, height: 150).clipped().clipShape(RoundedRectangle(cornerRadius: 9))
+            preview.frame(width: 250, height: 150).clipped().clipShape(RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill").foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen)
-                    Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent).font(.headline)
-                    Spacer()
-                    Toggle("选入导出", isOn: Binding(
-                        get: { model.isSelectedForExport(result) },
-                        set: { model.setSelectedForExport(result, selected: $0) }
-                    )).toggleStyle(.checkbox)
-                    Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100)).font(.caption).foregroundStyle(archiveBlue)
-                }
-                if result.mediaType == "video" { Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")").font(.subheadline).foregroundStyle(archiveMuted) }
-                if result.audioTranscriptMatch == true {
-                    Label(
-                        "人声转写命中 · 音频时间 \(audioTimecode(result.audioStartTimeMs)) – \(audioTimecode(result.audioEndTimeMs))",
-                        systemImage: "waveform"
-                    ).font(.subheadline).foregroundStyle(.purple)
-                }
-                Text("场景：\(result.environmentLabel ?? "未标注")").font(.caption).padding(.horizontal, 7).padding(.vertical, 4).background(Color.orange.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 5))
-                Text((result.audioTranscriptMatch == true ? "人声转写：" : "描述证据：") + (result.textPreview ?? "该画面通过全视觉通道召回。"))
-                    .font(.subheadline).lineLimit(3)
-                if !visibleReasons.isEmpty {
-                    Text("命中依据：" + visibleReasons.map { ["exact_text":"文字直接命中", "exact_object_label":"物体标签直接命中", "strong_visual_semantic":"画面语义强匹配", "strong_text_semantic":"描述语义强匹配", "combined_visual_text":"画面与描述共同匹配", "audio_transcript_exact":"音频转写文字直接命中", "audio_transcript_semantic":"音频转写语义匹配", "same_person_reid":"本地人脸特征属于同一人物组", "same_person_track_suggestion":"同一视频中的人脸锚定人体轨迹候选", "user_favorite":"本地收藏", "source_timeline":"同一视频的索引时间轴"][$0] ?? $0 }.joined(separator: "、"))
-                        .font(.caption).foregroundStyle(archiveBlue)
-                }
-                if let labels = result.matchedObjectLabels, !labels.isEmpty {
-                    Text("物体标签证据：" + labels.prefix(3).map {
-                        "\($0.labelZh ?? $0.label ?? "未知标签")（\(Int(($0.confidence ?? 0) * 100))%）"
-                    }.joined(separator: "、"))
-                        .font(.caption).foregroundStyle(archiveMuted)
-                }
-                if let terms = result.matchedTextTerms, !terms.isEmpty {
-                    Text((result.audioTranscriptMatch == true ? "音频转写命中词：" : "文字证据：") + terms.prefix(4).joined(separator: "、"))
-                        .font(.caption).foregroundStyle(archiveMuted)
-                }
-                let channelScores = [
-                    result.openclipCosine.map { "画面原始相似度 \(String(format: "%.3f", $0))" },
-                    result.textSemanticScore.map { "描述原始相似度 \(String(format: "%.3f", $0))" },
-                ].compactMap { $0 }
-                if !channelScores.isEmpty {
-                    Text(channelScores.joined(separator: " · ") + "；综合匹配仅用于结果排序，不是识别概率。")
-                        .font(.caption2).foregroundStyle(archiveMuted)
-                }
-                if let clusters = result.personClusters, !clusters.isEmpty {
-                    ForEach(clusters) { cluster in
-                        HStack {
-                            Button("查找 \(cluster.displayName.isEmpty ? "同一人物" : cluster.displayName)（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
-                                model.searchPersonCluster(cluster.personClusterId)
-                            }
-                            .buttonStyle(.bordered)
-                            .help("只读取本地人物组；人工人物不会改写机器识别结果")
-                            if cluster.manualAssignment == true {
-                                Button("移出人工人物") {
-                                    model.removeResult(result, fromPerson: cluster.personClusterId) { success, message in
-                                        manualPersonFailed = !success; manualPersonStatus = message
-                                    }
-                                }.buttonStyle(.borderless)
-                            }
-                        }
-                    }
-                }
-                if result.resultLevel == "source", let frames = result.sourceFrameCount, frames > 1,
-                   let cluster = result.personClusters?.first, let sourceId = result.sourceContentId {
-                    Button("展开这个素材中的 \(frames) 个画面") {
-                        model.searchPersonCluster(cluster.personClusterId, sourceContentId: sourceId)
-                    }.buttonStyle(.bordered)
-                }
-                Text("所属位置：\(result.sourceRelativePath ?? "")").font(.caption2).foregroundStyle(archiveMuted)
-                if result.visualUnitId?.isEmpty == false {
-                    DisclosureGroup("人工人物归类") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("机器没有识别到正脸也可以人工归类；一张画面可加入多个人物，结果只保存在本机。")
-                                .font(.caption).foregroundStyle(archiveMuted)
-                            HStack {
-                                Picker("加入已有人物", selection: $manualPersonTargetId) {
-                                    Text("请选择人物").tag("")
-                                    ForEach(model.personClusterCatalog) { person in
-                                        Text(person.displayName).tag(person.personClusterId)
-                                    }
-                                }.frame(maxWidth: 340)
-                                Button("加入所选人物") {
-                                    model.addResult(result, toPerson: manualPersonTargetId) { success, message in
-                                        manualPersonFailed = !success; manualPersonStatus = message
-                                    }
-                                }.disabled(manualPersonTargetId.isEmpty)
-                            }
-                            HStack {
-                                TextField("新人物名称", text: $manualPersonName)
-                                    .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                                TextField("人物标签（可选）", text: $manualPersonTags)
-                                    .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
-                                Button("用此画面新建人物") {
-                                    let cleanName = manualPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    guard !cleanName.isEmpty else {
-                                        manualPersonFailed = true; manualPersonStatus = "请填写新人物名称"; return
-                                    }
-                                    model.createPerson(from: result, name: cleanName, tags: manualPersonTags) { success, message in
-                                        manualPersonFailed = !success; manualPersonStatus = message
-                                        if success { manualPersonName = ""; manualPersonTags = "" }
-                                    }
-                                }
-                            }
-                            if !manualPersonStatus.isEmpty {
-                                Label(
-                                    manualPersonStatus,
-                                    systemImage: manualPersonFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-                                ).font(.caption).foregroundStyle(manualPersonFailed ? .red : archiveGreen)
-                            }
-                        }.padding(.top, 8)
-                    }
-                }
-                DisclosureGroup("本地标签、备注与收藏") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("标签，用逗号分隔", text: $annotationTags)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("备注", text: $annotationNote)
-                            .textFieldStyle(.roundedBorder)
-                        HStack {
-                            Toggle("收藏", isOn: $annotationFavorite).toggleStyle(.checkbox)
-                            Picker("星级", selection: $annotationRating) {
-                                ForEach(0...5, id: \.self) { Text($0 == 0 ? "未评分" : "\($0) 星").tag($0) }
-                            }.frame(width: 150)
-                            Toggle("忽略", isOn: $annotationIgnored).toggleStyle(.checkbox)
-                            Button(annotationSaving ? "保存中…" : "保存") {
-                                annotationSaving = true
-                                annotationSaveState = ""
-                                annotationSaveMessage = ""
-                                model.saveResultAnnotation(
-                                    result, tags: annotationTags, note: annotationNote,
-                                    favorite: annotationFavorite, rating: annotationRating,
-                                    ignored: annotationIgnored
-                                ) { success, message in
-                                    annotationSaving = false
-                                    annotationSaveState = success ? "success" : "failure"
-                                    annotationSaveMessage = message
-                                }
-                            }.disabled(annotationSaving)
-                            if annotationSaving {
-                                ProgressView().controlSize(.small)
-                            } else if annotationSaveState == "success" {
-                                Label("已保存", systemImage: "checkmark.circle.fill")
-                                    .font(.caption.bold()).foregroundStyle(archiveGreen)
-                            } else if annotationSaveState == "failure" {
-                                Label(annotationSaveMessage, systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption).foregroundStyle(.red)
-                            }
-                        }
-                    }.padding(.top, 8)
-                }
-                HStack {
-                    Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") {
-                        model.open(result)
-                    }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true)
-                    Button("在 Finder 中显示") { model.reveal(result) }
-                        .disabled(result.canOpenOriginal != true)
-                    if result.mediaType == "video", let sourceId = result.sourceContentId {
-                        Button("浏览该视频全部画面") { model.browseSourceFrames(sourceId) }
-                            .buttonStyle(.bordered)
-                    }
-                }
+                heading
+                evidence
+                personControls
+                manualPersonEditor
+                annotationEditor
+                actions
             }
         }.padding(14).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
     }

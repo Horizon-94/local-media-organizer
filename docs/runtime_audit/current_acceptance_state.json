@@ -15,7 +15,7 @@
       "scripts/02_step01_step02_pipeline/step02_2_image_preview_from_db_safe_v6_20260709_182200.py",
       "scripts/source_frame_dedup_central_db.py"
     ],
-    "evidence": "01-10 five-report contract 10/10; targeted Python regression 88/88 PASS",
+    "evidence": "01-10 five-report contract 10/10; CI-equivalent regression 143 passed, 1 skipped; Swift arm64 typecheck PASS",
     "next": "Build the next app candidate and run one small UI acceptance; no large-media rerun required"
   }
 }
