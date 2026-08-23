@@ -649,6 +649,14 @@ def task_pipeline(
             f"用时 {human_duration(stage.get('elapsed_seconds'))}"
             if stage.get("elapsed_seconds") is not None else ""
         )
+        report_paths = dict(stage.get("report_paths") or {})
+        report_summary: dict[str, Any] = {}
+        summary_path = Path(str(report_paths.get("summary") or "")).expanduser()
+        if summary_path.is_file():
+            try:
+                report_summary = load_json(summary_path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                report_summary = {}
         description = "；".join(part for part in (detail, duration) if part)
         rows.append({
             "key": key,
@@ -675,8 +683,16 @@ def task_pipeline(
             "ffmpeg_processes": stage.get("ffmpeg_processes"),
             "model_workers": stage.get("model_workers"),
             "bytes_processed": int(stage.get("bytes_processed") or 0),
-            "output_files": int(stage.get("output_files") or 0),
-            "report_paths": dict(stage.get("report_paths") or {}),
+            "output_files": int(
+                stage.get("output_files")
+                or report_summary.get("output_file_count")
+                or 0
+            ),
+            "stage_output_bytes": int(report_summary.get("output_bytes") or 0),
+            "database_delta_bytes": int(report_summary.get("database_delta_bytes") or 0),
+            "actual_script": str(report_summary.get("actual_script") or ""),
+            "items_per_second": report_summary.get("items_per_second"),
+            "report_paths": report_paths,
         })
     total = int(state.get("stage_count") or len(rows))
     completed = sum(row["status"] == "success" for row in rows)

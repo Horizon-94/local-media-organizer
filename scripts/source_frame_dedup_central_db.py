@@ -1434,6 +1434,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(json.dumps({"status": "BLOCKED" if str(exc).startswith("BLOCKED") else "FAIL", "error": str(exc)}, ensure_ascii=False, sort_keys=True))
         return 2
+    visual_total = int(result.get("visual_input_count") or 0)
+    failed = int(result.get("failed_count") or 0)
+    blocked = int(result.get("blocked_decoder_count") or 0)
+    print(json.dumps({
+        "contract": "media_archive_stage_runtime_contract_v1",
+        "event": "stage_progress",
+        "completed": visual_total,
+        "total": visual_total,
+        "success": max(0, visual_total - failed - blocked),
+        "skipped": blocked,
+        "failed": failed,
+        "remaining": 0,
+        "input_files": int(result.get("source_input_count") or 0),
+        "input_sources": int(result.get("source_input_count") or 0),
+        "output_records": int(result.get("visual_identity_row_count") or 0),
+        "configured_workers": int(args.max_workers),
+    }, ensure_ascii=False, sort_keys=True))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result.get("status") in {"PASS", "PASS_WITH_BACKLOG"} else 2
 

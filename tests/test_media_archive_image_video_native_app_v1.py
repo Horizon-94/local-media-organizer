@@ -106,10 +106,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn("--has-person", command)
         self.assertIn("--confirm-real-local-query", command)
         self.assertIn("--native-app-result-contract", command)
-        self.assertIn(
-            "/Users/yourname/Developer/envs/visual/bin/python",
-            command,
-        )
+        self.assertIn(str(defaults["openclip_python"].absolute()), command)
 
     def test_search_manager_preserves_virtualenv_python_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -151,11 +148,20 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertNotIn("RESOURCEPATH", minimal)
         self.assertNotIn("DYLD_FRAMEWORK_PATH", minimal)
         self.assertNotIn("PYTHONHOME", minimal)
-        executable, site_packages = namespace["explicit_venv_runtime"](
-            Path("/Users/yourname/Developer/envs/visual/bin/python")
-        )
-        self.assertTrue(executable.is_file())
-        self.assertEqual(site_packages.name, "site-packages")
+        with tempfile.TemporaryDirectory() as temp:
+            venv = Path(temp) / "visual"
+            executable_path = venv / "bin/python"
+            executable_path.parent.mkdir(parents=True)
+            executable_path.write_text("python", encoding="utf-8")
+            expected_site_packages = (
+                venv / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+            )
+            expected_site_packages.mkdir(parents=True)
+            executable, site_packages = namespace["explicit_venv_runtime"](
+                executable_path
+            )
+            self.assertEqual(executable, executable_path.resolve())
+            self.assertEqual(site_packages, expected_site_packages.resolve())
         source = script.read_text(encoding="utf-8")
         self.assertIn("sys.path.insert(0,site_packages)", source)
 
