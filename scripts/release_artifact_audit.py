@@ -25,9 +25,9 @@ SENSITIVE_PATTERNS = {
 }
 _builder_home = str(Path.home()).encode("utf-8")
 # GitHub-hosted runners intentionally embed public checkout metadata beneath
-# ``/Users/runner/work`` in some third-party wheels.  That path contains no
-# developer identity and is reproducible from the public repository.  Other
-# files under the builder home remain forbidden.
+# their standard workspace directory in some third-party wheels.  That path
+# contains no developer identity and is reproducible from the public
+# repository.  Other files under the builder home remain forbidden.
 BUILDER_HOME_PATTERN = re.compile(
     re.escape(_builder_home)
     + (rb"/(?!work(?:/|\b))" if Path.home().name == "runner" else rb"(?:/|\b)")
