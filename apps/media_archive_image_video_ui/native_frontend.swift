@@ -105,6 +105,8 @@ struct PipelineStage: Decodable, Identifiable {
     let failedCount: Int?; let etaSeconds: Double?; let etaBasis: String?
     let configuredWorkers: Int?; let actualWorkers: Int?; let ffmpegProcesses: Int?
     let modelWorkers: Int?; let bytesProcessed: Int64?; let outputFiles: Int?
+    let stageOutputBytes: Int64?; let databaseDeltaBytes: Int64?
+    let actualScript: String?; let itemsPerSecond: Double?
     let startedWorkers: Int?; let aliveWorkers: Int?; let activeWorkers: Int?
     let idleWorkers: Int?; let crashedWorkers: Int?; let restartCount: Int?
     let queuePending: Int?; let queueRunning: Int?
@@ -2104,6 +2106,23 @@ struct RunningPage: View {
                                     }
                                     Text(stage.etaSeconds.map { "预计剩余 \(formatSeconds($0))" } ?? (stage.etaBasis ?? "正在估算"))
                                         .font(.caption2).foregroundStyle(archiveMuted)
+                                }
+                                if stage.status == "success" || stage.status == "failed" {
+                                    if (stage.outputFiles ?? 0) > 0 || (stage.stageOutputBytes ?? 0) > 0 {
+                                        Text("阶段本地产物 \((stage.outputFiles ?? 0).formatted()) 个文件 · \(formatBytes(stage.stageOutputBytes ?? 0))；中心数据库增长 \(formatBytes(stage.databaseDeltaBytes ?? 0))")
+                                            .font(.caption2).foregroundStyle(archiveMuted)
+                                    }
+                                    if let script = stage.actualScript, !script.isEmpty {
+                                        Text("实际脚本：\(URL(fileURLWithPath: script).lastPathComponent)")
+                                            .font(.caption2).foregroundStyle(archiveMuted)
+                                    }
+                                    if let summary = stage.reportPaths?["summary"], !summary.isEmpty {
+                                        Button("打开阶段完成报告") {
+                                            NSWorkspace.shared.open(URL(fileURLWithPath: summary))
+                                        }
+                                        .buttonStyle(.link)
+                                        .font(.caption2)
+                                    }
                                 }
                             }
                             Spacer(); VStack(alignment: .trailing) {

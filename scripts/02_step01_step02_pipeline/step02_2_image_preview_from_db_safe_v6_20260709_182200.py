@@ -1839,6 +1839,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     shutil.rmtree(dirs["tmp"], ignore_errors=True)
 
+    preview_success = int(status_counts.get("success") or 0)
+    preview_failed = int(status_counts.get("failed") or 0)
+    preview_total = len(all_jobs)
+    print(json.dumps({
+        "contract": "media_archive_stage_runtime_contract_v1",
+        "event": "stage_progress",
+        "completed": preview_total,
+        "total": preview_total,
+        "success": max(0, preview_success - skipped_existing),
+        "skipped": skipped_existing,
+        "failed": preview_failed,
+        "remaining": 0,
+        "input_files": len(items),
+        "input_sources": len(items),
+        "output_records": len(visual_rows),
+        "output_files": preview_success,
+        "items_per_second": round(preview_total / elapsed_total, 6) if elapsed_total > 0 else None,
+        "configured_workers": args.sips_concurrency + args.ql_concurrency,
+    }, ensure_ascii=False, sort_keys=True), flush=True)
     print("== step02_2_image_preview_from_step01_queue finished ==")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if not args.no_open:

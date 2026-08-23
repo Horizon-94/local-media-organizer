@@ -985,6 +985,8 @@ def initial_state(task: dict[str, Any], plan: Sequence[dict[str, Any]]) -> dict[
              "live_completed": 0, "live_total": 0, "live_success": 0,
              "live_skipped": 0, "live_failed": 0, "eta_seconds": None,
              "eta_basis": "正在估算", "report_paths": {},
+             "input_files": None, "input_sources": None, "input_bytes": None,
+             "output_records": None, "output_files": 0, "output_bytes": None,
              "log_path": str(task.get("log_path") or "")}
             for row in plan
         ],
@@ -1135,6 +1137,10 @@ def execute_pipeline(
                 "crashed_workers": 0, "restart_count": 0,
                 "queue_pending": None, "queue_running": None,
                 "output_files": 0,
+                "input_files": None, "input_sources": None, "input_bytes": None,
+                "output_records": None, "output_bytes": None,
+                "items_per_second": None, "frames_per_second": None,
+                "megabytes_per_second": None,
                 "eta_seconds": None, "eta_basis": "正在估算", "report_paths": {},
                 "log_path": str(task.get("log_path") or ""),
             })
@@ -1263,6 +1269,7 @@ def execute_pipeline(
                             ("actual_workers", "actual_workers"),
                             ("ffmpeg_processes", "ffmpeg_processes"),
                             ("model_workers", "model_workers"),
+                            ("configured_workers", "configured_workers"),
                             ("started_workers", "started_workers"),
                             ("alive_workers", "alive_workers"),
                             ("active_workers", "active_workers"),
@@ -1272,6 +1279,14 @@ def execute_pipeline(
                             ("queue_pending", "queue_pending"),
                             ("queue_running", "queue_running"),
                             ("output_files", "output_files"),
+                            ("input_files", "input_files"),
+                            ("input_sources", "input_sources"),
+                            ("input_bytes", "input_bytes"),
+                            ("output_records", "output_records"),
+                            ("output_bytes", "output_bytes"),
+                            ("items_per_second", "items_per_second"),
+                            ("frames_per_second", "frames_per_second"),
+                            ("megabytes_per_second", "megabytes_per_second"),
                         ):
                             if source_key in progress:
                                 record[target_key] = progress[source_key]
@@ -1288,12 +1303,21 @@ def execute_pipeline(
                             state["updated_at_epoch"] = time.time()
                             atomic_json(state_path, state)
                             last_progress_write = now
-                    if "skip" in line.lower():
+                    line_lower = line.strip().lower()
+                    if (
+                        progress.get("event") == "stage_item_skipped"
+                        or line_lower.startswith("[skip")
+                        or "status=skipped" in line_lower
+                    ):
                         skipped_rows.append({
                             "item": str(progress.get("current_item") or ""),
                             "reason": line.strip()[:2000],
                         })
-                    if "failed" in line.lower() or "error=" in line.lower():
+                    if (
+                        progress.get("event") == "stage_item_failed"
+                        or line_lower.startswith("[failed")
+                        or "status=failed" in line_lower
+                    ):
                         failure_rows.append({
                             "item": str(progress.get("current_item") or ""),
                             "reason": line.strip()[:2000],
@@ -1327,6 +1351,11 @@ def execute_pipeline(
                 error_summary, error_details = summarize_stage_failure(
                     list(output_tail), exit_code,
                 )
+                if not failure_rows:
+                    failure_rows.append({
+                        "item": str(record.get("current_item") or ""),
+                        "reason": error_summary,
+                    })
             record.update({
                 "status": "success" if exit_code == 0 else "failed",
                 "exit_code": exit_code,

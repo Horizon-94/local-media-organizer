@@ -1,0 +1,21 @@
+{
+  "ISSUE-3": {
+    "status": "PASS_WITH_BACKLOG",
+    "source": "codex/issue-3-stage-observability",
+    "tests": [
+      "test_media_archive_stage_runtime_contract_v1",
+      "test_media_archive_pipeline_orchestrator_v1",
+      "test_media_archive_native_bridge_state_v1"
+    ],
+    "files": [
+      "apps/media_archive_image_video_ui/stage_runtime_contract.py",
+      "apps/media_archive_image_video_ui/pipeline_orchestrator.py",
+      "apps/media_archive_image_video_ui/native_bridge.py",
+      "apps/media_archive_image_video_ui/native_frontend.swift",
+      "scripts/02_step01_step02_pipeline/step02_2_image_preview_from_db_safe_v6_20260709_182200.py",
+      "scripts/source_frame_dedup_central_db.py"
+    ],
+    "evidence": "01-10 five-report contract 10/10; targeted Python regression 88/88 PASS",
+    "next": "Build the next app candidate and run one small UI acceptance; no large-media rerun required"
+  }
+}

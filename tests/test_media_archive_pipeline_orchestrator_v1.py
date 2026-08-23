@@ -975,6 +975,22 @@ class PipelineOrchestratorTests(unittest.TestCase):
             self.assertEqual(task["error_summary"], state["error_summary"])
             self.assertEqual(task["error_log_path"], state["error_log_path"])
 
+    def test_zero_failure_progress_does_not_create_a_false_failure_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task_path = write_task(root)
+            payload = json.dumps({
+                "contract": "media_archive_stage_runtime_contract_v1",
+                "event": "stage_progress", "completed": 2, "total": 2,
+                "success": 2, "skipped": 0, "failed": 0,
+            })
+            state = execute_pipeline(task_path, plan=[{
+                "key": "scan", "name": "scan",
+                "command": [sys.executable, "-c", f"print({payload!r})"],
+            }])
+            failures = Path(state["stages"][0]["report_paths"]["failures"])
+            self.assertEqual(failures.read_text(encoding="utf-8"), "item,reason\n")
+
     def test_resume_does_not_repeat_successful_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

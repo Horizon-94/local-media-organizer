@@ -103,6 +103,9 @@ def parse_progress_line(line: str) -> dict[str, Any]:
                 "active_workers", "idle_workers", "crashed_workers",
                 "restart_count", "queue_pending", "queue_running",
                 "event", "reason_code", "error_code", "error_message",
+                "input_files", "input_sources", "input_bytes",
+                "output_records", "output_bytes", "items_per_second",
+                "frames_per_second", "megabytes_per_second",
             ):
                 if key in candidate:
                     payload[key] = candidate[key]
@@ -189,30 +192,88 @@ def write_stage_reports(
             "delta_total_bytes": after_db["total"] - int(before_db.get("total") or 0),
         },
     }
+    completed = int(record.get("live_completed") or 0)
+    total = int(record.get("live_total") or 0)
+    success = int(record.get("live_success") or 0)
+    skipped = int(record.get("live_skipped") or 0)
+    failed = int(record.get("live_failed") or 0)
+    # Several established stages historically emitted only ``completed/total``.
+    # A successful process with a complete counter is reliable evidence that
+    # those items succeeded; keeping success at zero made the five reports
+    # contradict the database and the UI.
+    if (
+        record.get("status") == "success"
+        and completed > 0
+        and success == 0
+        and skipped == 0
+        and failed == 0
+    ):
+        success = completed
+    elapsed = float(record.get("elapsed_seconds") or 0.0)
+    items_per_second = (
+        round(completed / elapsed, 6) if completed > 0 and elapsed > 0 else None
+    )
+    bytes_processed = int(record.get("bytes_processed") or 0)
+    megabytes_per_second = (
+        round(bytes_processed / 1_000_000 / elapsed, 6)
+        if bytes_processed > 0 and elapsed > 0 else None
+    )
+    command = [str(value) for value in stage.get("command", [])]
+    script = ""
+    if "--script" in command:
+        index = len(command) - 1 - command[::-1].index("--script")
+        if index + 1 < len(command):
+            script = command[index + 1]
+    elif len(command) > 1:
+        script = command[1]
     runtime = {
         "contract": CONTRACT,
         "stage_key": stage.get("key"),
         "stage_name": stage.get("name"),
-        "actual_command": [str(value) for value in stage.get("command", [])],
+        "actual_script": script,
+        "actual_command": command,
         "status": record.get("status"),
         "started_at_epoch": record.get("started_at_epoch"),
         "finished_at_epoch": record.get("finished_at_epoch"),
         "elapsed_seconds": record.get("elapsed_seconds"),
-        "completed": int(record.get("live_completed") or 0),
-        "total": int(record.get("live_total") or 0),
-        "success": int(record.get("live_success") or 0),
-        "skipped": int(record.get("live_skipped") or 0),
-        "failed": int(record.get("live_failed") or 0),
+        "input_file_count": record.get("input_files"),
+        "input_source_count": record.get("input_sources"),
+        "input_bytes": record.get("input_bytes"),
+        "completed": completed,
+        "total": total,
+        "success": success,
+        "skipped": skipped,
+        "failed": failed,
+        "remaining": max(0, total - completed) if total else 0,
         "current_item": str(record.get("current_item") or ""),
         "configured_workers": record.get("configured_workers"),
+        "started_workers": record.get("started_workers"),
+        "alive_workers": record.get("alive_workers"),
+        "active_workers": record.get("active_workers"),
+        "idle_workers": record.get("idle_workers"),
+        "actual_workers": record.get("actual_workers"),
+        "ffmpeg_processes": record.get("ffmpeg_processes"),
+        "model_workers": record.get("model_workers"),
+        "crashed_workers": record.get("crashed_workers"),
+        "restart_count": record.get("restart_count"),
+        "queue_pending": record.get("queue_pending"),
+        "queue_running": record.get("queue_running"),
+        "bytes_processed": bytes_processed,
+        "items_per_second": record.get("items_per_second") or items_per_second,
+        "frames_per_second": record.get("frames_per_second"),
+        "megabytes_per_second": (
+            record.get("megabytes_per_second") or megabytes_per_second
+        ),
+        "eta_seconds": record.get("eta_seconds"),
         "eta_basis": str(record.get("eta_basis") or ""),
     }
     summary = {
         **runtime,
         "exit_code": record.get("exit_code"),
         "output_path": str(output),
-        "output_file_count": after_tree["file_count"],
-        "output_bytes": after_tree["bytes"],
+        "output_record_count": record.get("output_records"),
+        "output_file_count": int(record.get("output_files") or after_tree["file_count"]),
+        "output_bytes": int(record.get("output_bytes") or after_tree["bytes"]),
         "database_delta_bytes": storage_delta["database"]["delta_total_bytes"],
         "failure_count": len(failure_rows),
         "skipped_count": len(skipped_rows),
@@ -227,11 +288,13 @@ def write_stage_reports(
 
     def write_csv(name: str, rows: Sequence[dict[str, Any]]) -> None:
         target = reports / name
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         fields = sorted({key for row in rows for key in row}) or ["item", "reason"]
-        with target.open("w", encoding="utf-8", newline="") as handle:
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(rows)
+        os.replace(temporary, target)
 
     write_json("stage_summary.json", summary)
     write_json("stage_storage_delta.json", storage_delta)
