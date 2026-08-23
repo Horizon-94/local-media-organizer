@@ -1,0 +1,1442 @@
+{
+  "contract": "media_archive_yoloe_keyword_registry_v1",
+  "registry_name": "YOLOE A/B 通用关键词注册表",
+  "schema_version": "2026-07-04-ocr-trigger-v1.0",
+  "description": "安装包内置基线。设置页只覆盖 A_CORE_CLASSES、B_EXTENDED_CLASSES 和 B 层启用状态；其余路由规则保持冻结。",
+  "layers": {
+    "A_CORE": {
+      "zh": "A层主检索词",
+      "default_run": true,
+      "evidence_level": "strong",
+      "used_by": [
+        "YOLOE"
+      ],
+      "description": "默认运行。适合作为结构化强证据的目标、物体、场景实体。"
+    },
+    "B_EXTENDED": {
+      "zh": "B层扩展辅助词",
+      "default_run": false,
+      "evidence_level": "weak_or_optional",
+      "used_by": [
+        "YOLOE",
+        "Qwen-VL"
+      ],
+      "description": "默认不跑。按项目需要启用，或作为低权重辅助证据。"
+    },
+    "C_DELEGATED": {
+      "zh": "C层委托概念",
+      "default_run": false,
+      "evidence_level": "delegated",
+      "used_by": [
+        "Qwen-VL",
+        "OCR",
+        "color_analysis",
+        "visual_embedding"
+      ],
+      "description": "不交给 YOLOE 主检。交给视觉语言模型、OCR、颜色分析或向量检索。"
+    },
+    "OCR_TRIGGER_POLICY": {
+      "zh": "OCR触发策略层",
+      "default_run": true,
+      "evidence_level": "routing_signal_not_visual_score",
+      "used_by": [
+        "YOLOE",
+        "OCR"
+      ],
+      "description": "不属于普通视觉证据层。YOLOE只跑一次时，与A_CORE合并进入prompt；命中后只用于生成OCR队列，不参与Qwen-VL高价值帧正向选择。"
+    }
+  },
+  "defaults": {
+    "YOLOE_A_CORE": {
+      "conf": 0.25,
+      "imgsz": 640,
+      "save_images": false,
+      "save_txt": true,
+      "strong_evidence": true
+    },
+    "YOLOE_B_EXTENDED": {
+      "conf": 0.25,
+      "imgsz": 640,
+      "save_images": false,
+      "save_txt": true,
+      "strong_evidence": false
+    }
+  },
+  "A_CORE_CLASSES": [
+    {
+      "label": "person",
+      "zh": "人",
+      "category_zh": "人物"
+    },
+    {
+      "label": "face",
+      "zh": "人脸",
+      "category_zh": "人物"
+    },
+    {
+      "label": "car",
+      "zh": "车 / 小汽车",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "truck",
+      "zh": "货车 / 卡车",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "bus",
+      "zh": "公交车 / 大巴",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "motorcycle",
+      "zh": "摩托车",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "electric bike",
+      "zh": "电动车",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "bicycle",
+      "zh": "自行车",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "train",
+      "zh": "火车 / 高铁候选",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "airplane",
+      "zh": "飞机",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "boat",
+      "zh": "船",
+      "category_zh": "交通工具"
+    },
+    {
+      "label": "tractor",
+      "zh": "拖拉机",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "harvester",
+      "zh": "收割机",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "wheat",
+      "zh": "小麦",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "corn",
+      "zh": "玉米",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "crop",
+      "zh": "农作物",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "field",
+      "zh": "田地",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "farmland",
+      "zh": "农田",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "tree",
+      "zh": "树",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "river",
+      "zh": "河流",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "mountain",
+      "zh": "山",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "forest",
+      "zh": "森林",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "grass",
+      "zh": "草地 / 草",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "lake",
+      "zh": "湖",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "sea",
+      "zh": "海",
+      "category_zh": "农业 / 农村 / 自然"
+    },
+    {
+      "label": "building",
+      "zh": "建筑",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "house",
+      "zh": "房子",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "street",
+      "zh": "街道",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "road",
+      "zh": "道路",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "village",
+      "zh": "村庄",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "hotel",
+      "zh": "酒店",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "school",
+      "zh": "学校",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "restaurant",
+      "zh": "餐馆",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "station",
+      "zh": "车站",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "bridge",
+      "zh": "桥",
+      "category_zh": "建筑 / 城市 / 村庄 / 公共空间"
+    },
+    {
+      "label": "elevator",
+      "zh": "电梯",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "television",
+      "zh": "电视",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "computer",
+      "zh": "电脑",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "screen",
+      "zh": "屏幕",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "bed",
+      "zh": "床",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "table",
+      "zh": "桌子",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "chair",
+      "zh": "椅子",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "door",
+      "zh": "门",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "window",
+      "zh": "窗户",
+      "category_zh": "室内 / 建筑细节 / 家具电器"
+    },
+    {
+      "label": "phone",
+      "zh": "手机",
+      "category_zh": "拍摄 / 数码 / 随身物"
+    },
+    {
+      "label": "camera",
+      "zh": "相机",
+      "category_zh": "拍摄 / 数码 / 随身物"
+    },
+    {
+      "label": "text",
+      "zh": "文字",
+      "category_zh": "文字 / 标识"
+    },
+    {
+      "label": "sign",
+      "zh": "招牌 / 标牌",
+      "category_zh": "文字 / 标识"
+    },
+    {
+      "label": "logo",
+      "zh": "商标 / 标志",
+      "category_zh": "文字 / 标识"
+    },
+    {
+      "label": "dog",
+      "zh": "狗",
+      "category_zh": "动物"
+    },
+    {
+      "label": "cat",
+      "zh": "猫",
+      "category_zh": "动物"
+    },
+    {
+      "label": "bird",
+      "zh": "鸟",
+      "category_zh": "动物"
+    },
+    {
+      "label": "chicken",
+      "zh": "鸡",
+      "category_zh": "动物"
+    }
+  ],
+  "B_EXTENDED_CLASSES": [
+    {
+      "label": "hand",
+      "zh": "手",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "body",
+      "zh": "身体",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "man",
+      "zh": "男人",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "woman",
+      "zh": "女人",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "child",
+      "zh": "小孩",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "old man",
+      "zh": "老人男性",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "old woman",
+      "zh": "老人女性",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "people",
+      "zh": "人群",
+      "category_zh": "人物细节"
+    },
+    {
+      "label": "clothes",
+      "zh": "衣服",
+      "category_zh": "服饰 / 随身物"
+    },
+    {
+      "label": "hat",
+      "zh": "帽子",
+      "category_zh": "服饰 / 随身物"
+    },
+    {
+      "label": "shoes",
+      "zh": "鞋",
+      "category_zh": "服饰 / 随身物"
+    },
+    {
+      "label": "bag",
+      "zh": "包",
+      "category_zh": "服饰 / 随身物"
+    },
+    {
+      "label": "backpack",
+      "zh": "背包",
+      "category_zh": "服饰 / 随身物"
+    },
+    {
+      "label": "umbrella",
+      "zh": "雨伞",
+      "category_zh": "服饰 / 随身物"
+    },
+    {
+      "label": "van",
+      "zh": "面包车",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "ship",
+      "zh": "大船",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "high-speed train",
+      "zh": "高铁",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "subway",
+      "zh": "地铁",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "taxi",
+      "zh": "出租车",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "traffic light",
+      "zh": "红绿灯",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "license plate",
+      "zh": "车牌",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "sidewalk",
+      "zh": "人行道",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "parking lot",
+      "zh": "停车场",
+      "category_zh": "更细交通 / 交通设施"
+    },
+    {
+      "label": "room",
+      "zh": "房间",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "wall",
+      "zh": "墙",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "roof",
+      "zh": "屋顶",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "floor",
+      "zh": "地面 / 地板",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "ceiling",
+      "zh": "天花板",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "stairs",
+      "zh": "楼梯",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "corridor",
+      "zh": "走廊",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "counter",
+      "zh": "柜台",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "sofa",
+      "zh": "沙发",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "cabinet",
+      "zh": "柜子",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "toilet",
+      "zh": "厕所 / 卫生间",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "kitchen",
+      "zh": "厨房",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "bedroom",
+      "zh": "卧室",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "office",
+      "zh": "办公室",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "lobby",
+      "zh": "大堂",
+      "category_zh": "建筑细节 / 室内空间"
+    },
+    {
+      "label": "shop",
+      "zh": "商店",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "market",
+      "zh": "市场",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "hospital",
+      "zh": "医院",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "park",
+      "zh": "公园",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "square",
+      "zh": "广场",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "platform",
+      "zh": "站台",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "airport",
+      "zh": "机场",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "harbor",
+      "zh": "港口",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "factory",
+      "zh": "工厂",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "construction site",
+      "zh": "工地",
+      "category_zh": "城市场景 / 公共地点"
+    },
+    {
+      "label": "plant",
+      "zh": "植物",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "leaf",
+      "zh": "叶子",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "flower",
+      "zh": "花",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "soil",
+      "zh": "土地 / 土壤",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "mud",
+      "zh": "泥",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "stone",
+      "zh": "石头",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "cloud",
+      "zh": "云",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "sky",
+      "zh": "天空",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "water",
+      "zh": "水",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "pond",
+      "zh": "池塘",
+      "category_zh": "自然扩展"
+    },
+    {
+      "label": "bottle",
+      "zh": "瓶子",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "cup",
+      "zh": "杯子",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "bowl",
+      "zh": "碗",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "plate",
+      "zh": "盘子",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "food",
+      "zh": "食物",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "box",
+      "zh": "箱子",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "book",
+      "zh": "书",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "paper",
+      "zh": "纸",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "lamp",
+      "zh": "灯",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "light",
+      "zh": "灯光 / 灯",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "tool",
+      "zh": "工具",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "machine",
+      "zh": "机器",
+      "category_zh": "生活物件 / 饮食"
+    },
+    {
+      "label": "poster",
+      "zh": "海报",
+      "category_zh": "标识 / 信息载体"
+    },
+    {
+      "label": "billboard",
+      "zh": "广告牌",
+      "category_zh": "标识 / 信息载体"
+    },
+    {
+      "label": "notice",
+      "zh": "通知 / 公告",
+      "category_zh": "标识 / 信息载体"
+    },
+    {
+      "label": "map",
+      "zh": "地图",
+      "category_zh": "标识 / 信息载体"
+    },
+    {
+      "label": "menu",
+      "zh": "菜单",
+      "category_zh": "标识 / 信息载体"
+    },
+    {
+      "label": "ticket",
+      "zh": "票据",
+      "category_zh": "标识 / 信息载体"
+    }
+  ],
+  "C_DELEGATED_CONCEPTS": [
+    {
+      "concept_zh": "男人 / 女人 / 老人 / 小孩的可靠区分",
+      "search_terms_zh": [
+        "男人",
+        "女人",
+        "老人",
+        "小孩"
+      ],
+      "delegate_to": [
+        "Qwen-VL"
+      ],
+      "reason_zh": "YOLOE 可检测人和人脸，但人物细分属性更适合视觉语言模型判断。"
+    },
+    {
+      "concept_zh": "衣服颜色 / 画面主色 / 红色车 / 黄色麦子",
+      "search_terms_zh": [
+        "红色",
+        "蓝色",
+        "黄色",
+        "黑衣服",
+        "白衣服",
+        "黄色麦子"
+      ],
+      "delegate_to": [
+        "color_analysis",
+        "Qwen-VL"
+      ],
+      "reason_zh": "颜色不是稳定框选目标，应由颜色分析和视觉语言模型处理。"
+    },
+    {
+      "concept_zh": "天气",
+      "search_terms_zh": [
+        "下雨",
+        "下雪",
+        "雾",
+        "晴天",
+        "阴天",
+        "傍晚"
+      ],
+      "delegate_to": [
+        "Qwen-VL",
+        "visual_embedding"
+      ],
+      "reason_zh": "天气是场景级语义，不适合作为 YOLOE 主检测框。"
+    },
+    {
+      "concept_zh": "动作",
+      "search_terms_zh": [
+        "走路",
+        "干活",
+        "收麦子",
+        "搬东西",
+        "做饭",
+        "开车"
+      ],
+      "delegate_to": [
+        "Qwen-VL",
+        "video_temporal_analysis"
+      ],
+      "reason_zh": "动作需要画面上下文或时间连续性。"
+    },
+    {
+      "concept_zh": "复杂环境语义",
+      "search_terms_zh": [
+        "酒店大堂",
+        "农村生活",
+        "城市街头",
+        "家庭氛围",
+        "热闹",
+        "荒凉"
+      ],
+      "delegate_to": [
+        "Qwen-VL",
+        "visual_embedding"
+      ],
+      "reason_zh": "这类是场景描述，不是单一可框选物体。"
+    },
+    {
+      "concept_zh": "文字内容",
+      "search_terms_zh": [
+        "招牌写了什么",
+        "文件写了什么",
+        "屏幕文字",
+        "菜单内容"
+      ],
+      "delegate_to": [
+        "OCR"
+      ],
+      "reason_zh": "YOLOE 可定位 text/sign/logo，但读取具体文字内容必须交给 OCR。"
+    },
+    {
+      "concept_zh": "组合查询",
+      "search_terms_zh": [
+        "下雨的小麦地",
+        "有人在酒店电梯旁",
+        "夜晚街道上的电动车"
+      ],
+      "delegate_to": [
+        "YOLOE_A_CORE",
+        "OCR",
+        "Qwen-VL",
+        "visual_embedding"
+      ],
+      "reason_zh": "组合查询需要多证据检索，不应由单一 YOLOE 提示词承担。"
+    }
+  ],
+  "query_mappings": {
+    "人": [
+      "person"
+    ],
+    "person": [
+      "person"
+    ],
+    "人脸": [
+      "face"
+    ],
+    "face": [
+      "face"
+    ],
+    "车": [
+      "car",
+      "truck",
+      "bus",
+      "motorcycle",
+      "electric bike",
+      "bicycle"
+    ],
+    "vehicle": [
+      "car",
+      "truck",
+      "bus",
+      "motorcycle",
+      "electric bike",
+      "bicycle"
+    ],
+    "car": [
+      "car"
+    ],
+    "货车": [
+      "truck"
+    ],
+    "truck": [
+      "truck"
+    ],
+    "公交车": [
+      "bus"
+    ],
+    "bus": [
+      "bus"
+    ],
+    "摩托车": [
+      "motorcycle"
+    ],
+    "motorcycle": [
+      "motorcycle"
+    ],
+    "电动车": [
+      "electric bike"
+    ],
+    "自行车": [
+      "bicycle"
+    ],
+    "bicycle": [
+      "bicycle"
+    ],
+    "火车": [
+      "train"
+    ],
+    "高铁": [
+      "train"
+    ],
+    "train": [
+      "train"
+    ],
+    "飞机": [
+      "airplane"
+    ],
+    "airplane": [
+      "airplane"
+    ],
+    "船": [
+      "boat"
+    ],
+    "boat": [
+      "boat"
+    ],
+    "农用车": [
+      "tractor",
+      "harvester"
+    ],
+    "拖拉机": [
+      "tractor"
+    ],
+    "tractor": [
+      "tractor"
+    ],
+    "收割机": [
+      "harvester"
+    ],
+    "harvester": [
+      "harvester"
+    ],
+    "小麦": [
+      "wheat"
+    ],
+    "wheat": [
+      "wheat"
+    ],
+    "玉米": [
+      "corn"
+    ],
+    "corn": [
+      "corn"
+    ],
+    "农作物": [
+      "crop"
+    ],
+    "crop": [
+      "crop"
+    ],
+    "田地": [
+      "field"
+    ],
+    "field": [
+      "field"
+    ],
+    "农田": [
+      "farmland"
+    ],
+    "farmland": [
+      "farmland"
+    ],
+    "树": [
+      "tree"
+    ],
+    "tree": [
+      "tree"
+    ],
+    "河流": [
+      "river"
+    ],
+    "river": [
+      "river"
+    ],
+    "山": [
+      "mountain"
+    ],
+    "mountain": [
+      "mountain"
+    ],
+    "森林": [
+      "forest"
+    ],
+    "forest": [
+      "forest"
+    ],
+    "草地": [
+      "grass"
+    ],
+    "grass": [
+      "grass"
+    ],
+    "湖": [
+      "lake"
+    ],
+    "lake": [
+      "lake"
+    ],
+    "海": [
+      "sea"
+    ],
+    "sea": [
+      "sea"
+    ],
+    "建筑": [
+      "building",
+      "house"
+    ],
+    "building": [
+      "building"
+    ],
+    "房子": [
+      "house"
+    ],
+    "house": [
+      "house"
+    ],
+    "街道": [
+      "street"
+    ],
+    "street": [
+      "street"
+    ],
+    "道路": [
+      "road"
+    ],
+    "road": [
+      "road"
+    ],
+    "村庄": [
+      "village"
+    ],
+    "village": [
+      "village"
+    ],
+    "酒店": [
+      "hotel"
+    ],
+    "hotel": [
+      "hotel"
+    ],
+    "学校": [
+      "school"
+    ],
+    "school": [
+      "school"
+    ],
+    "餐馆": [
+      "restaurant"
+    ],
+    "restaurant": [
+      "restaurant"
+    ],
+    "车站": [
+      "station"
+    ],
+    "station": [
+      "station"
+    ],
+    "桥": [
+      "bridge"
+    ],
+    "bridge": [
+      "bridge"
+    ],
+    "电梯": [
+      "elevator"
+    ],
+    "elevator": [
+      "elevator"
+    ],
+    "电视": [
+      "television"
+    ],
+    "television": [
+      "television"
+    ],
+    "电脑": [
+      "computer"
+    ],
+    "computer": [
+      "computer"
+    ],
+    "屏幕": [
+      "screen"
+    ],
+    "screen": [
+      "screen"
+    ],
+    "床": [
+      "bed"
+    ],
+    "bed": [
+      "bed"
+    ],
+    "桌子": [
+      "table"
+    ],
+    "table": [
+      "table"
+    ],
+    "椅子": [
+      "chair"
+    ],
+    "chair": [
+      "chair"
+    ],
+    "门": [
+      "door"
+    ],
+    "door": [
+      "door"
+    ],
+    "窗户": [
+      "window"
+    ],
+    "window": [
+      "window"
+    ],
+    "手机": [
+      "phone"
+    ],
+    "phone": [
+      "phone"
+    ],
+    "相机": [
+      "camera"
+    ],
+    "camera": [
+      "camera"
+    ],
+    "文字": [
+      "text"
+    ],
+    "text": [
+      "text"
+    ],
+    "招牌": [
+      "sign"
+    ],
+    "标牌": [
+      "sign"
+    ],
+    "sign": [
+      "sign"
+    ],
+    "商标": [
+      "logo"
+    ],
+    "标志": [
+      "logo"
+    ],
+    "logo": [
+      "logo"
+    ],
+    "狗": [
+      "dog"
+    ],
+    "dog": [
+      "dog"
+    ],
+    "猫": [
+      "cat"
+    ],
+    "cat": [
+      "cat"
+    ],
+    "鸟": [
+      "bird"
+    ],
+    "bird": [
+      "bird"
+    ],
+    "鸡": [
+      "chicken"
+    ],
+    "chicken": [
+      "chicken"
+    ]
+  },
+  "special_policies": {
+    "OCR_TRIGGER": {
+      "zh": "OCR触发策略",
+      "default_run": true,
+      "used_by": [
+        "YOLOE",
+        "OCR"
+      ],
+      "purpose": "selective_ocr_queue_trigger_only",
+      "prompt_build_mode": "YOLOE_SINGLE_RUN_UNION_A_CORE_AND_OCR_TRIGGER",
+      "ocr_full_run_default": false,
+      "evidence_level": "routing_signal_not_visual_score",
+      "not_used_for": [
+        "qwen_vl_positive_selection",
+        "near_duplicate_override",
+        "visual_score_boost",
+        "high_value_frame_positive_score"
+      ],
+      "decision_rule": "OCR_TRIGGER 只决定是否加入 OCR 队列；OCR 结果分类后才决定 text-heavy/screen-heavy 负向分流。",
+      "strong_labels": [
+        {
+          "label": "screen",
+          "zh": "屏幕",
+          "source": "A_CORE",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "computer screen",
+          "zh": "电脑屏幕",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "phone screen",
+          "zh": "手机屏幕",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "tablet screen",
+          "zh": "平板屏幕",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "monitor",
+          "zh": "显示器",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "laptop screen",
+          "zh": "笔记本电脑屏幕",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "television screen",
+          "zh": "电视屏幕",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "document",
+          "zh": "文档",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "receipt",
+          "zh": "收据 / 小票",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "invoice",
+          "zh": "发票",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "form",
+          "zh": "表格 / 表单",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "presentation slide",
+          "zh": "PPT / 演示文稿",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "webpage",
+          "zh": "网页",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "chat screenshot",
+          "zh": "聊天截图",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "screenshot",
+          "zh": "截图",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        },
+        {
+          "label": "screen recording",
+          "zh": "录屏 / 屏幕录制",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "strong"
+        }
+      ],
+      "weak_labels": [
+        {
+          "label": "text",
+          "zh": "文字",
+          "source": "A_CORE",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "sign",
+          "zh": "招牌 / 标牌",
+          "source": "A_CORE",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "logo",
+          "zh": "标志 / 商标",
+          "source": "A_CORE",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "phone",
+          "zh": "手机",
+          "source": "A_CORE",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "computer",
+          "zh": "电脑",
+          "source": "A_CORE",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "television",
+          "zh": "电视",
+          "source": "A_CORE",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "license plate",
+          "zh": "车牌",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "poster",
+          "zh": "海报",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "billboard",
+          "zh": "广告牌",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "notice",
+          "zh": "通知 / 公告",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "map",
+          "zh": "地图",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "menu",
+          "zh": "菜单",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "ticket",
+          "zh": "票据",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "book",
+          "zh": "书",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "paper",
+          "zh": "纸",
+          "source": "B_EXTENDED",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "whiteboard",
+          "zh": "白板",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "blackboard",
+          "zh": "黑板",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "label",
+          "zh": "标签",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "package label",
+          "zh": "包装标签",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "weak"
+        },
+        {
+          "label": "subtitle",
+          "zh": "字幕",
+          "source": "NEW_OCR_TRIGGER",
+          "trigger_strength": "weak"
+        }
+      ],
+      "path_hints": {
+        "strong_keywords": [
+          "screen recording",
+          "Screen Recording",
+          "screenshot",
+          "ScreenShot",
+          "截屏",
+          "截图",
+          "录屏",
+          "屏幕录制"
+        ],
+        "action": "queue_ocr_priority_high_without_reading_source_media"
+      },
+      "queue_record_required_fields": [
+        "artifact_identity_id",
+        "source_identity_id",
+        "source_media_path",
+        "frame_path",
+        "frame_time_ms",
+        "ocr_trigger_reason",
+        "ocr_priority",
+        "source_read_only"
+      ],
+      "outputs": [
+        "ocr_queue/ocr_queue.jsonl",
+        "ocr_queue/ocr_trigger_audit.jsonl",
+        "reports/ocr_trigger_summary.json"
+      ],
+      "policy_version": "OCR_TRIGGER_v1.0_20260704",
+      "formal_status": "approved_for_local_test",
+      "runner_requirement": "YOLOE prompt labels = A_CORE_CLASSES union OCR_TRIGGER strong_labels union OCR_TRIGGER weak_labels; route detections by label roles after one YOLOE run.",
+      "manual_review_notes": {
+        "subtitle": "kept as weak trigger; can be removed if OCR queue expands too much",
+        "phone_computer_television": "kept as weak triggers; screen-specific variants are strong triggers",
+        "A_B_policy": "A_CORE and B_EXTENDED are not merged"
+      }
+    }
+  }
+}

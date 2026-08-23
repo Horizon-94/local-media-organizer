@@ -25,8 +25,8 @@ Step01 Source Scan + Lineage + Dedup + Telemetry
       final_report/
 
 默认测试：
-    source_dir: /Users/yourname/Documents/001DZLtest
-    report_root: /Users/yourname/Documents/001DZLtestbaogao
+    source_dir: $USER_HOME/Documents/001DZLtest
+    report_root: $USER_HOME/Documents/001DZLtestbaogao
     建议由终端命令传入 --out "$RUN_ROOT/01_step01_scan/workspace"
 
 命名规则：
@@ -54,7 +54,7 @@ Step01 Source Scan + Lineage + Dedup + Telemetry
       --out /path/to/RUN_ROOT/01_step01_scan/workspace \
       --stage-label step01_source_scan_lineage_dedup \
       --hash-all \
-      /Users/yourname/Documents/001DZLtest
+      $USER_HOME/Documents/001DZLtest
 """
 
 import argparse
@@ -82,6 +82,14 @@ VIDEO_EXTS = {
     ".mxf", ".braw", ".r3d", ".crm", ".ari"
 }
 
+# Proprietary 360 camera masters may be ISO-BMFF containers that ffmpeg can
+# decode, but decoding a single stream does not perform the vendor lens
+# calibration and stitching needed to produce a valid panoramic image.  Keep
+# them visible in the scan audit, but never admit them to ordinary frame/model
+# queues.  Users can export a stitched MP4/MOV from the vendor application and
+# index that derivative instead.
+PROPRIETARY_360_RAW_EXTS = {".insv"}
+
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".hif",
     ".dng", ".arw", ".cr2", ".cr3", ".nef", ".nrw", ".rw2", ".raf", ".orf",
@@ -103,14 +111,14 @@ METADATA_SIDECAR_EXTS = {
     ".xmp", ".xaml", ".aae", ".dop", ".cos", ".pp3", ".on1", ".lmnr"
 }
 
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 # Default paths are fixed for reproducible local tests, but source roots remain selectable.
 # In production/front-end use, pass one or more source roots as positional args or via SRC/SOURCE_ROOT.
-SOURCE_ROOT_GUARD = Path("/Users/yourname/Documents/MEDIA_ARCHIVE_TEST_SOURCE")  # legacy test source, read-only guard only
-CURRENT_TEST_SOURCE_ROOT = Path("/Users/yourname/Documents/001DZLtest")      # current test source, read-only guard only
-EXPECTED_PYTHON = Path("/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python")
+SOURCE_ROOT_GUARD = Path("$USER_HOME/Documents/AI_Media_Test_Source")  # legacy test source, read-only guard only
+CURRENT_TEST_SOURCE_ROOT = Path("$USER_HOME/Documents/001DZLtest")      # current test source, read-only guard only
+EXPECTED_PYTHON = Path("$BUNDLED_PIPELINE_ENVS/media-archive-v06-visual/bin/python")
 DEFAULT_SOURCE_ROOT = CURRENT_TEST_SOURCE_ROOT
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "step01-source-scan-db-safe-v7_20260709_175400"
 # V7 keeps the configured venv launcher path visible in preflight, while also reporting realpath.
@@ -469,6 +477,11 @@ def classify_media_kind(path: Path, stat_ok: bool, size: Optional[int], stat_err
     name = path.name.lower()
     ext = path.suffix.lower()
 
+    # macOS AppleDouble resource-fork sidecars preserve the original suffix
+    # (for example ``._clip.MOV``).  Extension-only classification therefore
+    # incorrectly admitted them to the video queue as real media.
+    if name.startswith("._"):
+        return "unsupported", "unsupported", "system_appledouble_resource_fork"
     if name in IGNORED_NAMES:
         return "unsupported", "unsupported", "system_sidecar_ignored_name"
     if not stat_ok:
@@ -477,6 +490,12 @@ def classify_media_kind(path: Path, stat_ok: bool, size: Optional[int], stat_err
         return "unsupported", "blocked", "size_unknown"
     if size == 0:
         return "unsupported", "unsupported", "zero_byte_file"
+    if ext in PROPRIETARY_360_RAW_EXTS:
+        return (
+            "unsupported",
+            "unsupported",
+            "proprietary_360_raw_requires_vendor_stitched_export",
+        )
     if ext in VIDEO_EXTS:
         return "video", "supported", ""
     if ext in IMAGE_EXTS:
@@ -623,7 +642,9 @@ def compute_dedup(source_rows: List[dict], hash_all: bool, telemetry: Optional[T
 
     size_groups: Dict[int, List[dict]] = defaultdict(list)
     for r in source_rows:
-        if r.get("support_status") != "supported":
+        if not hash_all and r.get("support_status") != "supported":
+            continue
+        if r.get("stat_status") != "ok":
             continue
         if r["source_file_id"] in path_duplicate_alias_ids:
             continue
@@ -774,11 +795,13 @@ def compute_dedup(source_rows: List[dict], hash_all: bool, telemetry: Optional[T
                 "content_sha256": full_hash or "",
                 "source_path": r["source_path"],
                 "source_relative_path": r["source_relative_path"],
+                "file_name": r["file_name"],
                 "normalized_path": r["normalized_path"],
                 "media_kind": r["media_kind"],
                 "extension": r["extension"],
                 "file_size_bytes": r["file_size_bytes"],
                 "mtime_ns": r["mtime_ns"],
+                "ctime_ns": r["ctime_ns"],
                 "dedup_role": "canonical",
                 "next_action": "process",
                 "required_parent_fields_for_derived_outputs": [
@@ -876,6 +899,10 @@ def write_reports(
 ):
     media_counts = Counter(r.get("media_kind", "") for r in manifest_rows)
     support_counts = Counter(r.get("support_status", "") for r in manifest_rows)
+    support_reason_counts = Counter(
+        r.get("support_reason", "") for r in manifest_rows
+        if r.get("support_reason")
+    )
     dedup_counts = Counter(r.get("dedup_role", "") for r in manifest_rows)
     duplicate_type_counts = Counter(r.get("duplicate_type", "") for r in skipped_duplicates)
 
@@ -891,6 +918,10 @@ def write_reports(
         "total_source_files": len(manifest_rows),
         "media_kind_counts": dict(media_counts),
         "support_status_counts": dict(support_counts),
+        "support_reason_counts": dict(support_reason_counts),
+        "appledouble_sidecar_excluded_count": int(
+            support_reason_counts.get("system_appledouble_resource_fork", 0)
+        ),
         "dedup_role_counts": dict(dedup_counts),
         "duplicate_group_count": len(duplicate_groups),
         "skipped_duplicate_count": len(skipped_duplicates),
@@ -936,6 +967,8 @@ def write_reports(
         f"- total_source_files: {summary['total_source_files']}\n"
         f"- media_kind_counts: {summary['media_kind_counts']}\n"
         f"- support_status_counts: {summary['support_status_counts']}\n"
+        f"- support_reason_counts: {summary['support_reason_counts']}\n"
+        f"- appledouble_sidecar_excluded_count: {summary['appledouble_sidecar_excluded_count']}\n"
         f"- dedup_role_counts: {summary['dedup_role_counts']}\n"
         f"- duplicate_group_count: {summary['duplicate_group_count']}\n"
         f"- skipped_duplicate_count: {summary['skipped_duplicate_count']}\n"
@@ -1779,7 +1812,7 @@ def parse_args():
     p.add_argument("--out", default=env_out or str(DEFAULT_OUT), help="Base workspace output directory.")
     p.add_argument("--stage-label", default="step01_source_scan_lineage_dedup", help="Stage label for workspace naming.")
     p.add_argument("--run-id", default=now_run_id(), help="Run id.")
-    p.add_argument("--hash-all", action="store_true", help="Compute full sha256 for all supported files.")
+    p.add_argument("--hash-all", action="store_true", help="Compute full sha256 for every readable scanned file.")
     p.add_argument("--db", default=str(DEFAULT_DB), help="Project SQLite database path. Must stay inside project or test-output.")
     p.add_argument("--no-db-write", action="store_true", help="Do not write Step01 scan results into SQLite database.")
     p.add_argument("--scan-mac-tags", action="store_true", help="Read macOS Finder tags with mdls. Read-only; may slow large scans.")

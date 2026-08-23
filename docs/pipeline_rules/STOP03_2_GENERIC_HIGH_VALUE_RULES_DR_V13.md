@@ -29,13 +29,13 @@ V18 是对照候选版，不是冻结版。
 中心数据库：
 
 ```text
-/Users/yourname/Documents/AI-Local/media-archive-clean/media_archive.sqlite
+$APP_RESOURCES/Pipeline/media_archive.sqlite
 ```
 
 V14 高信号队列：
 
 ```text
-/Users/yourname/Documents/AI-Local/test-output/stop03-2-candidate-queues-db-safe-v14_0_20260709_232500_full/manifests/qwenvl_high_value_candidate_queue.csv
+$USER_HOME/Documents/AI-Local/test-output/stop03-2-candidate-queues-db-safe-v14_0_20260709_232500_full/manifests/qwenvl_high_value_candidate_queue.csv
 ```
 
 V18 主逻辑仍以数据库为主。V14 manifest 只是上一轮策略输出的补充信号来源，不替代数据库。

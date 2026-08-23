@@ -129,8 +129,21 @@ def iter_vector_chunks(
     if chunk_size < 1:
         raise RuntimeError("stop03_5e_vector_chunk_size_invalid")
     with search_contract.connect_ro(db) as con:
-        cursor = con.execute(
-            """SELECT v.text_vector_id,v.vector_blob,v.model_dimension,
+        if not filter_sql and not filter_values:
+            # The caller already loaded the document-link map for this run.
+            # Repeating the correlated EXISTS join for every vector made a
+            # 6k-vector interactive query take ~22 seconds on a real library.
+            cursor = con.execute(
+                """SELECT v.text_vector_id,v.vector_blob,v.model_dimension,
+                   v.vector_dtype,v.normalized,v.vector_sha256
+                   FROM stop03_5d_text_vectors v
+                   WHERE v.embedding_run_id=? AND v.status='success'
+                   ORDER BY v.text_vector_id""",
+                (run_id,),
+            )
+        else:
+            cursor = con.execute(
+                """SELECT v.text_vector_id,v.vector_blob,v.model_dimension,
                v.vector_dtype,v.normalized,v.vector_sha256
                FROM stop03_5d_text_vectors v
                WHERE v.embedding_run_id=? AND v.status='success'
@@ -144,8 +157,8 @@ def iter_vector_chunks(
                      AND l.text_vector_id=v.text_vector_id"""
             + filter_sql
             + ") ORDER BY v.text_vector_id",
-            (run_id, run_id, *filter_values),
-        )
+                (run_id, run_id, *filter_values),
+            )
         while True:
             rows = cursor.fetchmany(chunk_size)
             if not rows:

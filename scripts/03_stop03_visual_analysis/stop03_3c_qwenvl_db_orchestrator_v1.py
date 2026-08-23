@@ -31,8 +31,8 @@ import stop03_2_v25_candidate_contract_lock as contract_lock
 
 
 SCRIPT_VERSION = "stop03_3c_qwenvl_db_orchestrator_v1_20260711"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_3_qwenvl_db_v1.json"
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "stop03-3c-qwenvl-db-v1-dry-run"
@@ -876,13 +876,21 @@ def write_progress(
     ))
     metric_values = metrics.snapshot()
     payload = {
+        "contract": "media_archive_stage_runtime_contract_v1",
+        "event": "stage_progress",
+        "stage_key": "qwen_optional_v2",
         "timestamp": now_iso(),
         "run_id": run_id,
         "workers_requested": workers_requested,
         "workers_active": metric_values["workers_active"],
+        "configured_workers": workers_requested,
+        "actual_workers": metric_values["workers_active"],
         "pending": int(counts.get("pending", 0)),
         "running": int(counts.get("running", 0)),
+        "completed": success,
+        "total": total,
         "success": success,
+        "skipped": 0,
         "truncated": truncated,
         "failed": failed,
         "remaining": max(0, total - success),

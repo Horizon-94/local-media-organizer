@@ -16,10 +16,11 @@ from typing import NamedTuple, Optional, Sequence
 
 APP_RELEASE_NAME = "本地数据库"
 APP_BUNDLE_NAME = f"{APP_RELEASE_NAME}.app"
-APP_BUNDLE_VERSION = "1.2.0-final"
-APP_SEMVER = "1.2.0"
+APP_BUNDLE_VERSION = "1.2.3-final"
+APP_SEMVER = "1.2.3"
 APP_BUNDLE_IDENTIFIER = "local.horizon.local-database"
-APP_BUILD_NUMBER = "120"
+APP_BUILD_NUMBER = "123"
+RELEASE_BUNDLE_ALLOWLIST = Path("configs/media_archive_release_bundle_allowlist_v1.json")
 
 DEFAULT_ENV_ROOT = Path(
     os.environ.get(
@@ -66,6 +67,27 @@ def build_environment() -> dict[str, str]:
     if command_line_tools.is_dir():
         environment["DEVELOPER_DIR"] = str(command_line_tools)
     return environment
+
+
+def swift_toolchain() -> tuple[str, str, dict[str, str]]:
+    """Resolve compiler and SDK from one developer directory.
+
+    Mixing /usr/bin/swiftc with an SDK selected by another Xcode/CLT release
+    caused reproducible module-cache and SDK-version failures in 1.2.0 release
+    rehearsals.  xcrun keeps both sides on the same selected toolchain.
+    """
+    environment = build_environment()
+    swiftc = subprocess.run(
+        ["/usr/bin/xcrun", "--find", "swiftc"], check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+    ).stdout.strip()
+    sdk = subprocess.run(
+        ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+    ).stdout.strip()
+    if not Path(swiftc).is_file() or not Path(sdk).is_dir():
+        raise RuntimeError(f"incomplete Swift toolchain: swiftc={swiftc!r} sdk={sdk!r}")
+    return swiftc, sdk, environment
 
 
 NATIVE_LAUNCHER_SOURCE = r"""
@@ -272,6 +294,7 @@ def compile_native_launcher(
 def compile_swift_frontend(
     source: Path, executable: Path, *, apple_silicon_only: bool = False,
 ) -> None:
+    swiftc, sdk, environment = swift_toolchain()
     with tempfile.TemporaryDirectory(prefix="media-archive-swiftui-") as temporary:
         temporary_root = Path(temporary)
         architecture_outputs = []
@@ -283,15 +306,16 @@ def compile_swift_frontend(
                     # 6.3 optimiser bundled with the standalone CLT can exit
                     # nondeterministically on this large SwiftUI view while
                     # the unoptimised build is stable on both architectures.
-                    "/usr/bin/swiftc", "-swift-version", "5", "-Onone",
+                    swiftc, "-swift-version", "5", "-Onone",
                     "-target", f"{architecture}-apple-macosx12.0",
+                    "-sdk", sdk,
                     "-framework", "SwiftUI", "-framework", "AppKit",
                     "-framework", "AVFoundation", "-framework", "AVKit",
                     "-module-cache-path", str(temporary_root / f"module-cache-{architecture}"),
                     str(source), "-o", str(architecture_output),
                 ],
                 check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                env=build_environment(),
+                env=environment,
             )
             if completed.returncode != 0:
                 detail = completed.stderr.strip() or completed.stdout.strip() or "no compiler output"
@@ -305,6 +329,27 @@ def compile_swift_frontend(
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 env=build_environment(),
             )
+    executable.chmod(0o755)
+
+
+def compile_avfoundation_audio_salvage(source: Path, executable: Path) -> None:
+    """Build the Apple-native fallback used only for malformed AAC sources."""
+    swiftc, sdk, environment = swift_toolchain()
+    completed = subprocess.run(
+        [
+            swiftc, "-swift-version", "5", "-O",
+            "-target", "arm64-apple-macosx12.0",
+            "-sdk", sdk,
+            "-framework", "Foundation", "-framework", "AVFoundation",
+            "-module-cache-path", str(Path(tempfile.gettempdir()) / "media-archive-audio-module-cache"),
+            str(source), "-o", str(executable),
+        ],
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "no compiler output"
+        raise RuntimeError(f"AVFoundation audio helper compile failed: {detail}")
     executable.chmod(0o755)
 
 
@@ -345,6 +390,54 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _release_bundle_sources(project_root: Path) -> tuple[dict[str, object], list[Path]]:
+    manifest_path = project_root / RELEASE_BUNDLE_ALLOWLIST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("contract") != "media_archive_release_bundle_allowlist_v1":
+        raise RuntimeError("release_bundle_allowlist_contract_mismatch")
+    paths: set[Path] = set()
+    for relative in manifest.get("files") or []:
+        candidate = Path(str(relative))
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise RuntimeError(f"unsafe_release_bundle_path:{candidate}")
+        source = project_root / candidate
+        if not source.is_file():
+            raise FileNotFoundError(f"release bundle file missing: {candidate}")
+        paths.add(source)
+    for relative in manifest.get("trees") or []:
+        candidate = Path(str(relative))
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise RuntimeError(f"unsafe_release_bundle_tree:{candidate}")
+        source = project_root / candidate
+        if not source.is_dir():
+            raise FileNotFoundError(f"release bundle tree missing: {candidate}")
+        paths.update(
+            path for path in source.rglob("*")
+            if (
+                path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+                and path.name != ".DS_Store"
+            )
+        )
+    return manifest, sorted(paths, key=lambda item: str(item.relative_to(project_root)))
+
+
+def _copy_release_bundle_sources(project_root: Path, pipeline_root: Path) -> dict[str, object]:
+    manifest, sources = _release_bundle_sources(project_root)
+    for source in sources:
+        relative = source.relative_to(project_root)
+        destination = pipeline_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination, follow_symlinks=False)
+    return {
+        "contract": manifest["contract"],
+        "file_count": len(sources),
+        "total_bytes": sum(path.stat().st_size for path in sources),
+        "allowlist_sha256": _sha256(project_root / RELEASE_BUNDLE_ALLOWLIST),
+    }
+
+
 def _source_identity(project_root: Path) -> dict[str, object]:
     """Return a reproducible identity for the code copied into the app.
 
@@ -353,32 +446,7 @@ def _source_identity(project_root: Path) -> dict[str, object]:
     covers the complete native app package plus the runtime contract and this
     builder, without including models, media, workspaces, or user paths.
     """
-    # Mirror every project tree copied by ``bundle_pipeline_runtime``.  The
-    # previous digest covered only the native UI package and runtime contract,
-    # so changing a shipped pipeline script did not change release identity.
-    inputs = [
-        project_root / "apps" / "media_archive_image_video_ui",
-        project_root / "scripts",
-        project_root / "configs",
-        project_root / "migrations",
-        project_root / "tools",
-        project_root / "docs" / "pipeline_rules",
-        project_root / "docs" / "model_registry",
-    ]
-    files: list[Path] = []
-    for value in inputs:
-        if value.is_file():
-            files.append(value)
-        elif value.is_dir():
-            files.extend(
-                path for path in value.rglob("*")
-                if (
-                    path.is_file()
-                    and "__pycache__" not in path.parts
-                    and path.suffix != ".pyc"
-                    and path.name != ".DS_Store"
-                )
-            )
+    _, files = _release_bundle_sources(project_root)
     digest = hashlib.sha256()
     for path in sorted(files, key=lambda item: str(item.relative_to(project_root))):
         relative = str(path.relative_to(project_root)).replace(os.sep, "/")
@@ -580,24 +648,21 @@ def bundle_pipeline_runtime(
     frameworks: Path, helpers: Path,
 ) -> dict[str, object]:
     pipeline_root = resources / "Pipeline"
-    for name in ("scripts", "configs", "migrations", "tools"):
-        shutil.copytree(
-            project_root / name, pipeline_root / name, symlinks=True,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    bundle_source_manifest = _copy_release_bundle_sources(project_root, pipeline_root)
+    # DeepFilterNet is an optional third-party executable, not source code and
+    # therefore not stored in this source-only repository.  Release builders
+    # may provide it explicitly or keep an untracked local copy.
+    deep_filter_source = Path(
+        os.environ.get(
+            "MEDIA_ARCHIVE_DEEP_FILTER_EXECUTABLE",
+            project_root / "tools/deep-filter/deep-filter",
         )
-    shutil.copytree(
-        project_root / "apps" / "media_archive_image_video_ui",
-        pipeline_root / "apps" / "media_archive_image_video_ui",
-        symlinks=True,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
-    )
-    for name in ("pipeline_rules", "model_registry"):
-        shutil.copytree(
-            project_root / "docs" / name,
-            pipeline_root / "docs" / name,
-            symlinks=True,
-            ignore=shutil.ignore_patterns(".DS_Store"),
-        )
+    ).expanduser()
+    if deep_filter_source.is_file():
+        deep_filter_destination = pipeline_root / "tools/deep-filter/deep-filter"
+        deep_filter_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(deep_filter_source, deep_filter_destination)
+        deep_filter_destination.chmod(0o755)
     privacy_audit = sanitize_embedded_project_files(
         pipeline_root, project_root=project_root,
     )
@@ -646,12 +711,18 @@ def bundle_pipeline_runtime(
 
     def portable(value):
         if isinstance(value, str):
-            return value.replace(
-                str(project_root), "$APP_RESOURCES/Pipeline",
-            ).replace(
-                "/Users/yourname/Documents/AI-Local/media-archive-clean",
-                "$APP_RESOURCES/Pipeline",
-            ).replace(str(DEFAULT_MODEL_ROOT), "$MODEL_ROOT")
+            replacements = {
+                str(project_root): "$APP_RESOURCES/Pipeline",
+                "$PROJECT_ROOT": "$APP_RESOURCES/Pipeline",
+                str(DEFAULT_MODEL_ROOT): "$MODEL_ROOT",
+                "$FFMPEG": os.environ.get("MEDIA_ARCHIVE_FFMPEG", "/opt/homebrew/bin/ffmpeg"),
+                "$FFPROBE": os.environ.get("MEDIA_ARCHIVE_FFPROBE", "/opt/homebrew/bin/ffprobe"),
+                "$SIPS": "/usr/bin/sips",
+                "$DEEP_FILTER": "$APP_RESOURCES/Pipeline/tools/deep-filter/deep-filter",
+            }
+            for marker, replacement in replacements.items():
+                value = value.replace(marker, replacement)
+            return value
         if isinstance(value, list):
             return [portable(item) for item in value]
         if isinstance(value, dict):
@@ -674,6 +745,7 @@ def bundle_pipeline_runtime(
         "models_included": False,
         "network_download_implemented": False,
         "runtime_contract_sha256": _sha256(contract_path),
+        "bundle_sources": bundle_source_manifest,
         "developer_private_paths": privacy_audit,
         "runtime_developer_private_paths": runtime_privacy_audit,
     }
@@ -847,7 +919,10 @@ def build_bundle(
         source_package / "native_frontend.swift", executable,
         apple_silicon_only=apple_silicon_only,
     )
-
+    compile_avfoundation_audio_salvage(
+        source_package / "avfoundation_audio_salvage.swift",
+        helpers / "AVFoundationAudioSalvage",
+    )
     plist = {
         "CFBundleDisplayName": APP_RELEASE_NAME,
         "CFBundleExecutable": APP_RELEASE_NAME,

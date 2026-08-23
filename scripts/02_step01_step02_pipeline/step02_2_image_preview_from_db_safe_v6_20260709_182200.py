@@ -65,13 +65,13 @@ QL_EXTS = {
 }
 IMAGE_EXTS = SIPS_EXTS | QL_EXTS
 
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
-DEFAULT_OUT = Path("/Users/yourname/Documents/AI-Local/test-output") / "step02-2-image-preview-db-safe-v6_20260709_182200"
-EXPECTED_PYTHON = Path("/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
-CURRENT_TEST_SOURCE_ROOT = Path("/Users/yourname/Documents/001DZLtest")
-LEGACY_SOURCE_ROOT = Path("/Users/yourname/Documents/MEDIA_ARCHIVE_TEST_SOURCE")
+DEFAULT_OUT = Path("$USER_HOME/Documents/AI-Local/test-output") / "step02-2-image-preview-db-safe-v6_20260709_182200"
+EXPECTED_PYTHON = Path("$BUNDLED_PIPELINE_ENVS/media-archive-v06-visual/bin/python")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
+CURRENT_TEST_SOURCE_ROOT = Path("$USER_HOME/Documents/001DZLtest")
+LEGACY_SOURCE_ROOT = Path("$USER_HOME/Documents/AI_Media_Test_Source")
 MODEL_USAGE_POLICY = "not_used_by_step02_2_image_preview_sips_qlmanage"
 LOCAL_TOOL_POLICY = "macos_sips_required_qlmanage_required_exiftool_optional_readonly_metadata"
 

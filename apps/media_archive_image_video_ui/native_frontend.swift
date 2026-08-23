@@ -3,6 +3,45 @@ import AVFoundation
 import AVKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
+
+private final class VideoPreviewWindowController: NSWindowController {
+    var readinessObservation: NSKeyValueObservation?
+    var player: AVPlayer?
+    private var closeObserver: NSObjectProtocol?
+
+    override init(window: NSWindow?) {
+        super.init(window: window)
+        if let window {
+            closeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.stopPlayback()
+            }
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    private func stopPlayback() {
+        readinessObservation?.invalidate()
+        readinessObservation = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+    }
+
+    deinit {
+        stopPlayback()
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+        }
+    }
+}
 
 private let archiveBlue = Color(red: 0.086, green: 0.416, blue: 0.941)
 private let archiveBackground = Color(red: 0.957, green: 0.969, blue: 0.984)
@@ -179,11 +218,21 @@ struct SavedScheduler: Decodable {
 }
 struct SavedVideoSampling: Decodable { let frameIntervalSeconds: Double }
 struct SavedHighValuePolicy: Decodable { let mode: String; let imageScope: String }
+struct YoloeKeywordEntry: Decodable {
+    let label: String; let zh: String; let categoryZh: String
+    var editableLine: String { label == zh ? label : "\(label) = \(zh)" }
+}
+struct YoloeKeywordProfile: Decodable {
+    let enableBExtended: Bool
+    let aCore: [YoloeKeywordEntry]
+    let bExtended: [YoloeKeywordEntry]
+}
 struct SavedProcessingProfile: Decodable {
     let profileId: String
     let scheduler: SavedScheduler
     let videoSampling: SavedVideoSampling
     let highValuePolicy: SavedHighValuePolicy
+    let yoloeKeywords: YoloeKeywordProfile?
 }
 struct Snapshot: Decodable {
     let status: String; let version: String; let overview: Overview
@@ -195,6 +244,8 @@ struct Snapshot: Decodable {
     let duplicateGroups: DuplicatePayload; let timelapseGroups: TimelapsePayload
     let savedProfilePath: String; let hasSavedProfile: Bool
     let savedProfile: SavedProcessingProfile?
+    let yoloeKeywordProfile: YoloeKeywordProfile
+    let yoloeDefaultKeywordProfile: YoloeKeywordProfile
     let databaseReadError: String?
 }
 struct TaskDetailResponse: Decodable {
@@ -202,7 +253,12 @@ struct TaskDetailResponse: Decodable {
     let sourceRoot: String; let createdAt: String; let taskStatus: String
     let startedAt: String?; let finishedAt: String?; let pipeline: PipelineState
     let elapsedSeconds: Double?; let elapsedHuman: String?
+    let indexStorage: TaskIndexStorage?
     let error: String?
+}
+struct TaskIndexStorage: Decodable {
+    let totalBytes: Int64; let totalFileCount: Int
+    let status: String; let sourceRootScanned: Bool
 }
 struct StorageCategory: Decodable {
     let bytes: Int64; let fileCount: Int
@@ -252,6 +308,7 @@ struct PersonClusterLink: Decodable, Identifiable {
     let personClusterId: String; let memberCount: Int
     let distinctSourceCount: Int; let clusterConfidence: String
     let humanReviewStatus: String; let displayName: String
+    let isLocalIdentity: Bool?; let manualAssignment: Bool?
     var id: String { personClusterId }
 }
 struct PersonClusterSummary: Decodable, Identifiable {
@@ -270,7 +327,7 @@ struct SearchResult: Decodable, Identifiable {
     struct ObjectLabelHit: Decodable {
         let label: String?; let labelZh: String?; let confidence: Double?
     }
-    let resultId: String?; let sourceRelativePath: String?; let mediaType: String?
+    let resultId: String?; let visualUnitId: String?; let sourceRelativePath: String?; let mediaType: String?
     let sourceContentId: String?; let sourceFrameCount: Int?; let resultLevel: String?
     let timecode: String?; let previewSegmentStartTimecode: String?
     let previewSegmentEndTimecode: String?; let previewSegmentStartMs: Int?
@@ -287,6 +344,9 @@ struct SearchResult: Decodable, Identifiable {
     let personClusters: [PersonClusterLink]?
     let userAnnotation: UserAssetAnnotation?
     var id: String { resultId ?? UUID().uuidString }
+    var exportSelectionId: String {
+        resultId ?? "\(sourceContentId ?? "unknown")|\(timecode ?? "00:00")|\(previewPath ?? "")"
+    }
 }
 struct UserAssetAnnotation: Decodable {
     let tags: [String]; let note: String; let favorite: Bool
@@ -297,6 +357,21 @@ struct SearchResponse: Decodable {
     let resultCount: Int?; let resultItems: [SearchResult]?; let error: String?
     let resultTotalCount: Int?; let resultOffset: Int?; let resultLimit: Int?
     let nextResultOffset: Int?; let resultCountByMedia: [String: Int]?
+}
+private struct SearchNavigationSnapshot {
+    let returnTitle: String
+    let query: String; let mediaType: String; let previewWindow: String
+    let searchPathPrefix: String; let searchDateFrom: String; let searchDateTo: String
+    let searchRequireOCR: Bool; let searchRequirePerson: Bool
+    let searchStatus: String; let searchDiagnostic: String
+    let searchResults: [SearchResult]; let bufferedSearchResults: [SearchResult]
+    let searchCoverage: SearchCoverage?; let searchTotalCount: Int
+    let nextSearchOffset: Int?; let serverNextSearchOffset: Int?
+    let lastSearchSignature: String; let lastSearchMediaSummary: String
+    let lastSuccessfulSearchDuration: Double?
+    let activePersonClusterId: String; let activePersonSourceId: String
+    let activeSourceContentId: String; let selectedPersonClusterId: String
+    let selectedExportResults: [String: SearchResult]; let exportStatus: String
 }
 struct SearchMetadataFilters: Decodable {
     let mediaType: String?; let previewWindowMs: Int?; let pathPrefix: String?
@@ -339,7 +414,8 @@ struct ErrorResponse: Decodable {
 
 enum ArchivePage: String, CaseIterable, Identifiable {
     case newTask = "新建任务", running = "运行状态", history = "任务历史"
-    case search = "搜索素材", duplicates = "重复素材", special = "特殊素材", settings = "设置"
+    case search = "搜索素材", favorites = "我的收藏"
+    case duplicates = "重复素材", special = "特殊素材", settings = "设置"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -347,6 +423,7 @@ enum ArchivePage: String, CaseIterable, Identifiable {
         case .running: return "play.circle"
         case .history: return "clock"
         case .search: return "magnifyingglass"
+        case .favorites: return "heart.fill"
         case .duplicates: return "square.on.square"
         case .special: return "photo.stack"
         case .settings: return "gearshape"
@@ -383,8 +460,16 @@ final class ArchiveModel: ObservableObject {
     @Published var savedSearches: [SavedSearchItem] = []
     @Published var savedSearchName = ""
     @Published var searchMetadataStatus = ""
+    @Published var favoriteResults: [SearchResult] = []
+    @Published var favoriteLoading = false
+    @Published var favoriteStatus = ""
+    @Published var selectedExportResults: [String: SearchResult] = [:]
+    @Published var exportStatus = ""
     @Published var activePersonClusterId = ""
     @Published var activePersonSourceId = ""
+    @Published var activeSourceContentId = ""
+    @Published var searchNavigationDepth = 0
+    @Published var searchNavigationTitle = ""
     @Published var selectedPersonClusterId = ""
     @Published var personClusterCatalog: [PersonClusterSummary] = []
     @Published var personClusterLoading = false
@@ -407,6 +492,12 @@ final class ArchiveModel: ObservableObject {
     @Published var frameInterval = "3 秒"
     @Published var highValueMode = "目标 15%"
     @Published var imageScope = "按当前规则筛选图片"
+    @Published var yoloeACoreText = ""
+    @Published var yoloeBExtendedText = ""
+    @Published var yoloeEnableBExtended = false
+    @Published var yoloeDefaultACoreText = ""
+    @Published var yoloeDefaultBExtendedText = ""
+    @Published var yoloeDefaultEnableBExtended = false
     @Published var modelRoot = ""
     @Published var actionMessage = ""
     @Published var actionFailed = false
@@ -430,6 +521,7 @@ final class ArchiveModel: ObservableObject {
     private var serverNextSearchOffset: Int?
     private var lastSuccessfulSearchDuration: Double?
     private var lastSearchMediaSummary = ""
+    private var searchNavigationStack: [SearchNavigationSnapshot] = []
     private var searchPrewarmAttempted = false
 
     let taskModes = ["第一次完整整理", "增量整理", "修复缺失内容", "重建搜索入口", "补充音频搜索"]
@@ -676,6 +768,12 @@ final class ArchiveModel: ObservableObject {
                         self.modelWorkers = state.hardware.recommendation.modelWorkers
                         self.frameWorkers = state.hardware.recommendation.frameExtractWorkers
                     }
+                    self.yoloeACoreText = state.yoloeKeywordProfile.aCore.map(\.editableLine).joined(separator: "\n")
+                    self.yoloeBExtendedText = state.yoloeKeywordProfile.bExtended.map(\.editableLine).joined(separator: "\n")
+                    self.yoloeEnableBExtended = state.yoloeKeywordProfile.enableBExtended
+                    self.yoloeDefaultACoreText = state.yoloeDefaultKeywordProfile.aCore.map(\.editableLine).joined(separator: "\n")
+                    self.yoloeDefaultBExtendedText = state.yoloeDefaultKeywordProfile.bExtended.map(\.editableLine).joined(separator: "\n")
+                    self.yoloeDefaultEnableBExtended = state.yoloeDefaultKeywordProfile.enableBExtended
                     self.selectedExistingTaskPath = state.existingLibraries.first?.taskPath ?? ""
                     if state.searchRuntime.ready { self.loadSearchMetadata() }
                 }
@@ -855,7 +953,15 @@ final class ArchiveModel: ObservableObject {
             || imageScope == "所有普通图片都进入画面描述"
         ) ? "all_images" : "frozen_current_policy"
         let interval = frameInterval.split(separator: " ").first.map(String.init) ?? "3"
-        runAction(["save-profile", "--scheduler-mode", scheduler, "--model-workers", String(modelWorkers), "--frame-extract-workers", String(frameWorkers), "--frame-interval-seconds", interval, "--high-value-mode", highValue, "--image-scope", scope], pendingMessage: "正在保存设置…")
+        runAction(["save-profile", "--scheduler-mode", scheduler, "--model-workers", String(modelWorkers), "--frame-extract-workers", String(frameWorkers), "--frame-interval-seconds", interval, "--high-value-mode", highValue, "--image-scope", scope, "--yoloe-a-keywords", yoloeACoreText, "--yoloe-b-keywords", yoloeBExtendedText, "--yoloe-enable-b-extended", yoloeEnableBExtended ? "true" : "false"], pendingMessage: "正在保存设置…")
+    }
+
+    func restoreDefaultYoloeKeywords() {
+        yoloeACoreText = yoloeDefaultACoreText
+        yoloeBExtendedText = yoloeDefaultBExtendedText
+        yoloeEnableBExtended = yoloeDefaultEnableBExtended
+        actionFailed = false
+        actionMessage = "已恢复内置词表；点击“保存为今后任务的默认方案”后生效"
     }
 
     private func clearSearchForLibraryChange() {
@@ -866,9 +972,66 @@ final class ArchiveModel: ObservableObject {
         searchCoverage = nil; searchTotalCount = 0; nextSearchOffset = nil
         serverNextSearchOffset = nil; lastSearchSignature = ""
         activePersonClusterId = ""; activePersonSourceId = ""
+        activeSourceContentId = ""
+        clearSearchNavigation()
         selectedPersonClusterId = ""; searchDiagnostic = ""
         searchHistory = []; savedSearches = []; savedSearchName = ""
         searchStatus = "已切换搜索素材库；请输入关键词开始搜索"
+    }
+
+    private func pushSearchNavigation(title: String) {
+        guard !searchResults.isEmpty else { return }
+        searchNavigationStack.append(SearchNavigationSnapshot(
+            returnTitle: title,
+            query: query, mediaType: mediaType, previewWindow: previewWindow,
+            searchPathPrefix: searchPathPrefix, searchDateFrom: searchDateFrom,
+            searchDateTo: searchDateTo, searchRequireOCR: searchRequireOCR,
+            searchRequirePerson: searchRequirePerson,
+            searchStatus: searchStatus, searchDiagnostic: searchDiagnostic,
+            searchResults: searchResults, bufferedSearchResults: bufferedSearchResults,
+            searchCoverage: searchCoverage, searchTotalCount: searchTotalCount,
+            nextSearchOffset: nextSearchOffset, serverNextSearchOffset: serverNextSearchOffset,
+            lastSearchSignature: lastSearchSignature,
+            lastSearchMediaSummary: lastSearchMediaSummary,
+            lastSuccessfulSearchDuration: lastSuccessfulSearchDuration,
+            activePersonClusterId: activePersonClusterId,
+            activePersonSourceId: activePersonSourceId,
+            activeSourceContentId: activeSourceContentId,
+            selectedPersonClusterId: selectedPersonClusterId,
+            selectedExportResults: selectedExportResults, exportStatus: exportStatus
+        ))
+        searchNavigationDepth = searchNavigationStack.count
+        searchNavigationTitle = title
+    }
+
+    private func clearSearchNavigation() {
+        searchNavigationStack.removeAll()
+        searchNavigationDepth = 0
+        searchNavigationTitle = ""
+    }
+
+    func navigateBackInSearch() {
+        guard !searching, let snapshot = searchNavigationStack.popLast() else { return }
+        query = snapshot.query; mediaType = snapshot.mediaType; previewWindow = snapshot.previewWindow
+        searchPathPrefix = snapshot.searchPathPrefix; searchDateFrom = snapshot.searchDateFrom
+        searchDateTo = snapshot.searchDateTo; searchRequireOCR = snapshot.searchRequireOCR
+        searchRequirePerson = snapshot.searchRequirePerson
+        searchStatus = snapshot.searchStatus; searchDiagnostic = snapshot.searchDiagnostic
+        searchResults = snapshot.searchResults; bufferedSearchResults = snapshot.bufferedSearchResults
+        searchCoverage = snapshot.searchCoverage; searchTotalCount = snapshot.searchTotalCount
+        nextSearchOffset = snapshot.nextSearchOffset; serverNextSearchOffset = snapshot.serverNextSearchOffset
+        lastSearchSignature = snapshot.lastSearchSignature
+        lastSearchMediaSummary = snapshot.lastSearchMediaSummary
+        lastSuccessfulSearchDuration = snapshot.lastSuccessfulSearchDuration
+        activePersonClusterId = snapshot.activePersonClusterId
+        activePersonSourceId = snapshot.activePersonSourceId
+        activeSourceContentId = snapshot.activeSourceContentId
+        selectedPersonClusterId = snapshot.selectedPersonClusterId
+        selectedExportResults = snapshot.selectedExportResults; exportStatus = snapshot.exportStatus
+        searchProgress = nil; searchCancelling = false
+        searchNavigationDepth = searchNavigationStack.count
+        searchNavigationTitle = searchNavigationStack.last?.returnTitle ?? ""
+        page = .search
     }
 
     private func runAction(
@@ -929,6 +1092,14 @@ final class ArchiveModel: ObservableObject {
     }
 
     func search(loadMore: Bool = false) {
+        if loadMore, lastSearchSignature.hasPrefix("person-track:"), !selectedPersonClusterId.isEmpty {
+            searchPersonTrackSuggestions(selectedPersonClusterId, loadMore: true)
+            return
+        }
+        if loadMore, !activeSourceContentId.isEmpty {
+            browseSourceFrames(activeSourceContentId, loadMore: true)
+            return
+        }
         if loadMore, !activePersonClusterId.isEmpty {
             searchPersonCluster(activePersonClusterId, loadMore: true, sourceContentId: activePersonSourceId.isEmpty ? nil : activePersonSourceId)
             return
@@ -943,6 +1114,7 @@ final class ArchiveModel: ObservableObject {
         guard let advancedArguments = searchAdvancedArguments() else { return }
         let signature = "\(clean)\u{0}\(mediaType)\u{0}\(previewWindow)\u{0}\(searchPathPrefix)\u{0}\(searchDateFrom)\u{0}\(searchDateTo)\u{0}\(searchRequireOCR)\u{0}\(searchRequirePerson)"
         let continuing = loadMore && signature == lastSearchSignature
+        if !loadMore { clearSearchNavigation() }
         if continuing && searchResults.count < bufferedSearchResults.count {
             showNextBufferedSearchPage()
             return
@@ -972,6 +1144,7 @@ final class ArchiveModel: ObservableObject {
             searchCoverage = nil
             lastSearchSignature = signature; activePersonClusterId = ""
             activePersonSourceId = ""
+            activeSourceContentId = ""
             selectedPersonClusterId = ""; searchDiagnostic = ""
             bufferedSearchResults = []; serverNextSearchOffset = nil
             lastSearchMediaSummary = ""
@@ -1125,10 +1298,13 @@ final class ArchiveModel: ObservableObject {
         note: String,
         favorite: Bool,
         rating: Int,
-        ignored: Bool
+        ignored: Bool,
+        completion: ((Bool, String) -> Void)? = nil
     ) {
         guard let sourceId = result.sourceContentId, !sourceId.isEmpty else {
-            searchMetadataStatus = "当前结果缺少来源标识，无法保存备注"
+            let message = "当前结果缺少来源标识，无法保存备注"
+            searchMetadataStatus = message
+            completion?(false, message)
             return
         }
         runHelper([
@@ -1138,10 +1314,129 @@ final class ArchiveModel: ObservableObject {
             "--rating", String(rating),
             "--ignored", ignored ? "true" : "false",
         ]) { data, error in
-            self.searchMetadataStatus = data != nil
+            let message = data != nil
                 ? "素材标签、备注和星标已保存；模型结果未修改"
                 : (error ?? "保存素材备注失败")
+            self.searchMetadataStatus = message
+            completion?(data != nil, message)
+            if data != nil, self.page == .favorites {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    self.loadFavorites()
+                }
+            }
         }
+    }
+
+    func loadFavorites() {
+        guard !favoriteLoading else { return }
+        favoriteLoading = true
+        favoriteStatus = "正在读取当前素材库的本地收藏…"
+        runHelper(["favorites", "--result-offset", "0", "--result-limit", "500"]) { data, error in
+            self.favoriteLoading = false
+            guard let data else {
+                self.favoriteStatus = error ?? "无法读取我的收藏"
+                return
+            }
+            do {
+                let response = try self.decoder().decode(SearchResponse.self, from: data)
+                self.favoriteResults = response.resultItems ?? []
+                self.favoriteStatus = self.favoriteResults.isEmpty
+                    ? "当前素材库还没有收藏；可在搜索结果中勾选“收藏”并保存。"
+                    : "当前素材库共有 \(response.resultTotalCount ?? self.favoriteResults.count) 项收藏。"
+            } catch {
+                self.favoriteStatus = "收藏数据解析失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func isSelectedForExport(_ result: SearchResult) -> Bool {
+        selectedExportResults[result.exportSelectionId] != nil
+    }
+
+    func setSelectedForExport(_ result: SearchResult, selected: Bool) {
+        if selected { selectedExportResults[result.exportSelectionId] = result }
+        else { selectedExportResults.removeValue(forKey: result.exportSelectionId) }
+    }
+
+    func selectForExport(_ results: [SearchResult]) {
+        for result in results { selectedExportResults[result.exportSelectionId] = result }
+    }
+
+    func clearExportSelection() {
+        selectedExportResults.removeAll()
+        exportStatus = ""
+    }
+
+    private var orderedExportResults: [SearchResult] {
+        selectedExportResults.values.sorted {
+            let left = ($0.sourceRelativePath ?? "", $0.timecode ?? "")
+            let right = ($1.sourceRelativePath ?? "", $1.timecode ?? "")
+            return left < right
+        }
+    }
+
+    private func exportText(for result: SearchResult, index: Int) -> String {
+        let people = (result.personClusters ?? []).compactMap { $0.displayName }.filter { !$0.isEmpty }.joined(separator: "、")
+        let tags = (result.userAnnotation?.tags ?? []).joined(separator: "、")
+        let lines = [
+            "\(index). \(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent)",
+            "位置：\(result.sourceRelativePath ?? "--")",
+            "类型：\(result.mediaType ?? "--")　时间点：\(result.timecode ?? "--")",
+            "人物：\(people.isEmpty ? "--" : people)",
+            "标签：\(tags.isEmpty ? "--" : tags)",
+            "备注：\(result.userAnnotation?.note ?? "--")",
+            "描述/命中证据：\(result.textPreview ?? "--")",
+            "命中通道：\((result.relevanceReasons ?? []).joined(separator: "、"))",
+        ]
+        return lines.joined(separator: "\n")
+    }
+
+    private func csvField(_ value: String) -> String {
+        "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    func exportSelectedCSV() {
+        let results = orderedExportResults
+        guard !results.isEmpty else { exportStatus = "请先勾选需要导出的画面或素材"; return }
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "本地素材收藏与选片.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let header = ["序号", "文件名", "相对路径", "素材类型", "时间点", "人物", "用户标签", "用户备注", "描述或命中证据", "命中通道"]
+        var rows = [header.map(csvField).joined(separator: ",")]
+        for (index, result) in results.enumerated() {
+            let people = (result.personClusters ?? []).compactMap { $0.displayName }.filter { !$0.isEmpty }.joined(separator: "、")
+            let values = [
+                String(index + 1), URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent,
+                result.sourceRelativePath ?? "", result.mediaType ?? "", result.timecode ?? "",
+                people, (result.userAnnotation?.tags ?? []).joined(separator: "、"),
+                result.userAnnotation?.note ?? "", result.textPreview ?? "",
+                (result.relevanceReasons ?? []).joined(separator: "、"),
+            ]
+            rows.append(values.map(csvField).joined(separator: ","))
+        }
+        do {
+            try ("\u{FEFF}" + rows.joined(separator: "\n")).write(to: url, atomically: true, encoding: .utf8)
+            exportStatus = "已导出 \(results.count) 项：\(url.path)"
+        } catch { exportStatus = "CSV 导出失败：\(error.localizedDescription)" }
+    }
+
+    func exportSelectedPDF() {
+        let results = orderedExportResults
+        guard !results.isEmpty else { exportStatus = "请先勾选需要导出的画面或素材"; return }
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "本地素材收藏与选片.pdf"
+        panel.allowedContentTypes = [.pdf]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let title = "本地素材收藏与选片\n导出时间：\(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short))\n共 \(results.count) 项\n\n"
+        let body = results.enumerated().map { exportText(for: $0.element, index: $0.offset + 1) }.joined(separator: "\n\n")
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 720, height: max(900, CGFloat((title + body).count) * 0.72)))
+        textView.string = title + body
+        textView.font = NSFont.systemFont(ofSize: 12)
+        textView.textContainerInset = NSSize(width: 36, height: 36)
+        textView.isEditable = false
+        do {
+            try textView.dataWithPDF(inside: textView.bounds).write(to: url)
+            exportStatus = "已导出 \(results.count) 项：\(url.path)"
+        } catch { exportStatus = "PDF 导出失败：\(error.localizedDescription)" }
     }
 
     func loadPersonClusters() {
@@ -1222,11 +1517,16 @@ final class ArchiveModel: ObservableObject {
         let continuing = loadMore && activePersonClusterId == cleanId
         let offset = continuing ? (nextSearchOffset ?? 0) : 0
         if continuing && nextSearchOffset == nil { return }
+        if !continuing {
+            pushSearchNavigation(title: sourceContentId == nil ? "原始搜索结果" : "人物素材列表")
+            page = .search
+        }
         searching = true
         if !continuing {
             searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
             searchCoverage = nil; searchDiagnostic = ""; activePersonClusterId = cleanId
             activePersonSourceId = sourceContentId ?? ""
+            activeSourceContentId = ""
             selectedPersonClusterId = cleanId
             lastSearchSignature = "person:\(cleanId)"
         }
@@ -1269,6 +1569,156 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
+    func searchPersonTrackSuggestions(_ clusterId: String, loadMore: Bool = false) {
+        let cleanId = clusterId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else { return }
+        let signature = "person-track:\(cleanId)"
+        let continuing = loadMore && lastSearchSignature == signature
+        let offset = continuing ? (nextSearchOffset ?? 0) : 0
+        if continuing && nextSearchOffset == nil { return }
+        if !continuing {
+            pushSearchNavigation(title: "人物搜索结果")
+            page = .search
+            searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
+            searchCoverage = nil; searchDiagnostic = ""
+            activePersonClusterId = ""; activePersonSourceId = ""; activeSourceContentId = ""
+            selectedPersonClusterId = cleanId
+            lastSearchSignature = signature
+        }
+        searching = true
+        searchStatus = continuing ? "正在加载更多人物轨迹候选…" : "正在读取同一视频中的侧脸和背影候选…"
+        let media = mediaType == "图片" ? "image" : (mediaType == "视频" ? "video" : "all")
+        let window = previewWindow == "5 秒" ? "5000" : "10000"
+        runHelper([
+            "person-track-suggestions", "--cluster-id", cleanId,
+            "--media-type", media, "--preview-window-ms", window,
+            "--result-offset", String(offset), "--result-limit", "30",
+        ]) { data, error in
+            self.searching = false
+            if let data, let response = try? self.decoder().decode(SearchResponse.self, from: data),
+               response.status == "PASS" {
+                let incoming = response.resultItems ?? []
+                if continuing {
+                    let existing = Set(self.searchResults.map(\.id))
+                    self.searchResults.append(contentsOf: incoming.filter { !existing.contains($0.id) })
+                } else {
+                    self.searchResults = incoming
+                }
+                self.searchTotalCount = response.resultTotalCount ?? self.searchResults.count
+                self.nextSearchOffset = response.nextResultOffset
+                self.searchStatus = self.searchTotalCount == 0
+                    ? "没有找到足够可靠的侧脸或背影候选"
+                    : "找到 \(self.searchTotalCount) 个待人工确认候选 · 当前显示 \(self.searchResults.count) 个；确认前不会加入人物"
+            } else if let data, let failure = try? self.decoder().decode(ErrorResponse.self, from: data) {
+                self.searchStatus = failure.displayMessage.isEmpty ? "读取人物轨迹候选失败" : failure.displayMessage
+                self.searchDiagnostic = failure.diagnosticText
+            } else {
+                self.searchStatus = error ?? "读取人物轨迹候选失败"
+                self.searchDiagnostic = error ?? ""
+            }
+        }
+    }
+
+    func browseSourceFrames(_ sourceContentId: String, loadMore: Bool = false) {
+        let cleanId = sourceContentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty, !searching else { return }
+        let continuing = loadMore && activeSourceContentId == cleanId
+        let offset = continuing ? (nextSearchOffset ?? 0) : 0
+        if continuing && nextSearchOffset == nil { return }
+        searching = true
+        if !continuing {
+            pushSearchNavigation(title: activePersonClusterId.isEmpty ? "原始搜索结果" : "人物搜索结果")
+            page = .search
+            searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
+            searchCoverage = nil; searchDiagnostic = ""
+            activeSourceContentId = cleanId
+            activePersonClusterId = ""; activePersonSourceId = ""
+            lastSearchSignature = "source-frames:\(cleanId)"
+        }
+        searchStatus = continuing ? "正在加载该视频的更多画面…" : "正在读取该视频的全部索引画面…"
+        let window = previewWindow == "5 秒" ? "5000" : "10000"
+        runHelper([
+            "source-frames", "--source-content-id", cleanId,
+            "--preview-window-ms", window,
+            "--result-offset", String(offset), "--result-limit", "60",
+        ]) { data, error in
+            self.searching = false
+            if let data, let response = try? self.decoder().decode(SearchResponse.self, from: data),
+               response.status == "PASS" {
+                let incoming = response.resultItems ?? []
+                if continuing {
+                    let existing = Set(self.searchResults.map(\.id))
+                    self.searchResults.append(contentsOf: incoming.filter { !existing.contains($0.id) })
+                } else {
+                    self.searchResults = incoming
+                }
+                self.searchTotalCount = response.resultTotalCount ?? self.searchResults.count
+                self.nextSearchOffset = response.nextResultOffset
+                self.searchStatus = self.searchTotalCount == 0
+                    ? "这个视频没有可显示的索引画面"
+                    : "该视频共有 \(self.searchTotalCount) 个索引画面 · 当前显示 \(self.searchResults.count) 个 · 已按时间排序"
+            } else if let data, let failure = try? self.decoder().decode(ErrorResponse.self, from: data) {
+                self.searchStatus = failure.displayMessage.isEmpty ? "读取视频画面失败" : failure.displayMessage
+                self.searchDiagnostic = failure.diagnosticText
+            } else {
+                self.searchStatus = error ?? "读取视频画面失败"
+                self.searchDiagnostic = error ?? ""
+            }
+        }
+    }
+
+    func createPerson(
+        from result: SearchResult, name: String, tags: String,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        guard let visualId = result.visualUnitId, !visualId.isEmpty,
+              let sourceId = result.sourceContentId, !sourceId.isEmpty else {
+            completion(false, "当前结果缺少可关联的画面编号"); return
+        }
+        runHelper([
+            "person-create", "--display-name", name, "--tags", tags,
+            "--visual-unit-id", visualId, "--source-content-id", sourceId,
+        ]) { data, error in
+            if data != nil {
+                self.loadPersonClusters()
+                completion(true, "已新建人物并加入当前画面")
+            } else { completion(false, error ?? "新建人物失败") }
+        }
+    }
+
+    func addResult(_ result: SearchResult, toPerson personId: String,
+                   completion: @escaping (Bool, String) -> Void) {
+        guard let visualId = result.visualUnitId, !visualId.isEmpty,
+              let sourceId = result.sourceContentId, !sourceId.isEmpty else {
+            completion(false, "当前结果缺少可关联的画面编号"); return
+        }
+        runHelper([
+            "person-add-visual", "--person-id", personId,
+            "--visual-unit-id", visualId, "--source-content-id", sourceId,
+        ]) { data, error in
+            if data != nil {
+                self.loadPersonClusters()
+                completion(true, "当前画面已加入所选人物")
+            } else { completion(false, error ?? "加入人物失败") }
+        }
+    }
+
+    func removeResult(_ result: SearchResult, fromPerson personId: String,
+                      completion: @escaping (Bool, String) -> Void) {
+        guard let visualId = result.visualUnitId, !visualId.isEmpty else {
+            completion(false, "当前结果缺少可关联的画面编号"); return
+        }
+        runHelper([
+            "person-remove-visual", "--person-id", personId,
+            "--visual-unit-id", visualId,
+        ]) { data, error in
+            if data != nil {
+                self.loadPersonClusters()
+                completion(true, "已移除人工人物关联")
+            } else { completion(false, error ?? "移除关联失败") }
+        }
+    }
+
     func reveal(_ result: SearchResult) {
         guard let path = result.sourcePath, !path.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
@@ -1279,7 +1729,8 @@ final class ArchiveModel: ObservableObject {
         let url = URL(fileURLWithPath: path)
         if result.mediaType == "video", let milliseconds = result.previewSegmentStartMs {
             videoPreviewControllers.removeAll { !($0.window?.isVisible ?? false) }
-            let player = AVPlayer(url: url)
+            let item = AVPlayerItem(url: url)
+            let player = AVPlayer(playerItem: item)
             let playerView = AVPlayerView(frame: NSRect(x: 0, y: 0, width: 960, height: 600))
             playerView.player = player
             playerView.controlsStyle = .floating
@@ -1291,7 +1742,8 @@ final class ArchiveModel: ObservableObject {
             window.title = URL(fileURLWithPath: path).lastPathComponent
             window.contentView = playerView
             window.center()
-            let controller = NSWindowController(window: window)
+            let controller = VideoPreviewWindowController(window: window)
+            controller.player = player
             videoPreviewControllers.append(controller)
             controller.showWindow(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -1299,8 +1751,24 @@ final class ArchiveModel: ObservableObject {
                 seconds: Double(milliseconds) / 1000.0,
                 preferredTimescale: 1000
             )
-            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
-            player.play()
+            // A mechanical disk may need several seconds before AVFoundation
+            // can seek.  Starting playback immediately races that seek and can
+            // leave the player at zero.  Wait for readiness, finish the seek,
+            // and only then play.
+            controller.readinessObservation = item.observe(\.status, options: [.initial, .new]) {
+                [weak controller, weak player] observedItem, _ in
+                guard observedItem.status == .readyToPlay else { return }
+                controller?.readinessObservation?.invalidate()
+                controller?.readinessObservation = nil
+                observedItem.seek(
+                    to: target,
+                    toleranceBefore: CMTime(seconds: 0.1, preferredTimescale: 1000),
+                    toleranceAfter: CMTime(seconds: 0.1, preferredTimescale: 1000)
+                ) { finished in
+                    guard finished else { return }
+                    DispatchQueue.main.async { player?.play() }
+                }
+            }
         } else { NSWorkspace.shared.open(url) }
     }
 
@@ -1674,7 +2142,7 @@ struct HistoryPage: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 6) {
                     Text(library.isActive ? "当前搜索库" : library.status).fontWeight(.semibold)
-                    Button("查看阶段明细") { model.loadHistoryDetail(library) }
+                    Button("查看阶段明细与索引占用") { model.loadHistoryDetail(library) }
                     Button("只读存储审计") { model.loadStorageAudit(library) }
                     Button("生成安全清理计划") { model.loadStorageCleanupPlan(library) }
                     if !library.isActive {
@@ -1762,6 +2230,10 @@ struct HistoryPage: View {
                     Text("任务状态：\(detail.taskStatus) · 总进度 \(String(format: "%.1f%%", detail.pipeline.overallPercent))").foregroundStyle(archiveMuted)
                     Text("开始：\(detail.startedAt ?? "--") · 结束：\(detail.finishedAt ?? "--") · 总用时：\(detail.elapsedHuman ?? formatSeconds(detail.elapsedSeconds))")
                         .font(.caption).foregroundStyle(archiveMuted)
+                    if let storage = detail.indexStorage {
+                        Text("索引占用：\(formatBytes(storage.totalBytes)) · \(storage.totalFileCount.formatted()) 个文件（只统计索引任务目录，不读取原始素材）")
+                            .font(.caption).foregroundStyle(archiveBlue)
+                    }
                     if detail.taskStatus == "failed" {
                         Divider()
                         Label(
@@ -1812,6 +2284,14 @@ struct SearchResultCard: View {
     @State private var annotationFavorite: Bool
     @State private var annotationRating: Int
     @State private var annotationIgnored: Bool
+    @State private var annotationSaving = false
+    @State private var annotationSaveState = ""
+    @State private var annotationSaveMessage = ""
+    @State private var manualPersonTargetId = ""
+    @State private var manualPersonName = ""
+    @State private var manualPersonTags = ""
+    @State private var manualPersonStatus = ""
+    @State private var manualPersonFailed = false
     init(result: SearchResult) {
         self.result = result
         _annotationTags = State(initialValue: (result.userAnnotation?.tags ?? []).joined(separator: "，"))
@@ -1843,7 +2323,16 @@ struct SearchResultCard: View {
                 else { ZStack { Color.gray.opacity(0.15); Image(systemName: "photo").font(.largeTitle).foregroundStyle(archiveMuted) } }
             }.frame(width: 250, height: 150).clipped().clipShape(RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 8) {
-                HStack { Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill").foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen); Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent).font(.headline); Spacer(); Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100)).font(.caption).foregroundStyle(archiveBlue) }
+                HStack {
+                    Image(systemName: result.mediaType == "video" ? "video.fill" : "photo.fill").foregroundStyle(result.mediaType == "video" ? archiveBlue : archiveGreen)
+                    Text(URL(fileURLWithPath: result.sourceRelativePath ?? "素材").lastPathComponent).font(.headline)
+                    Spacer()
+                    Toggle("选入导出", isOn: Binding(
+                        get: { model.isSelectedForExport(result) },
+                        set: { model.setSelectedForExport(result, selected: $0) }
+                    )).toggleStyle(.checkbox)
+                    Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100)).font(.caption).foregroundStyle(archiveBlue)
+                }
                 if result.mediaType == "video" { Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")").font(.subheadline).foregroundStyle(archiveMuted) }
                 if result.audioTranscriptMatch == true {
                     Label(
@@ -1855,7 +2344,7 @@ struct SearchResultCard: View {
                 Text((result.audioTranscriptMatch == true ? "人声转写：" : "描述证据：") + (result.textPreview ?? "该画面通过全视觉通道召回。"))
                     .font(.subheadline).lineLimit(3)
                 if !visibleReasons.isEmpty {
-                    Text("命中依据：" + visibleReasons.map { ["exact_text":"文字直接命中", "exact_object_label":"物体标签直接命中", "strong_visual_semantic":"画面语义强匹配", "strong_text_semantic":"描述语义强匹配", "combined_visual_text":"画面与描述共同匹配", "audio_transcript_exact":"音频转写文字直接命中", "audio_transcript_semantic":"音频转写语义匹配", "same_person_reid":"本地人脸特征属于同一匿名人物簇"][$0] ?? $0 }.joined(separator: "、"))
+                    Text("命中依据：" + visibleReasons.map { ["exact_text":"文字直接命中", "exact_object_label":"物体标签直接命中", "strong_visual_semantic":"画面语义强匹配", "strong_text_semantic":"描述语义强匹配", "combined_visual_text":"画面与描述共同匹配", "audio_transcript_exact":"音频转写文字直接命中", "audio_transcript_semantic":"音频转写语义匹配", "same_person_reid":"本地人脸特征属于同一人物组", "same_person_track_suggestion":"同一视频中的人脸锚定人体轨迹候选", "user_favorite":"本地收藏", "source_timeline":"同一视频的索引时间轴"][$0] ?? $0 }.joined(separator: "、"))
                         .font(.caption).foregroundStyle(archiveBlue)
                 }
                 if let labels = result.matchedObjectLabels, !labels.isEmpty {
@@ -1878,11 +2367,20 @@ struct SearchResultCard: View {
                 }
                 if let clusters = result.personClusters, !clusters.isEmpty {
                     ForEach(clusters) { cluster in
-                        Button("查找同一人物（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
-                            model.searchPersonCluster(cluster.personClusterId)
+                        HStack {
+                            Button("查找 \(cluster.displayName.isEmpty ? "同一人物" : cluster.displayName)（\(cluster.memberCount) 个画面 / \(cluster.distinctSourceCount) 个素材）") {
+                                model.searchPersonCluster(cluster.personClusterId)
+                            }
+                            .buttonStyle(.bordered)
+                            .help("只读取本地人物组；人工人物不会改写机器识别结果")
+                            if cluster.manualAssignment == true {
+                                Button("移出人工人物") {
+                                    model.removeResult(result, fromPerson: cluster.personClusterId) { success, message in
+                                        manualPersonFailed = !success; manualPersonStatus = message
+                                    }
+                                }.buttonStyle(.borderless)
+                            }
                         }
-                        .buttonStyle(.bordered)
-                        .help("只读取本地匿名人脸簇；不会识别或显示人物姓名")
                     }
                 }
                 if result.resultLevel == "source", let frames = result.sourceFrameCount, frames > 1,
@@ -1892,6 +2390,49 @@ struct SearchResultCard: View {
                     }.buttonStyle(.bordered)
                 }
                 Text("所属位置：\(result.sourceRelativePath ?? "")").font(.caption2).foregroundStyle(archiveMuted)
+                if result.visualUnitId?.isEmpty == false {
+                    DisclosureGroup("人工人物归类") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("机器没有识别到正脸也可以人工归类；一张画面可加入多个人物，结果只保存在本机。")
+                                .font(.caption).foregroundStyle(archiveMuted)
+                            HStack {
+                                Picker("加入已有人物", selection: $manualPersonTargetId) {
+                                    Text("请选择人物").tag("")
+                                    ForEach(model.personClusterCatalog) { person in
+                                        Text(person.displayName).tag(person.personClusterId)
+                                    }
+                                }.frame(maxWidth: 340)
+                                Button("加入所选人物") {
+                                    model.addResult(result, toPerson: manualPersonTargetId) { success, message in
+                                        manualPersonFailed = !success; manualPersonStatus = message
+                                    }
+                                }.disabled(manualPersonTargetId.isEmpty)
+                            }
+                            HStack {
+                                TextField("新人物名称", text: $manualPersonName)
+                                    .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                                TextField("人物标签（可选）", text: $manualPersonTags)
+                                    .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                                Button("用此画面新建人物") {
+                                    let cleanName = manualPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    guard !cleanName.isEmpty else {
+                                        manualPersonFailed = true; manualPersonStatus = "请填写新人物名称"; return
+                                    }
+                                    model.createPerson(from: result, name: cleanName, tags: manualPersonTags) { success, message in
+                                        manualPersonFailed = !success; manualPersonStatus = message
+                                        if success { manualPersonName = ""; manualPersonTags = "" }
+                                    }
+                                }
+                            }
+                            if !manualPersonStatus.isEmpty {
+                                Label(
+                                    manualPersonStatus,
+                                    systemImage: manualPersonFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                                ).font(.caption).foregroundStyle(manualPersonFailed ? .red : archiveGreen)
+                            }
+                        }.padding(.top, 8)
+                    }
+                }
                 DisclosureGroup("本地标签、备注与收藏") {
                     VStack(alignment: .leading, spacing: 8) {
                         TextField("标签，用逗号分隔", text: $annotationTags)
@@ -1904,17 +2445,43 @@ struct SearchResultCard: View {
                                 ForEach(0...5, id: \.self) { Text($0 == 0 ? "未评分" : "\($0) 星").tag($0) }
                             }.frame(width: 150)
                             Toggle("忽略", isOn: $annotationIgnored).toggleStyle(.checkbox)
-                            Button("保存") {
+                            Button(annotationSaving ? "保存中…" : "保存") {
+                                annotationSaving = true
+                                annotationSaveState = ""
+                                annotationSaveMessage = ""
                                 model.saveResultAnnotation(
                                     result, tags: annotationTags, note: annotationNote,
                                     favorite: annotationFavorite, rating: annotationRating,
                                     ignored: annotationIgnored
-                                )
+                                ) { success, message in
+                                    annotationSaving = false
+                                    annotationSaveState = success ? "success" : "failure"
+                                    annotationSaveMessage = message
+                                }
+                            }.disabled(annotationSaving)
+                            if annotationSaving {
+                                ProgressView().controlSize(.small)
+                            } else if annotationSaveState == "success" {
+                                Label("已保存", systemImage: "checkmark.circle.fill")
+                                    .font(.caption.bold()).foregroundStyle(archiveGreen)
+                            } else if annotationSaveState == "failure" {
+                                Label(annotationSaveMessage, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption).foregroundStyle(.red)
                             }
                         }
                     }.padding(.top, 8)
                 }
-                HStack { Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") { model.open(result) }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true); Button("在 Finder 中显示") { model.reveal(result) }.disabled(result.canOpenOriginal != true) }
+                HStack {
+                    Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") {
+                        model.open(result)
+                    }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true)
+                    Button("在 Finder 中显示") { model.reveal(result) }
+                        .disabled(result.canOpenOriginal != true)
+                    if result.mediaType == "video", let sourceId = result.sourceContentId {
+                        Button("浏览该视频全部画面") { model.browseSourceFrames(sourceId) }
+                            .buttonStyle(.bordered)
+                    }
+                }
             }
         }.padding(14).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
     }
@@ -1927,6 +2494,18 @@ struct SearchPage: View {
         if let activeLibrary = model.snapshot?.existingLibraries.first(where: { $0.isActive }) {
             Label("当前搜索库：\(activeLibrary.taskName)（图片 \(activeLibrary.imageCount)，视频 \(activeLibrary.videoCount)）", systemImage: "externaldrive.fill")
                 .font(.subheadline).foregroundStyle(archiveBlue)
+        }
+        if model.searchNavigationDepth > 0 {
+            Panel { HStack(spacing: 12) {
+                Button("返回上一层") { model.navigateBackInSearch() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.searching)
+                Text("返回后恢复：\(model.searchNavigationTitle)（不会重新搜索）")
+                    .font(.subheadline).foregroundStyle(archiveMuted)
+                Spacer()
+                Text("当前第 \(model.searchNavigationDepth + 1) 层")
+                    .font(.caption).foregroundStyle(archiveMuted)
+            }}
         }
         Panel { VStack(spacing: 14) {
             HStack { Image(systemName: "magnifyingglass").foregroundStyle(archiveMuted); TextField("例如：夜间户外戴眼镜的人物", text: $model.query).textFieldStyle(.plain).font(.title3).onSubmit { model.search() }; Button(model.searching ? "搜索中…" : "搜索") { model.search() }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching || model.snapshot?.searchRuntime.ready != true) }
@@ -2008,6 +2587,12 @@ struct SearchPage: View {
                         model.searchPersonCluster(model.selectedPersonClusterId)
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(model.selectedPersonClusterId.isEmpty || model.searching)
+                    Button("查看侧脸/背影候选") {
+                        model.searchPersonTrackSuggestions(model.selectedPersonClusterId)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("只读取同一视频中的现有人脸和人体框；结果需人工确认，不会自动合并人物")
                     .disabled(model.selectedPersonClusterId.isEmpty || model.searching)
                     Spacer()
                 }
@@ -2138,6 +2723,55 @@ struct SearchPage: View {
     } }
 }
 
+struct FavoritesPage: View {
+    @EnvironmentObject var model: ArchiveModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                PageHeader(
+                    title: "我的收藏",
+                    subtitle: "收藏和备注只保存在当前本地素材库；可从收藏或搜索结果勾选画面，导出 PDF 或 Excel 可打开的 CSV。"
+                )
+                Panel {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Button(model.favoriteLoading ? "读取中…" : "刷新收藏") { model.loadFavorites() }
+                                .disabled(model.favoriteLoading)
+                            Button("全选当前收藏") { model.selectForExport(model.favoriteResults) }
+                                .disabled(model.favoriteResults.isEmpty)
+                            Button("清空导出选择") { model.clearExportSelection() }
+                                .disabled(model.selectedExportResults.isEmpty)
+                            Spacer()
+                            Text("已选 \(model.selectedExportResults.count) 项").font(.subheadline.bold())
+                            Button("导出 PDF") { model.exportSelectedPDF() }
+                                .disabled(model.selectedExportResults.isEmpty)
+                            Button("导出 Excel 可打开的 CSV") { model.exportSelectedCSV() }
+                                .buttonStyle(PrimaryButtonStyle())
+                                .disabled(model.selectedExportResults.isEmpty)
+                        }
+                        Text("收藏沿用 1.2.0 的素材级记录：同一视频的不同命中画面共享收藏状态；导出选择则精确到当前勾选的命中结果。")
+                            .font(.caption).foregroundStyle(archiveMuted)
+                        if !model.favoriteStatus.isEmpty { Text(model.favoriteStatus).font(.caption).foregroundStyle(archiveMuted) }
+                        if !model.exportStatus.isEmpty { Text(model.exportStatus).font(.caption).foregroundStyle(archiveBlue).textSelection(.enabled) }
+                    }
+                }
+                if model.favoriteResults.isEmpty, !model.favoriteLoading {
+                    Panel {
+                        VStack(spacing: 10) {
+                            Image(systemName: "heart").font(.system(size: 40)).foregroundStyle(archiveMuted)
+                            Text("当前素材库还没有收藏").font(.title3.bold())
+                            Text("在搜索结果中展开“本地标签、备注与收藏”，勾选收藏并保存后会显示在这里。")
+                                .foregroundStyle(archiveMuted)
+                        }.frame(maxWidth: .infinity).padding(.vertical, 38)
+                    }
+                } else {
+                    ForEach(model.favoriteResults) { SearchResultCard(result: $0) }
+                }
+            }.padding(34)
+        }.onAppear { model.loadFavorites() }
+    }
+}
+
 struct DuplicatesPage: View {
     @EnvironmentObject var model: ArchiveModel
     var body: some View { ScrollView { VStack(alignment: .leading, spacing: 16) {
@@ -2219,6 +2853,7 @@ struct SpecialPage: View {
 
 struct SettingsPage: View {
     @EnvironmentObject var model: ArchiveModel
+    @State private var showYoloeKeywords = false
     var body: some View { ScrollView { VStack(alignment: .leading, spacing: 18) {
         PageHeader(title: "处理设置", subtitle: "先看电脑能力，再决定并发、抽帧密度和高价值分析范围。")
         if let state = model.snapshot {
@@ -2244,6 +2879,49 @@ struct SettingsPage: View {
                     .font(.caption)
                     .foregroundStyle(state.hasSavedProfile ? archiveGreen : archiveMuted)
                 HStack { Spacer(); Button("保存为今后任务的默认方案") { model.saveProfile() }.buttonStyle(PrimaryButtonStyle()) }
+            } }
+            Panel { VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("YOLOE 识别关键词").font(.title3.bold())
+                        Text("A 层默认运行并作为强证据；B 层是可选扩展词，启用后会增加识别范围和计算量。")
+                            .font(.subheadline).foregroundStyle(archiveMuted)
+                    }
+                    Spacer()
+                    Button(showYoloeKeywords ? "收起词表" : "编辑词表") {
+                        showYoloeKeywords.toggle()
+                    }
+                }
+                Toggle("新任务启用 B 层扩展关键词", isOn: $model.yoloeEnableBExtended)
+                    .toggleStyle(.switch)
+                Text("当前 A 层 \(model.yoloeACoreText.split(whereSeparator: \.isNewline).count) 个 · B 层 \(model.yoloeBExtendedText.split(whereSeparator: \.isNewline).count) 个。修改只影响今后新建的任务；旧任务继续使用自己的冻结快照。")
+                    .font(.caption).foregroundStyle(archiveBlue)
+                if showYoloeKeywords {
+                    Divider()
+                    Text("每行一个关键词，格式为“英文关键词 = 中文说明”；也可以只写英文关键词。重复项保存时自动去重。")
+                        .font(.caption).foregroundStyle(archiveMuted)
+                    Text("A 层主识别词（至少保留 1 个）").font(.headline)
+                    TextEditor(text: $model.yoloeACoreText)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 190)
+                        .padding(6)
+                        .background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.12)))
+                    Text("B 层扩展辅助词").font(.headline)
+                    TextEditor(text: $model.yoloeBExtendedText)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 190)
+                        .padding(6)
+                        .background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.12)))
+                    HStack {
+                        Button("恢复内置默认词表") { model.restoreDefaultYoloeKeywords() }
+                        Spacer()
+                        Text("与上方处理方案一起保存").font(.caption).foregroundStyle(archiveMuted)
+                    }
+                }
             } }
             Panel { VStack(alignment: .leading, spacing: 11) {
                 Text("本地模型位置").font(.title3.bold())
@@ -2313,6 +2991,7 @@ struct RootView: View {
                 case .running: RunningPage()
                 case .history: HistoryPage()
                 case .search: SearchPage()
+                case .favorites: FavoritesPage()
                 case .duplicates: DuplicatesPage()
                 case .special: SpecialPage()
                 case .settings: SettingsPage()

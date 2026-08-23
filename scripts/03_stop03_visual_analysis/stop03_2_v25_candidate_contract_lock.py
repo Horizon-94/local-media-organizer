@@ -31,8 +31,8 @@ EXPECTED_OCR = 54
 EXPECTED_CANDIDATE_ID_SET_SHA256 = "d14c7570230b6c2e3a605c0a3f35d04f3cf4aec62a680838907138570ef84e15"
 EXPECTED_CANDIDATE_SEMANTIC_DIGEST_SHA256 = "de34d067fec2d132d6b67bfe7baee251d8dd63c7174fbc556cbae84d243b1b22"
 
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 MIGRATION = PROJECT_ROOT / "migrations/20260711_stop03_2_v25_candidate_snapshot_qwenvl_v1.sql"
 RULE_DOCUMENT = PROJECT_ROOT / "docs/pipeline_rules/STOP03_2_GENERIC_HIGH_VALUE_RULES_V25.md"

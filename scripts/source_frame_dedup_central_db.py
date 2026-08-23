@@ -19,12 +19,12 @@ from typing import Any, Iterable, Sequence
 
 SCRIPT_VERSION = "source_frame_dedup_central_db_v1"
 TASK_LABEL = "central_db_source_frame_dedup_full_run"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 ALLOWED_SOURCE_ROOTS = {
-    Path("/Users/yourname/Documents/001DZLtest"),
-    Path("/Users/yourname/Documents/MEDIA_ARCHIVE_TEST_SOURCE"),
+    Path("$USER_HOME/Documents/001DZLtest"),
+    Path("$USER_HOME/Documents/AI_Media_Test_Source"),
 }
 DEFAULT_QUICK_BYTES = 65536
 DEFAULT_VISUAL_HASH_THRESHOLD = 6
@@ -288,6 +288,7 @@ def preflight(db_path: Path, output_root: Path) -> dict[str, Any]:
                 """SELECT COUNT(*) FROM source_file_records sfr
                    JOIN source_assets sa ON sa.source_content_id=sfr.source_content_id
                    WHERE sfr.media_kind IN ('image','video') AND sfr.support_status='supported'
+                     AND sfr.file_name NOT LIKE '._%'
                      AND sa.online_status=1 AND sa.is_deleted_or_missing=0""",
             )
             or 0
@@ -346,6 +347,7 @@ def load_source_rows(db_path: Path) -> list[dict[str, Any]]:
             FROM source_file_records sfr
             JOIN source_assets sa ON sa.source_content_id=sfr.source_content_id
             WHERE sfr.media_kind IN ('image','video') AND sfr.support_status='supported'
+              AND sfr.file_name NOT LIKE '._%'
               AND sa.online_status=1 AND sa.is_deleted_or_missing=0
             ORDER BY sfr.source_file_id
             """

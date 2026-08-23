@@ -39,8 +39,8 @@ migration    = 1bafd4096da75fa8aeeecaac2e0bb4fe821e3df775af6375a2692c5277bc7844
 ## 冻结本地模型
 
 ```text
-detection model  = /Users/yourname/Documents/model/ocr/PP-OCRv6_medium_det
-recognition model = /Users/yourname/Documents/model/ocr/PP-OCRv6_medium_rec
+detection model  = $MODEL_ROOT/ocr/PP-OCRv6_medium_det
+recognition model = $MODEL_ROOT/ocr/PP-OCRv6_medium_rec
 detection SHA     = efbea5fae8c00c180dd2ce21d3e27d2139c75f84bcd7cf70bfc4778dd91a63f4
 recognition SHA   = 96690ab688e0c480d84f21e9b01f7a47c830ea3c31da93b8f40404e84aea05d5
 aggregate SHA     = cb05388209680f5bb4e953cf33768d4015e1899f3b617d43312f91055370c217

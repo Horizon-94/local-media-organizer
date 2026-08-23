@@ -28,12 +28,12 @@ import qwenvl_output_contract_v2 as output_contract
 
 
 SCRIPT_VERSION = "stop03_3f_qwenvl_batch75_diagnostic_v1_20260711"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_3_qwenvl_db_v1.json"
 DEFAULT_PROMPT = PROJECT_ROOT / "configs/qwenvl_prompt_v2_384.txt"
-DEFAULT_MODEL = Path("/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit")
+DEFAULT_MODEL = Path("$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit")
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "stop03_3f_qwenvl_batch75_diagnostic"
 DEFAULT_LIMIT = 75
 DEFAULT_MAX_TOKENS = 384

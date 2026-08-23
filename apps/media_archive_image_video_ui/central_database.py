@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 CONTRACT = "media_archive_central_database_v2"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 TERMINAL_WORK_ITEM_STATUSES = {"success", "failed", "skipped", "cancelled"}
 
 
@@ -192,6 +192,17 @@ CREATE TABLE IF NOT EXISTS person_identity_cluster_map (
     FOREIGN KEY(task_id,identity_id) REFERENCES person_identity_overrides(task_id,identity_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS person_identity_visual_map (
+    task_id TEXT NOT NULL,
+    identity_id TEXT NOT NULL,
+    visual_unit_id TEXT NOT NULL,
+    source_content_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY(task_id, identity_id, visual_unit_id),
+    FOREIGN KEY(task_id) REFERENCES archive_tasks(task_id) ON DELETE CASCADE,
+    FOREIGN KEY(task_id,identity_id) REFERENCES person_identity_overrides(task_id,identity_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS storage_inventory (
     inventory_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -218,6 +229,8 @@ CREATE INDEX IF NOT EXISTS idx_stage_work_items_lease ON stage_work_items(status
 CREATE INDEX IF NOT EXISTS idx_task_events_task_time ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_search_history_task_time ON search_history(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_annotations_task ON user_asset_annotations(task_id, favorite, rating);
+CREATE INDEX IF NOT EXISTS idx_person_visual_task_visual ON person_identity_visual_map(task_id, visual_unit_id);
+CREATE INDEX IF NOT EXISTS idx_person_visual_task_identity ON person_identity_visual_map(task_id, identity_id);
 """
 
 
@@ -266,10 +279,12 @@ def backup_before_migration(database: Path, backup_dir: Path) -> Path | None:
     backup_dir = Path(backup_dir).expanduser().resolve()
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    target = backup_dir / f"media_archive_before_central_v3_{stamp}.sqlite"
+    target = backup_dir / f"media_archive_before_central_v{SCHEMA_VERSION}_{stamp}.sqlite"
     suffix = 2
     while target.exists():
-        target = target.with_name(f"media_archive_before_central_v3_{stamp}_{suffix}.sqlite")
+        target = target.with_name(
+            f"media_archive_before_central_v{SCHEMA_VERSION}_{stamp}_{suffix}.sqlite"
+        )
         suffix += 1
     source = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=30.0)
     destination = sqlite3.connect(str(target), timeout=30.0)
@@ -919,6 +934,7 @@ def load_person_annotations(database: Path, task_id: str) -> dict[str, Any]:
         "contract": "media_archive_local_person_annotations_v1",
         "identities": {},
         "cluster_to_identity": {},
+        "visual_memberships": {},
     }
     with connect(database, readonly=True) as con:
         for row in con.execute(
@@ -947,6 +963,19 @@ def load_person_annotations(database: Path, task_id: str) -> dict[str, Any]:
                 {"display_name": "", "tags": [], "cluster_ids": [], "ignored": False},
             )
             identity["cluster_ids"].append(cluster_id)
+        if con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='person_identity_visual_map'"
+        ).fetchone():
+            for row in con.execute(
+                "SELECT identity_id,visual_unit_id,source_content_id "
+                "FROM person_identity_visual_map WHERE task_id=? "
+                "ORDER BY identity_id,visual_unit_id",
+                (task_id,),
+            ):
+                payload["visual_memberships"].setdefault(str(row[0]), []).append({
+                    "visual_unit_id": str(row[1]),
+                    "source_content_id": str(row[2]),
+                })
     return payload
 
 
@@ -958,10 +987,12 @@ def save_person_annotations(
     now = time.time()
     identities = dict(payload.get("identities") or {})
     mapping = dict(payload.get("cluster_to_identity") or {})
+    visual_memberships = dict(payload.get("visual_memberships") or {})
     with connect(database) as con:
         con.execute("BEGIN IMMEDIATE")
         try:
             con.execute("DELETE FROM person_identity_cluster_map WHERE task_id=?", (task_id,))
+            con.execute("DELETE FROM person_identity_visual_map WHERE task_id=?", (task_id,))
             retained = set(str(key) for key in identities)
             for identity_id, value in identities.items():
                 identity = dict(value or {})
@@ -993,6 +1024,23 @@ def save_person_annotations(
                     "INSERT INTO person_identity_cluster_map(task_id,identity_id,machine_cluster_id,created_at) VALUES(?,?,?,?)",
                     (task_id, str(identity_id), str(cluster_id), now),
                 )
+            for identity_id, memberships in sorted(visual_memberships.items()):
+                if str(identity_id) not in retained:
+                    continue
+                seen_visuals: set[str] = set()
+                for membership in memberships or []:
+                    value = dict(membership or {})
+                    visual_unit_id = str(value.get("visual_unit_id") or "").strip()
+                    source_content_id = str(value.get("source_content_id") or "").strip()
+                    if not visual_unit_id or not source_content_id or visual_unit_id in seen_visuals:
+                        continue
+                    seen_visuals.add(visual_unit_id)
+                    con.execute(
+                        "INSERT INTO person_identity_visual_map"
+                        "(task_id,identity_id,visual_unit_id,source_content_id,created_at) "
+                        "VALUES(?,?,?,?,?)",
+                        (task_id, str(identity_id), visual_unit_id, source_content_id, now),
+                    )
             con.commit()
         except Exception:
             con.rollback()

@@ -7,7 +7,7 @@
 正式中心数据库：
 
 ```text
-/Users/yourname/Documents/AI-Local/media-archive-clean/media_archive.sqlite
+$APP_RESOURCES/Pipeline/media_archive.sqlite
 SHA256 = eb60e23fcd1150a763bceb9a28ad2b7ad765f1979c0597ea8c94bb35242b9b74
 ```
 
@@ -174,7 +174,7 @@ dimension = 512
 向量 payload 不在 SQLite BLOB 中，位于：
 
 ```text
-/Users/yourname/Documents/AI-Local/test-output/stop03-1b-openclip-db-safe-v4_20260709_161500_full/vectors/openclip_vectors.jsonl
+$USER_HOME/Documents/AI-Local/test-output/stop03-1b-openclip-db-safe-v4_20260709_161500_full/vectors/openclip_vectors.jsonl
 ```
 
 该文件存在，约 18 MB，1628 行；中心库的 1628 个 `vector_key` 全部指向该文件，

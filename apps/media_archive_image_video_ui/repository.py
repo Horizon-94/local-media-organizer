@@ -814,6 +814,87 @@ class ReadonlyMediaRepository:
         item["available"] = path.is_file()
         return item
 
+    def visual_frame_results(
+        self,
+        *,
+        source_content_id: str | None = None,
+        visual_unit_ids: Iterable[str] = (),
+        media_type: str = "all",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return existing indexed frames only; never read original media."""
+        clean_source = str(source_content_id or "").strip()
+        identifiers = sorted({str(value).strip() for value in visual_unit_ids if str(value).strip()})
+        if not clean_source and not identifiers:
+            raise ValueError("source_content_id_or_visual_unit_ids_required")
+        if media_type not in {"all", "image", "video"}:
+            raise ValueError("visual_frame_media_type_invalid")
+        safe_offset = max(0, int(offset))
+        safe_limit = max(1, min(int(limit), 5_000))
+        with self.connect() as con:
+            visual_time = "v.time_position_ms" if self._column_exists(
+                con, "visual_units", "time_position_ms"
+            ) else "-1"
+            derived_time = "d.time_position_ms" if self._column_exists(
+                con, "derived_assets", "time_position_ms"
+            ) else "-1"
+            where: list[str] = []
+            params: list[Any] = []
+            if clean_source:
+                where.append("v.source_content_id=?")
+                params.append(clean_source)
+            if identifiers:
+                placeholders = ",".join("?" for _ in identifiers)
+                where.append(f"v.visual_unit_id IN ({placeholders})")
+                params.extend(identifiers)
+            if media_type != "all":
+                where.append("s.media_type=?")
+                params.append(media_type)
+            rows = con.execute(
+                f"""
+                SELECT v.visual_unit_id,v.source_content_id,v.derived_id,
+                       s.media_type,s.absolute_path,s.relative_path,
+                       CASE WHEN {visual_time} >= 0 THEN {visual_time}
+                            WHEN {derived_time} >= 0 THEN {derived_time} ELSE 0 END
+                            AS time_position_ms,
+                       d.derived_path
+                FROM visual_units AS v
+                JOIN derived_assets AS d ON d.derived_id=v.derived_id
+                JOIN source_assets AS s ON s.source_content_id=v.source_content_id
+                WHERE {" AND ".join(where)}
+                ORDER BY time_position_ms,v.visual_unit_id
+                """,
+                params,
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        count_by_media: dict[str, int] = defaultdict(int)
+        for row in rows:
+            item = dict(row)
+            preview = Path(str(item.get("derived_path") or "")).expanduser().resolve()
+            source = Path(str(item.get("absolute_path") or "")).expanduser().resolve()
+            item.update({
+                "preview_path": str(preview) if preview.is_file() else "",
+                "source_path": str(source) if source.is_file() else "",
+                "source_online": source.is_file(),
+                "can_open_original": source.is_file(),
+                "source_frame_count": len(rows) if clean_source else 1,
+                "result_level": "frame",
+            })
+            items.append(item)
+            count_by_media[str(item.get("media_type") or "unknown")] += 1
+        return {
+            "total": len(items),
+            "items": items[safe_offset:safe_offset + safe_limit],
+            "count_by_media": dict(count_by_media),
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "next_offset": (
+                safe_offset + safe_limit
+                if safe_offset + safe_limit < len(items) else None
+            ),
+        }
+
     def person_clusters_for_visual_units(
         self, visual_unit_ids: Iterable[str],
     ) -> dict[str, list[dict[str, Any]]]:
@@ -878,6 +959,8 @@ class ReadonlyMediaRepository:
         offset: int = 0,
         limit: int = 30,
         source_content_id: str | None = None,
+        extra_visual_unit_ids: Iterable[str] = (),
+        extra_person_id: str = "",
     ) -> dict[str, Any]:
         """Read one anonymous-person cluster without running a model."""
         cluster_ids = (
@@ -889,19 +972,31 @@ class ReadonlyMediaRepository:
             raise ValueError("person_cluster_id_required")
         if media_type not in {"all", "image", "video"}:
             raise ValueError("person_cluster_media_type_invalid")
+        extra_ids = sorted({
+            str(value).strip() for value in extra_visual_unit_ids
+            if str(value).strip()
+        })
         with self.connect() as con:
             if not self._table_exists(
                 con, "v_stop03_1c_latest_person_cluster_members",
             ):
-                return {"total": 0, "items": [], "count_by_media": {}}
-            placeholders = ",".join("?" for _ in cluster_ids)
-            rows = con.execute(
-                f"""
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in cluster_ids)
+                time_position_sql = (
+                    "CASE WHEN p.time_position_ms >= 0 THEN p.time_position_ms "
+                    "WHEN d.time_position_ms >= 0 THEN d.time_position_ms ELSE 0 END"
+                    if self._column_exists(con, "derived_assets", "time_position_ms")
+                    else "CASE WHEN p.time_position_ms >= 0 THEN p.time_position_ms ELSE 0 END"
+                )
+                rows = con.execute(
+                    f"""
                 SELECT p.person_cluster_id,p.member_count,
                        p.distinct_source_count,p.cluster_confidence,
                        p.human_review_status,p.visual_unit_id,
                        p.source_content_id,p.derived_id,p.media_type,
-                       p.time_position_ms,p.similarity_to_representative,
+                       {time_position_sql} AS time_position_ms,
+                       p.similarity_to_representative,
                        d.derived_path,s.absolute_path,s.relative_path
                 FROM v_stop03_1c_latest_person_cluster_members AS p
                 JOIN derived_assets AS d ON d.derived_id=p.derived_id
@@ -919,9 +1014,9 @@ class ReadonlyMediaRepository:
                   )
                 ORDER BY p.similarity_to_representative DESC,
                          p.time_position_ms,p.visual_unit_id
-                """,
-                cluster_ids,
-            ).fetchall()
+                    """,
+                    cluster_ids,
+                ).fetchall()
         unique: list[dict[str, Any]] = []
         seen_visual_units: set[str] = set()
         count_by_media: dict[str, int] = defaultdict(int)
@@ -942,6 +1037,28 @@ class ReadonlyMediaRepository:
                 "source_path": str(source_path) if source_path.is_file() else "",
                 "source_online": source_path.is_file(),
                 "can_open_original": source_path.is_file(),
+            })
+        extras = self.visual_frame_results(
+            visual_unit_ids=extra_ids,
+            media_type=media_type,
+            offset=0,
+            limit=5_000,
+        )["items"] if extra_ids else []
+        for row in extras:
+            visual_id = str(row["visual_unit_id"])
+            if visual_id in seen_visual_units:
+                continue
+            seen_visual_units.add(visual_id)
+            unique.append({
+                **row,
+                "person_cluster_id": extra_person_id or cluster_ids[0],
+                "member_count": len(extras),
+                "distinct_source_count": len({
+                    str(value.get("source_content_id") or "") for value in extras
+                }),
+                "cluster_confidence": "human_confirmed",
+                "human_review_status": "confirmed",
+                "similarity_to_representative": 1.0,
             })
         frame_total = len(unique)
         selected: list[dict[str, Any]]
@@ -1006,13 +1123,21 @@ class ReadonlyMediaRepository:
                     "total": 0, "offset": safe_offset, "limit": safe_limit,
                     "items": [],
                 }
+            time_position_sql = (
+                "CASE WHEN p.time_position_ms >= 0 THEN p.time_position_ms "
+                "WHEN d.time_position_ms >= 0 THEN d.time_position_ms ELSE 0 END"
+                if self._column_exists(con, "derived_assets", "time_position_ms")
+                else "CASE WHEN p.time_position_ms >= 0 THEN p.time_position_ms ELSE 0 END"
+            )
             rows = con.execute(
-                """
+                f"""
                 SELECT p.person_cluster_id,p.member_count,
                        p.distinct_source_count,p.cluster_confidence,
                        p.human_review_status,p.anonymous_display_name,
                        p.visual_unit_id,p.source_content_id,p.derived_id,
-                       p.media_type,p.time_position_ms,d.derived_path,
+                       p.media_type,
+                       {time_position_sql} AS time_position_ms,
+                       d.derived_path,
                        s.absolute_path,s.relative_path
                 FROM v_stop03_1c_latest_person_cluster_members AS p
                 JOIN derived_assets AS d ON d.derived_id=p.derived_id

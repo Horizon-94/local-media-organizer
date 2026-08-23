@@ -665,7 +665,7 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    root = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+    root = Path("$APP_RESOURCES/Pipeline")
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("preflight", "audit"), required=True)
     parser.add_argument("--db", type=Path, default=root / "media_archive.sqlite")
@@ -678,7 +678,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=Path(
-            "/Users/yourname/Documents/AI-Local/test-output/"
+            "$USER_HOME/Documents/AI-Local/test-output/"
             "stop03_5a_joint_db_quality_audit_v1"
         ),
     )

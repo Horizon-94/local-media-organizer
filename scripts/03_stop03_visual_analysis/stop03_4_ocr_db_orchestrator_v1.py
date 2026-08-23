@@ -1126,7 +1126,7 @@ def readback_run(db: Path, run_id: str) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    project = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+    project = Path("$APP_RESOURCES/Pipeline")
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
@@ -1146,7 +1146,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=Path(
-            "/Users/yourname/Documents/AI-Local/test-output/stop03_4_ocr_db_v1"
+            "$USER_HOME/Documents/AI-Local/test-output/stop03_4_ocr_db_v1"
         ),
     )
     parser.add_argument("--run-id", default="")

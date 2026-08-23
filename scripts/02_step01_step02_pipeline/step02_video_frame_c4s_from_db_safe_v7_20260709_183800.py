@@ -85,15 +85,19 @@ from pathlib import Path
 # 1. 固定参数
 # ============================================================
 SCRIPT_VERSION = "step02_video_frame_c4s_from_db_safe_v7_20260709_183800"
+ACTIVE_FFMPEG_PROCESSES = 0
+ACTIVE_FFMPEG_LOCK = threading.Lock()
+ACTIVE_EXTRACTION_WORKERS = 0
+ACTIVE_EXTRACTION_LOCK = threading.Lock()
 
 # ============================================================
 # 1A. Fixed local runtime / path contract (V7)
 # ============================================================
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
-CURRENT_TEST_SOURCE_ROOT = Path("/Users/yourname/Documents/001DZLtest")
-LEGACY_SOURCE_ROOT = Path("/Users/yourname/Documents/MEDIA_ARCHIVE_TEST_SOURCE")
-EXPECTED_PYTHON = Path("/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
+CURRENT_TEST_SOURCE_ROOT = Path("$USER_HOME/Documents/001DZLtest")
+LEGACY_SOURCE_ROOT = Path("$USER_HOME/Documents/AI_Media_Test_Source")
+EXPECTED_PYTHON = Path("$BUNDLED_PIPELINE_ENVS/media-archive-v06-visual/bin/python")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "step02-video-frame-c4s-db-safe-v7_20260709_183800"
 LOCAL_FFMPEG = "ffmpeg"
@@ -202,6 +206,11 @@ def local_run_id():
 
 
 def run_cmd(cmd, timeout=None):
+    global ACTIVE_FFMPEG_PROCESSES
+    is_ffmpeg = bool(cmd) and Path(str(cmd[0])).name == "ffmpeg"
+    if is_ffmpeg:
+        with ACTIVE_FFMPEG_LOCK:
+            ACTIVE_FFMPEG_PROCESSES += 1
     try:
         p = subprocess.run(
             cmd,
@@ -213,6 +222,10 @@ def run_cmd(cmd, timeout=None):
         return p.returncode, p.stdout, p.stderr
     except Exception as exc:
         return -1, "", str(exc)
+    finally:
+        if is_ffmpeg:
+            with ACTIVE_FFMPEG_LOCK:
+                ACTIVE_FFMPEG_PROCESSES = max(0, ACTIVE_FFMPEG_PROCESSES - 1)
 
 
 def require_tool(name: str):
@@ -1325,7 +1338,9 @@ def resolve_or_insert_derived_asset(conn, derived_values: dict):
     return "", "missing_after_insert"
 
 
-def write_step02_video_frames_to_project_db(db_path: Path, run_id: str, video_reports, frame_rows_all):
+def write_step02_video_frames_to_project_db(
+    db_path: Path, run_id: str, video_reports, frame_rows_all, *, checkpoint_only: bool = False,
+):
     db_path = db_path.expanduser().resolve()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -1346,8 +1361,9 @@ def write_step02_video_frames_to_project_db(db_path: Path, run_id: str, video_re
     derived_reused_by_path_count = 0
     derived_inserted_count = 0
     orphan_visual_units_cleaned_count = 0
-    orphan_global_before = count_orphan_visual_units(conn)
-    insert_model_run_project_db(conn, run_id, "running", input_count, 0, "")
+    orphan_global_before = count_orphan_visual_units(conn) if not checkpoint_only else 0
+    if not checkpoint_only:
+        insert_model_run_project_db(conn, run_id, "running", input_count, 0, "")
 
     for r in frame_rows_all:
         try:
@@ -1565,7 +1581,7 @@ def write_step02_video_frames_to_project_db(db_path: Path, run_id: str, video_re
         if exists != 1:
             run_orphan_for_expected += 1
 
-    orphan_global_after = count_orphan_visual_units(conn)
+    orphan_global_after = count_orphan_visual_units(conn) if not checkpoint_only else 0
     integrity_errors = 0
     if expected_derived_count != actual_derived_for_expected:
         integrity_errors += 1
@@ -1593,7 +1609,8 @@ def write_step02_video_frames_to_project_db(db_path: Path, run_id: str, video_re
     if first_frame_rows_seen != first_frame_rows_written:
         error_parts.append(f"first_frame_rows_seen_written={first_frame_rows_seen}:{first_frame_rows_written}")
 
-    insert_model_run_project_db(conn, run_id, status, input_count, output_count, ";".join(error_parts))
+    if not checkpoint_only:
+        insert_model_run_project_db(conn, run_id, status, input_count, output_count, ";".join(error_parts))
     conn.commit()
     conn.close()
     return {
@@ -1623,7 +1640,41 @@ def write_step02_video_frames_to_project_db(db_path: Path, run_id: str, video_re
         "final_repair_derived_count": final_repair_derived_count,
         "integrity_status": "PASS" if status == "done" else "FAIL",
         "error_message": ";".join(error_parts),
+        "checkpoint_only": checkpoint_only,
     }
+
+
+def finalize_step02_project_db_run(db_path: Path, run_id: str, video_reports, frame_rows_all):
+    """Finalize counts after every completed video has already been committed."""
+    conn = sqlite3.connect(str(db_path.expanduser().resolve()))
+    conn.row_factory = sqlite3.Row
+    try:
+        foreign_keys = list(conn.execute("PRAGMA foreign_key_check"))
+        orphan_count = count_orphan_visual_units(conn)
+        failed_videos = sum(
+            str(row.get("frame_extract_status") or "") not in SUCCESS_STATUSES
+            for row in video_reports
+        )
+        status = "done" if not foreign_keys and not orphan_count and not failed_videos else "failed_db_integrity_check"
+        error = ";".join(filter(None, (
+            f"foreign_key_errors={len(foreign_keys)}" if foreign_keys else "",
+            f"orphan_visual_units={orphan_count}" if orphan_count else "",
+            f"failed_videos={failed_videos}" if failed_videos else "",
+        )))
+        insert_model_run_project_db(
+            conn, run_id, status, len(video_reports), len(frame_rows_all), error,
+        )
+        return {
+            "db_path": str(db_path), "stage": PROJECT_DB_STAGE, "run_id": run_id,
+            "status": status, "video_count": len(video_reports),
+            "visual_units_upserted": len(frame_rows_all),
+            "foreign_key_error_count": len(foreign_keys),
+            "orphan_visual_units_global_after": orphan_count,
+            "integrity_status": "PASS" if status == "done" else "FAIL",
+            "error_message": error, "per_video_checkpoint_commit": True,
+        }
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -3380,22 +3431,49 @@ def main():
         monitor.set_stage("video_frame_extraction")
 
     if jobs:
+        def process_claimed_job(job_no, total_jobs, job):
+            global ACTIVE_EXTRACTION_WORKERS
+            # Only a worker that actually begins execution may claim RUNNING.
+            # This prevents every submitted future from looking active at once.
+            worker_conn = open_state_db()
+            try:
+                mark_running(worker_conn, job["video_key"])
+            finally:
+                worker_conn.close()
+            with ACTIVE_EXTRACTION_LOCK:
+                ACTIVE_EXTRACTION_WORKERS += 1
+            try:
+                return process_one(
+                    job_no, total_jobs, job["src"], job["source_base"],
+                    job["out_dir"], job["task_action"],
+                )
+            finally:
+                with ACTIVE_EXTRACTION_LOCK:
+                    ACTIVE_EXTRACTION_WORKERS = max(0, ACTIVE_EXTRACTION_WORKERS - 1)
+
         with ThreadPoolExecutor(max_workers=CONCURRENCY) as ex:
             futures = {}
             total_jobs = len(jobs)
             for job_no, job in enumerate(jobs, start=1):
-                mark_running(conn, job["video_key"])
                 fut = ex.submit(
-                    process_one,
-                    job_no,
-                    total_jobs,
-                    job["src"],
-                    job["source_base"],
-                    job["out_dir"],
-                    job["task_action"],
+                    process_claimed_job, job_no, total_jobs, job,
                 )
                 futures[fut] = job
 
+            completed_jobs = int(action_counts.get("skip_already_processed", 0))
+            successful_jobs = completed_jobs
+            failed_jobs = 0
+            skipped_jobs = completed_jobs
+            bytes_processed = 0
+            print(json.dumps({
+                "contract": "media_archive_stage_runtime_contract_v1",
+                "event": "stage_progress", "completed": completed_jobs,
+                "total": len(queue_rows), "success": successful_jobs,
+                "skipped": skipped_jobs, "failed": 0,
+                "current_item": "等待首个视频完成" if jobs else "",
+                "bytes_processed": 0, "actual_workers": 0,
+                "ffmpeg_processes": 0, "output_files": len(frame_rows_all),
+            }, ensure_ascii=False, separators=(",", ":")), flush=True)
             for fut in as_completed(futures):
                 job = futures[fut]
                 try:
@@ -3434,8 +3512,46 @@ def main():
                     print(f"[failed-exception] vid={source_base['source_video_id']} error={exc}", flush=True)
 
                 persist_completed_video(conn, job["video_key"], report, frame_rows, source_base)
+                if args.db:
+                    checkpoint = write_step02_video_frames_to_project_db(
+                        args.db, args.run_invocation_id, [report], frame_rows,
+                        checkpoint_only=True,
+                    )
+                    if checkpoint.get("integrity_status") != "PASS":
+                        raise RuntimeError(
+                            "per_video_central_db_checkpoint_failed:"
+                            + str(checkpoint.get("error_message") or "unknown")
+                        )
                 video_reports.append(report)
                 frame_rows_all.extend(frame_rows)
+                completed_jobs += 1
+                if report.get("frame_extract_status") in SUCCESS_STATUSES:
+                    successful_jobs += 1
+                else:
+                    failed_jobs += 1
+                for frame in frame_rows:
+                    try:
+                        bytes_processed += Path(str(frame.get("frame_file") or "")).stat().st_size
+                    except OSError:
+                        pass
+                with ACTIVE_FFMPEG_LOCK:
+                    active_ffmpeg = ACTIVE_FFMPEG_PROCESSES
+                with ACTIVE_EXTRACTION_LOCK:
+                    active_workers = ACTIVE_EXTRACTION_WORKERS
+                print(json.dumps({
+                    "contract": "media_archive_stage_runtime_contract_v1",
+                    "event": "stage_progress",
+                    "completed": completed_jobs,
+                    "total": len(queue_rows),
+                    "success": successful_jobs,
+                    "skipped": skipped_jobs,
+                    "failed": failed_jobs,
+                    "current_item": str(source_base.get("source_video_relative_path") or source_base.get("source_video_path") or ""),
+                    "bytes_processed": bytes_processed,
+                    "output_files": len(frame_rows_all),
+                    "actual_workers": active_workers,
+                    "ffmpeg_processes": active_ffmpeg,
+                }, ensure_ascii=False, separators=(",", ":")), flush=True)
 
     if monitor:
         monitor.set_stage("writing_step02_reports")
@@ -3458,7 +3574,9 @@ def main():
     summary["input_mode"] = input_mode
 
     if args.db:
-        db_write_summary = write_step02_video_frames_to_project_db(args.db, args.run_invocation_id, video_reports, frame_rows_all)
+        db_write_summary = finalize_step02_project_db_run(
+            args.db, args.run_invocation_id, video_reports, frame_rows_all,
+        )
         summary["db_write_summary"] = db_write_summary
         print("DB_WRITE_SUMMARY=" + json.dumps(db_write_summary, ensure_ascii=False), flush=True)
 

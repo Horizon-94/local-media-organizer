@@ -20,7 +20,7 @@ from .processing_profile import build_processing_profile, detect_hardware, save_
 
 
 APP_NAME = "本地数据库"
-APP_VERSION = "1.2.0-final"
+APP_VERSION = "1.2.3-final"
 
 COLORS = {
     "bg": "#F4F6FA",

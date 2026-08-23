@@ -228,7 +228,7 @@ V22 = Time Windows for Coverage
 预检必须验证：
 
 - DB 和必要表存在。
-- 输出目录位于 `/Users/yourname/Documents/AI-Local/test-output`。
+- 输出目录位于 `$USER_HOME/Documents/AI-Local/test-output`。
 - 派生帧路径不在原始素材目录，且只读。
 - 不加载任何模型，不存在远程模型名和下载路径。
 - V14 manifest 可读，缺失时明确降级而不是伪造 V14 高信号。
@@ -374,7 +374,7 @@ DB embedding rows = 1628
 JSONL payload rows = 1628
 DB embedding_id set == JSONL embedding_id set
 dimension = 512
-payload path = /Users/yourname/Documents/AI-Local/test-output/stop03-1b-openclip-db-safe-v4_20260709_161500_full/vectors/openclip_vectors.jsonl
+payload path = $USER_HOME/Documents/AI-Local/test-output/stop03-1b-openclip-db-safe-v4_20260709_161500_full/vectors/openclip_vectors.jsonl
 ```
 
 `vector_key` 格式为：
@@ -731,7 +731,7 @@ derived_frame_read = true, read_only
 model_directory_write = false
 ```
 
-允许写入仅限用户指定目录和表；实现阶段也不得写入原始素材目录或 `/Users/yourname/Documents/model`。
+允许写入仅限用户指定目录和表；实现阶段也不得写入原始素材目录或 `$MODEL_ROOT`。
 
 ## 14. 回滚
 

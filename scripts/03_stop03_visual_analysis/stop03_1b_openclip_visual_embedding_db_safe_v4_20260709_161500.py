@@ -38,11 +38,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 SCRIPT_VERSION = "stop03_1b_openclip_visual_embedding_db_safe_v4_20260709_161500"
 
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
-DOWNLOAD_SCRIPT_ROOT = Path("/Users/yourname/Downloads/pyjiaoben")
-SOURCE_MEDIA_ROOT = Path("/Users/yourname/Documents/MEDIA_ARCHIVE_TEST_SOURCE")
-MODEL_ROOT = Path("/Users/yourname/Documents/model")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
+DOWNLOAD_SCRIPT_ROOT = Path("$USER_HOME/Downloads/pyjiaoben")
+SOURCE_MEDIA_ROOT = Path("$USER_HOME/Documents/AI_Media_Test_Source")
+MODEL_ROOT = Path("$MODEL_ROOT")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "stop03-1b-openclip-db-safe-v4_20260709_161500-smoke"
 REGISTRY_FILES = [
@@ -133,7 +133,7 @@ def assert_db_path(path: Path) -> Path:
 def assert_model_path(path: Path) -> Path:
     rp = resolve_path(path)
     if not is_relative_to(rp, resolve_path(MODEL_ROOT)):
-        fail("BLOCKED_MODEL_OUTSIDE_MODEL_ROOT", "Model must be under /Users/yourname/Documents/model.", str(rp))
+        fail("BLOCKED_MODEL_OUTSIDE_MODEL_ROOT", "Model must be under $MODEL_ROOT.", str(rp))
     if not rp.exists():
         fail("BLOCKED_MISSING_LOCAL_MODEL", "OpenCLIP local safetensors file does not exist.", str(rp))
     if rp.suffix.lower() != ".safetensors":
@@ -859,6 +859,10 @@ def run_main(args: argparse.Namespace) -> None:
 
     wall_start = time.perf_counter()
     processed: List[Dict[str, Any]] = []
+    pending_db: List[Dict[str, Any]] = []
+    db_success = 0
+    db_failed = 0
+    checkpoint_batch_size = 10
     fields = [
         "visual_unit_id",
         "source_content_id",
@@ -893,12 +897,30 @@ def run_main(args: argparse.Namespace) -> None:
                 for i, fut in enumerate(as_completed(futures), 1):
                     r = fut.result()
                     processed.append(r)
+                    pending_db.append(r)
                     clean = dict(r)
                     clean.pop("embedding_vector", None)
                     jf.write(json.dumps(clean, ensure_ascii=False) + "\n")
                     jf.flush()
                     cw.writerow(clean)
                     cf.flush()
+                    if len(pending_db) >= checkpoint_batch_size or i == len(rows):
+                        batch_success, batch_failed = write_db_results(
+                            db_path,
+                            run_id,
+                            pending_db,
+                            vector_jsonl,
+                            args.model_name,
+                            model_path,
+                        )
+                        db_success += batch_success
+                        db_failed += batch_failed
+                        pending_db.clear()
+                        print(
+                            f"[db-checkpoint] {i}/{len(rows)} "
+                            f"committed_success={db_success} committed_failed={db_failed}",
+                            flush=True,
+                        )
                     if i % 50 == 0 or i == len(rows):
                         ok = sum(1 for x in processed if x.get("status") == "success")
                         bad = len(processed) - ok
@@ -907,7 +929,6 @@ def run_main(args: argparse.Namespace) -> None:
         stop_event.set()
         monitor.join(timeout=5)
 
-    db_success, db_failed = write_db_results(db_path, run_id, processed, vector_jsonl, args.model_name, model_path)
     wall_seconds = round(time.perf_counter() - wall_start, 3)
     elapsed = [float(r["elapsed_ms"]) for r in processed if r.get("status") == "success" and r.get("elapsed_ms") is not None]
     dims = sorted({int(r["embedding_dim"]) for r in processed if r.get("status") == "success" and r.get("embedding_dim")})

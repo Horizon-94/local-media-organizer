@@ -41,11 +41,26 @@ def sha256_file(path: Path) -> str:
 
 
 def connect_ro(db: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30.0)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA query_only=ON")
-    con.execute("PRAGMA foreign_keys=ON")
-    return con
+    """Open an existing search database without creating or mutating it.
+
+    A completed library can live on a removable/APFS volume whose directory
+    rejects SQLite's normal read-lock sidecar.  Try the ordinary read-only URI
+    first so a live WAL remains visible; use immutable read-only mode only as
+    a fallback for an existing task database.
+    """
+    path = Path(db).expanduser().resolve(strict=True)
+    errors: list[str] = []
+    for suffix in ("mode=ro", "mode=ro&immutable=1"):
+        try:
+            con = sqlite3.connect(f"{path.as_uri()}?{suffix}", uri=True, timeout=30.0)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA query_only=ON")
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            return con
+        except sqlite3.Error as exc:
+            errors.append(str(exc))
+    raise sqlite3.OperationalError("readonly_database_open_failed:" + " | ".join(errors))
 
 
 def load_config(path: Path) -> dict[str, Any]:

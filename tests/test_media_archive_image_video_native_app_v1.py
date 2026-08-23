@@ -107,7 +107,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn("--confirm-real-local-query", command)
         self.assertIn("--native-app-result-contract", command)
         self.assertIn(
-            str(Path.home() / "Documents/AI-Local/envs/media-archive-v06-visual/bin/python"),
+            "/Users/yourname/Developer/envs/visual/bin/python",
             command,
         )
 
@@ -152,7 +152,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertNotIn("DYLD_FRAMEWORK_PATH", minimal)
         self.assertNotIn("PYTHONHOME", minimal)
         executable, site_packages = namespace["explicit_venv_runtime"](
-            Path.home() / "Documents/AI-Local/envs/media-archive-v06-visual/bin/python"
+            Path("/Users/yourname/Developer/envs/visual/bin/python")
         )
         self.assertTrue(executable.is_file())
         self.assertEqual(site_packages.name, "site-packages")
@@ -244,8 +244,8 @@ class NativeImageVideoAppTests(unittest.TestCase):
             self.assertEqual(bundle.name, "本地数据库.app")
             self.assertEqual(info["CFBundleDisplayName"], "本地数据库")
             self.assertEqual(info["CFBundleExecutable"], "本地数据库")
-            self.assertEqual(info["CFBundleShortVersionString"], "1.2.0")
-            self.assertEqual(info["CFBundleVersion"], "120")
+            self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
+            self.assertEqual(info["CFBundleVersion"], "123")
             self.assertEqual(info["CFBundleIdentifier"], "local.horizon.local-database")
             self.assertIn("Horizon-94", info["NSHumanReadableCopyright"])
             self.assertTrue(info["HorizonBuildDate"])
@@ -374,8 +374,85 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn('"all_images"', source)
         self.assertIn("已保存方案会显示在上方", source)
 
+    def test_video_preview_waits_for_seek_before_playback(self) -> None:
+        source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(
+            encoding="utf-8"
+        )
+        preview = source[source.index("func open(_ result: SearchResult)"):]
+        preview = preview[:preview.index("func previewTimelapseFrame")]
+        self.assertIn("VideoPreviewWindowController", preview)
+        self.assertIn("observedItem.status == .readyToPlay", preview)
+        self.assertLess(preview.index("observedItem.seek("), preview.index("player?.play()"))
+
+    def test_video_preview_stops_audio_when_window_closes(self) -> None:
+        source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(
+            encoding="utf-8"
+        )
+        controller = source[source.index("private final class VideoPreviewWindowController"):]
+        controller = controller[:controller.index("private let archiveBlue")]
+        self.assertIn("NSWindow.willCloseNotification", controller)
+        self.assertIn("player?.pause()", controller)
+        self.assertIn("player?.replaceCurrentItem(with: nil)", controller)
+        preview = source[source.index("func open(_ result: SearchResult)"):]
+        preview = preview[:preview.index("func previewTimelapseFrame")]
+        self.assertIn("controller.player = player", preview)
+
+    def test_favorites_selection_and_exports_are_available_in_native_ui(self) -> None:
+        source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('case search = "搜索素材", favorites = "我的收藏"', source)
+        self.assertIn('runHelper(["favorites"', source)
+        self.assertIn('Toggle("选入导出"', source)
+        self.assertIn('func exportSelectedPDF()', source)
+        self.assertIn('func exportSelectedCSV()', source)
+        self.assertIn('allowedContentTypes = [.commaSeparatedText]', source)
+
+    def test_annotation_save_feedback_and_favorite_person_navigation(self) -> None:
+        source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('Button(annotationSaving ? "保存中…" : "保存")', source)
+        self.assertIn('Label("已保存", systemImage: "checkmark.circle.fill")', source)
+        person_search = source[source.index("func searchPersonCluster("):]
+        person_search = person_search[:person_search.index("func open(_ result:")]
+        self.assertIn('pushSearchNavigation(title:', person_search)
+        self.assertIn("page = .search", person_search)
+
+    def test_source_timeline_and_manual_people_controls_are_available(self) -> None:
+        source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('Button("浏览该视频全部画面")', source)
+        self.assertIn('"source-frames", "--source-content-id"', source)
+        self.assertIn('DisclosureGroup("人工人物归类")', source)
+        self.assertIn('Button("用此画面新建人物")', source)
+        self.assertIn('"person-add-visual", "--person-id"', source)
+        self.assertIn('Button("移出人工人物")', source)
+
+    def test_nested_search_views_have_restorable_back_navigation(self) -> None:
+        source = (ROOT / "apps/media_archive_image_video_ui/native_frontend.swift").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("private struct SearchNavigationSnapshot", source)
+        self.assertIn("private var searchNavigationStack", source)
+        self.assertIn("func navigateBackInSearch()", source)
+        self.assertIn("searchResults = snapshot.searchResults", source)
+        self.assertIn("bufferedSearchResults = snapshot.bufferedSearchResults", source)
+        self.assertIn('Button("返回上一层")', source)
+        self.assertIn("不会重新搜索", source)
+
+    def test_release_builder_uses_one_swift_toolchain_and_sdk(self) -> None:
+        source = (
+            ROOT / "scripts/04_media_archive_app/build_native_image_video_app_v1.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('def swift_toolchain()', source)
+        self.assertIn('["/usr/bin/xcrun", "--find", "swiftc"]', source)
+        self.assertIn('["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"]', source)
+        self.assertIn('"-sdk", sdk', source)
+
     def test_version_is_image_video_native_release(self) -> None:
-        self.assertEqual(APP_VERSION, "1.2.0-final")
+        self.assertEqual(APP_VERSION, "1.2.3-final")
 
     def test_release_builder_supports_portable_runtimes_without_models(self) -> None:
         source = (
@@ -386,8 +463,8 @@ class NativeImageVideoAppTests(unittest.TestCase):
         self.assertIn('"models_included": False', source)
         self.assertIn("PipelinePython", source)
         self.assertIn("PipelineEnvs", source)
-        self.assertIn('for name in ("pipeline_rules", "model_registry")', source)
-        self.assertIn('pipeline_root / "docs" / name', source)
+        self.assertIn("media_archive_release_bundle_allowlist_v1.json", source)
+        self.assertIn("_copy_release_bundle_sources", source)
         self.assertIn("sanitize_embedded_project_files", source)
         self.assertIn("embedded_developer_private_path_detected", source)
 
@@ -405,13 +482,13 @@ class NativeImageVideoAppTests(unittest.TestCase):
             pipeline = root / "Pipeline"
             config = pipeline / "configs/runtime.json"
             config.parent.mkdir(parents=True)
-            project = Path.home() / "Documents/AI-Local/media-archive-clean"
+            project = Path("/Users/yourname/Developer/local-media-organizer")
             config.write_text(
                 json.dumps({
                     "project": str(project),
-                    "model": str(Path.home() / "Documents/model/example"),
-                    "python": str(Path.home() / "Documents/AI-Local/envs/example/bin/python"),
-                    "historical_example": str(Path.home() / "Desktop/example"),
+                    "model": "/Users/yourname/Models/example",
+                    "python": "/Users/yourname/Developer/envs/example/bin/python",
+                    "historical_example": "/Users/yourname/Desktop/example",
                 }),
                 encoding="utf-8",
             )
@@ -420,7 +497,7 @@ class NativeImageVideoAppTests(unittest.TestCase):
             )
             self.assertEqual(report["status"], "PASS")
             self.assertEqual(report["remaining_violation_count"], 0)
-            self.assertNotIn(str(Path.home()), config.read_text(encoding="utf-8"))
+            self.assertNotIn("/Users/yourname", config.read_text(encoding="utf-8"))
 
     def test_release_signing_does_not_sign_shell_wrappers_with_deep_mode(self) -> None:
         source = (

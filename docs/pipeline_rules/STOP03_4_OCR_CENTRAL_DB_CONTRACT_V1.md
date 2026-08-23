@@ -23,9 +23,9 @@ readback。当前正式入口与验收记录见 `STOP03_4_OCR_DB_NODE_V1.md`。
 
 ## 本地模型
 
-- Python：`/Users/yourname/Documents/AI-Local/envs/media-archive-v06-ocr/bin/python`
-- detection：`/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_det`
-- recognition：`/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_rec`
+- Python：`$BUNDLED_PIPELINE_ENVS/media-archive-v06-ocr/bin/python`
+- detection：`$MODEL_ROOT/ocr/PP-OCRv6_medium_det`
+- recognition：`$MODEL_ROOT/ocr/PP-OCRv6_medium_rec`
 
 必须显式传入 detection/recognition 目录，并关闭文档方向、文档矫正和文字方向模型。
 禁止使用无参数 `PaddleOCR()`，禁止使用 `~/.paddlex/official_models` 作为正式模型源。

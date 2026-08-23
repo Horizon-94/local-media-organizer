@@ -166,7 +166,7 @@ step 3 = 185
 正式提交前备份：
 
 ```text
-/Users/yourname/Documents/AI-Local/test-output/stop03_5c_qwenvl_yolo_propagation_v1/backups/media_archive.sqlite.2026-07-16T161633+0000.bak
+$USER_HOME/Documents/AI-Local/test-output/stop03_5c_qwenvl_yolo_propagation_v1/backups/media_archive.sqlite.2026-07-16T161633+0000.bak
 ```
 
 Stop03-5C 已停止在传播结果中心数据库落库与幂等反查完成的位置。未经新的阶段授权，

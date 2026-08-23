@@ -102,6 +102,7 @@ def parse_progress_line(line: str) -> dict[str, Any]:
                 "configured_workers", "started_workers", "alive_workers",
                 "active_workers", "idle_workers", "crashed_workers",
                 "restart_count", "queue_pending", "queue_running",
+                "event", "reason_code", "error_code", "error_message",
             ):
                 if key in candidate:
                     payload[key] = candidate[key]

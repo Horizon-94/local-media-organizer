@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -17,15 +18,16 @@ def annotation_path(application_state: Path, database: Path) -> Path:
 
 def load_annotations(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        return {"contract": CONTRACT, "identities": {}, "cluster_to_identity": {}}
+        return {"contract": CONTRACT, "identities": {}, "cluster_to_identity": {}, "visual_memberships": {}}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"contract": CONTRACT, "identities": {}, "cluster_to_identity": {}}
+        return {"contract": CONTRACT, "identities": {}, "cluster_to_identity": {}, "visual_memberships": {}}
     if payload.get("contract") != CONTRACT:
-        return {"contract": CONTRACT, "identities": {}, "cluster_to_identity": {}}
+        return {"contract": CONTRACT, "identities": {}, "cluster_to_identity": {}, "visual_memberships": {}}
     payload.setdefault("identities", {})
     payload.setdefault("cluster_to_identity", {})
+    payload.setdefault("visual_memberships", {})
     return payload
 
 
@@ -69,6 +71,48 @@ def ensure_identity(payload: dict[str, Any], identifier: str) -> str:
     return identity_id
 
 
+def create_identity(
+    payload: dict[str, Any], display_name: str, tags: Iterable[str] = (),
+) -> str:
+    identity_id = "local_person_manual_" + uuid.uuid4().hex[:20]
+    payload.setdefault("identities", {})[identity_id] = {
+        "display_name": " ".join(display_name.split())[:120],
+        "tags": sorted({" ".join(str(tag).split())[:80] for tag in tags if str(tag).strip()}),
+        "cluster_ids": [],
+    }
+    payload.setdefault("visual_memberships", {})[identity_id] = []
+    return identity_id
+
+
+def add_visual_membership(
+    payload: dict[str, Any], identifier: str, visual_unit_id: str,
+    source_content_id: str,
+) -> str:
+    identity_id = ensure_identity(payload, identifier)
+    memberships = payload.setdefault("visual_memberships", {}).setdefault(identity_id, [])
+    memberships[:] = [
+        value for value in memberships
+        if str(value.get("visual_unit_id") or "") != visual_unit_id
+    ]
+    memberships.append({
+        "visual_unit_id": visual_unit_id,
+        "source_content_id": source_content_id,
+    })
+    return identity_id
+
+
+def remove_visual_membership(
+    payload: dict[str, Any], identifier: str, visual_unit_id: str,
+) -> str:
+    identity_id = ensure_identity(payload, identifier)
+    memberships = payload.setdefault("visual_memberships", {}).setdefault(identity_id, [])
+    memberships[:] = [
+        value for value in memberships
+        if str(value.get("visual_unit_id") or "") != visual_unit_id
+    ]
+    return identity_id
+
+
 def name_identity(
     payload: dict[str, Any], identifier: str, display_name: str, tags: Iterable[str]
 ) -> str:
@@ -80,7 +124,9 @@ def name_identity(
 
 
 def merge_identity(payload: dict[str, Any], source_identifier: str, target_identifier: str) -> str:
+    source_id = ensure_identity(payload, source_identifier)
     target_id = ensure_identity(payload, target_identifier)
+    memberships = payload.setdefault("visual_memberships", {})
     source_clusters = resolve_clusters(payload, source_identifier)
     identities = payload["identities"]
     mapping = payload["cluster_to_identity"]
@@ -95,9 +141,23 @@ def merge_identity(payload: dict[str, Any], source_identifier: str, target_ident
         if cluster_id not in identities[target_id]["cluster_ids"]:
             identities[target_id]["cluster_ids"].append(cluster_id)
     for identity_id in list(identities):
-        if not identities[identity_id].get("cluster_ids"):
+        if (
+            not identities[identity_id].get("cluster_ids")
+            and not memberships.get(identity_id)
+            and identity_id not in {source_id, target_id}
+        ):
             identities.pop(identity_id, None)
     identities[target_id]["cluster_ids"] = sorted(set(identities[target_id]["cluster_ids"]))
+    combined = list(memberships.get(target_id) or []) + list(memberships.get(source_id) or [])
+    by_visual = {
+        str(value.get("visual_unit_id") or ""): dict(value)
+        for value in combined if str(value.get("visual_unit_id") or "")
+    }
+    memberships[target_id] = [by_visual[key] for key in sorted(by_visual)]
+    if source_id != target_id:
+        memberships.pop(source_id, None)
+        if not identities.get(source_id, {}).get("cluster_ids"):
+            identities.pop(source_id, None)
     return target_id
 
 

@@ -25,7 +25,7 @@ REQUIRED_SCRIPTS = (
 )
 REQUIRED_CONFIGS = (
     "candidate", "person_reid", "qwen", "qwen_prompt", "ocr", "evidence", "propagation",
-    "embedding_contract", "embedding_runtime", "hybrid_search",
+    "embedding_contract", "embedding_runtime", "hybrid_search", "yoloe_registry",
 )
 REQUIRED_MIGRATIONS = (
     "person_reid", "ocr", "evidence", "propagation", "embedding", "supplement", "audio",
@@ -262,6 +262,8 @@ def materialize_runtime_configs(
             "model_path": models["text_embedding"]["path"],
             "python_path": python["embedding"],
         })
+    if "yoloe_registry" in configs:
+        write_json("yoloe_registry", {})
     return configs
 
 

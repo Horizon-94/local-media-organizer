@@ -548,6 +548,7 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
         "propagation": str(project / "configs/stop03_5c_qwenvl_yolo_propagation_v1.json"),
         "embedding_contract": str(project / "configs/stop03_5d_text_embedding_db_contract_v1.json"),
         "embedding_runtime": str(project / "configs/stop03_5d_text_embedding_db_orchestrator_v1.json"),
+        "yoloe_registry": str(project / "configs/yoloe_keyword_registry_default_v1.json"),
     }
     configs.update(task["runtime"].get("configs") or {})
     migrations = {
@@ -609,26 +610,35 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
         and {"silero_vad", "whisper", "deep_filter", "text_embedding"} <= set(models)
     )
 
-    def audio_enrichment_stage(out: Path) -> dict[str, Any]:
+    def audio_enrichment_stage(
+        out: Path, preextracted_audio_manifest: Path | None = None,
+    ) -> dict[str, Any]:
+        arguments = [
+            "--db", str(db), "--out", str(out),
+            "--migration", str(migrations["audio"]),
+            "--audio-python", str(runtimes["whisper"]),
+            "--embedding-python", str(runtimes["embedding"]),
+            "--audio-pilot-script", str(scripts["audio_pilot"]),
+            "--embedding-script", str(scripts["audio_embedding_commit"]),
+            "--ffmpeg", str(tools["ffmpeg"]), "--ffprobe", str(tools["ffprobe"]),
+            "--silero-root", required_runtime_path(models, "silero_vad", "models"),
+            "--whisper-model", required_runtime_path(models, "whisper", "models"),
+            "--deep-filter-executable", str(tools["deep_filter"]),
+            "--deep-filter-model", required_runtime_path(models, "deep_filter", "models"),
+            "--embedding-model", required_runtime_path(models, "text_embedding", "models"),
+            "--workers", str(min(3, max(1, model_workers))),
+            "--confirm-central-db-write",
+        ]
+        if preextracted_audio_manifest is not None:
+            arguments.extend([
+                "--preextracted-audio-manifest",
+                str(preextracted_audio_manifest),
+            ])
         return _stage(
             "audio_search_enrichment", "提取人声并建立音频文本搜索",
             runtimes["whisper"], entry, Path(scripts["audio_enrichment"]),
             workspace, source,
-            [
-                "--db", str(db), "--out", str(out),
-                "--migration", str(migrations["audio"]),
-                "--embedding-python", str(runtimes["embedding"]),
-                "--audio-pilot-script", str(scripts["audio_pilot"]),
-                "--embedding-script", str(scripts["audio_embedding_commit"]),
-                "--ffmpeg", str(tools["ffmpeg"]), "--ffprobe", str(tools["ffprobe"]),
-                "--silero-root", required_runtime_path(models, "silero_vad", "models"),
-                "--whisper-model", required_runtime_path(models, "whisper", "models"),
-                "--deep-filter-executable", str(tools["deep_filter"]),
-                "--deep-filter-model", required_runtime_path(models, "deep_filter", "models"),
-                "--embedding-model", required_runtime_path(models, "text_embedding", "models"),
-                "--workers", str(min(3, max(1, model_workers))),
-                "--confirm-central-db-write",
-            ],
+            arguments,
             requires_source=True,
         )
 
@@ -788,6 +798,10 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
                ["--db", str(db), "--out", str(stages / "05_yoloe"),
                 "--model", required_runtime_path(models, "yoloe", "models"),
                 "--mobileclip", required_runtime_path(models, "yoloe_mobileclip", "models"),
+                "--registry", str(configs["yoloe_registry"]),
+                *(["--include-b-extended"] if bool(
+                    task.get("profile", {}).get("yoloe_keywords", {}).get("enable_b_extended", False)
+                ) else []),
                 "--device", "mps", "--limit", "0", "--concurrency", str(model_workers)]),
         _stage("openclip", "建立全量视觉向量", runtimes["visual"], entry,
                Path(scripts["openclip"]),
@@ -928,7 +942,18 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
         insert_after("qwen_optional_v2", all_image_qwen)
         insert_after("evidence_optional_v2", all_image_merge)
     if task_mode == "full" and audio_runtime_available:
-        plan.append(audio_enrichment_stage(stages / "20_audio_search_enrichment"))
+        video_stage_index = next(
+            index for index, row in enumerate(plan) if row["key"] == "video_frames"
+        )
+        plan[video_stage_index]["command"].append("--coextract-audio")
+        coextract_manifest = stages / "03_video_frames" / "audio_coextract_manifest.jsonl"
+        plan.insert(
+            video_stage_index + 1,
+            audio_enrichment_stage(
+                stages / "03b_audio_search_enrichment",
+                preextracted_audio_manifest=coextract_manifest,
+            ),
+        )
     return plan
 
 
@@ -1219,6 +1244,16 @@ def execute_pipeline(
                             ))
                             last_qwen_progress_read = now
                     if progress:
+                        if progress.get("event") in {"stage_item_failed", "stage_failed"}:
+                            record["reason_code"] = str(
+                                progress.get("reason_code")
+                                or progress.get("error_code")
+                                or "STAGE_ITEM_FAILED"
+                            )
+                            record["error_summary"] = str(
+                                progress.get("error_message")
+                                or record["reason_code"]
+                            )[:2000]
                         for source_key, target_key in (
                             ("completed", "live_completed"), ("total", "live_total"),
                             ("success", "live_success"), ("skipped", "live_skipped"),

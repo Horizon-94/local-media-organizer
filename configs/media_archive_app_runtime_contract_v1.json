@@ -19,7 +19,7 @@
   },
   "models": {
     "yoloe": {
-      "path": "$MODEL_ROOT/yoloe26-l-seg/weights/yoloe-26l-seg.pt",
+      "path": "$MODEL_ROOT/yoloe26-l-seg/weights/yoloe26-l-seg.pt",
       "kind": "file"
     },
     "yoloe_mobileclip": {
@@ -27,7 +27,7 @@
       "kind": "file"
     },
     "openclip": {
-      "path": "$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k/model.safetensors",
+      "path": "$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors",
       "kind": "file"
     },
     "person_reid": {
@@ -64,53 +64,59 @@
     }
   },
   "scripts": {
-    "stage_runner": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_generic_pipeline_stage.py",
-    "source_scan": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/02_step01_step02_pipeline/step01_source_scan_lineage_dedup_db_safe_v7_20260709_175400.py",
-    "image_preview": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/02_step01_step02_pipeline/step02_2_image_preview_from_db_safe_v6_20260709_182200.py",
-    "video_frames": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/step02_video_frame_generic_interval_v1.py",
-    "prepare_visual_schema": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/prepare_visual_analysis_schema_v1.py",
-    "yoloe": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_yoloe_full_from_db_safe_v6_20260709_170200.py",
-    "openclip": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_1b_openclip_visual_embedding_db_safe_v4_20260709_161500.py",
-    "dedup": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/source_frame_dedup_central_db.py",
-    "person_reid": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_1c_person_reid_db_orchestrator_v1.py",
-    "candidate_snapshot": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_2_v25_dynamic_snapshot_v1.py",
-    "candidate_select": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_2_candidate_queues_generic_library_v1.py",
-    "optional_stage": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_optional_enrichment_stage_v1.py",
-    "qwen": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py",
-    "ocr": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_4_ocr_db_orchestrator_v1.py",
-    "evidence": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_5b_unified_evidence_staging_v1.py",
-    "propagation": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_5c_qwenvl_yolo_propagation_v1.py",
-    "embedding": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py",
-    "search_adapter": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_5e_hybrid_search_app_adapter_v1.py",
-    "search_engine": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/03_stop03_visual_analysis/stop03_5e_hybrid_visual_text_search_v2.py",
-    "finder_tag_refresh": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/refresh_existing_library_finder_tags_v1.py",
-    "supplement_contract": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_contract_v1.py",
-    "supplement_qwen": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_orchestrator_v1.py",
-    "supplement_evidence_merge": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/stop03_5b_merge_qwenvl_supplement_v1.py",
-    "audio_enrichment": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py",
-    "audio_pilot": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_audio_search_pilot_v1.py",
-    "audio_embedding_commit": "/Users/yourname/Documents/AI-Local/media-archive-clean/scripts/04_media_archive_app/run_audio_embedding_commit_v1.py"
+    "stage_runner": "$PROJECT_ROOT/scripts/04_media_archive_app/run_generic_pipeline_stage.py",
+    "source_scan": "$PROJECT_ROOT/scripts/02_step01_step02_pipeline/step01_source_scan_lineage_dedup_db_safe_v7_20260709_175400.py",
+    "image_preview": "$PROJECT_ROOT/scripts/02_step01_step02_pipeline/step02_2_image_preview_from_db_safe_v6_20260709_182200.py",
+    "video_frames": "$PROJECT_ROOT/scripts/04_media_archive_app/step02_video_frame_generic_interval_v1.py",
+    "prepare_visual_schema": "$PROJECT_ROOT/scripts/04_media_archive_app/prepare_visual_analysis_schema_v1.py",
+    "yoloe": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_yoloe_full_from_db_safe_v6_20260709_170200.py",
+    "openclip": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_1b_openclip_visual_embedding_db_safe_v4_20260709_161500.py",
+    "dedup": "$PROJECT_ROOT/scripts/source_frame_dedup_central_db.py",
+    "person_reid": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_1c_person_reid_db_orchestrator_v1.py",
+    "candidate_snapshot": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_2_v25_dynamic_snapshot_v1.py",
+    "candidate_select": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_2_candidate_queues_generic_library_v1.py",
+    "optional_stage": "$PROJECT_ROOT/scripts/04_media_archive_app/run_optional_enrichment_stage_v1.py",
+    "qwen": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py",
+    "ocr": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_4_ocr_db_orchestrator_v1.py",
+    "evidence": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_5b_unified_evidence_staging_v1.py",
+    "propagation": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_5c_qwenvl_yolo_propagation_v1.py",
+    "embedding": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py",
+    "search_adapter": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_5e_hybrid_search_app_adapter_v1.py",
+    "search_engine": "$PROJECT_ROOT/scripts/03_stop03_visual_analysis/stop03_5e_hybrid_visual_text_search_v2.py",
+    "search_rebuild": "$PROJECT_ROOT/scripts/04_media_archive_app/rebuild_search_index_from_database_v1.py",
+    "finder_tag_refresh": "$PROJECT_ROOT/scripts/04_media_archive_app/refresh_existing_library_finder_tags_v1.py",
+    "supplement_contract": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_contract_v1.py",
+    "supplement_qwen": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_orchestrator_v1.py",
+    "supplement_evidence_merge": "$PROJECT_ROOT/scripts/04_media_archive_app/stop03_5b_merge_qwenvl_supplement_v1.py",
+    "audio_enrichment": "$PROJECT_ROOT/scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py",
+    "audio_pilot": "$PROJECT_ROOT/scripts/04_media_archive_app/run_audio_search_pilot_v1.py",
+    "audio_embedding_commit": "$PROJECT_ROOT/scripts/04_media_archive_app/run_audio_embedding_commit_v1.py"
   },
   "configs": {
-    "candidate": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_2_high_value_policy_v25.json",
-    "person_reid": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_1c_person_reid_db_v1.json",
-    "qwen": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_3_qwenvl_db_v1.json",
-    "qwen_prompt": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/qwenvl_prompt_v2_384.txt",
-    "ocr": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_4_ocr_db_v1.json",
-    "evidence": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_5b_unified_evidence_staging_v1.json",
-    "propagation": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_5c_qwenvl_yolo_propagation_v1.json",
-    "embedding_contract": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_5d_text_embedding_db_contract_v1.json",
-    "embedding_runtime": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_5d_text_embedding_db_orchestrator_v1.json",
-    "hybrid_search": "/Users/yourname/Documents/AI-Local/media-archive-clean/configs/stop03_5e_hybrid_visual_text_search_v2.json"
+    "candidate": "$PROJECT_ROOT/configs/stop03_2_high_value_policy_v25.json",
+    "person_reid": "$PROJECT_ROOT/configs/stop03_1c_person_reid_db_v1.json",
+    "qwen": "$PROJECT_ROOT/configs/stop03_3_qwenvl_db_v1.json",
+    "qwen_prompt": "$PROJECT_ROOT/configs/qwenvl_prompt_v2_384.txt",
+    "ocr": "$PROJECT_ROOT/configs/stop03_4_ocr_db_v1.json",
+    "evidence": "$PROJECT_ROOT/configs/stop03_5b_unified_evidence_staging_v1.json",
+    "propagation": "$PROJECT_ROOT/configs/stop03_5c_qwenvl_yolo_propagation_v1.json",
+    "embedding_contract": "$PROJECT_ROOT/configs/stop03_5d_text_embedding_db_contract_v1.json",
+    "embedding_runtime": "$PROJECT_ROOT/configs/stop03_5d_text_embedding_db_orchestrator_v1.json",
+    "hybrid_search": "$PROJECT_ROOT/configs/stop03_5e_hybrid_visual_text_search_v2.json",
+    "yoloe_registry": "$PROJECT_ROOT/configs/yoloe_keyword_registry_default_v1.json"
   },
   "migrations": {
-    "person_reid": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260726_stop03_1c_person_reid_db_v1.sql",
-    "ocr": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260716_stop03_4_ocr_db_v1.sql",
-    "evidence": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql",
-    "propagation": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql",
-    "embedding": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql",
-    "supplement": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260720_stop03_3_qwenvl_supplement_v1.sql",
-    "audio_speech_search": "/Users/yourname/Documents/AI-Local/media-archive-clean/migrations/20260809_audio_speech_search_v1.sql"
+    "person_reid": "$PROJECT_ROOT/migrations/20260726_stop03_1c_person_reid_db_v1.sql",
+    "ocr": "$PROJECT_ROOT/migrations/20260716_stop03_4_ocr_db_v1.sql",
+    "evidence": "$PROJECT_ROOT/migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql",
+    "propagation": "$PROJECT_ROOT/migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql",
+    "embedding": "$PROJECT_ROOT/migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql",
+    "supplement": "$PROJECT_ROOT/migrations/20260720_stop03_3_qwenvl_supplement_v1.sql",
+    "audio": "$PROJECT_ROOT/migrations/20260809_audio_speech_search_v1.sql"
+  },
+  "documents": {
+    "model_registry": "$PROJECT_ROOT/docs/model_registry/LOCAL_MODEL_REGISTRY.md",
+    "runtime_model_script_inventory": "$PROJECT_ROOT/docs/model_registry/LOCAL_RUNTIME_MODEL_SCRIPT_INVENTORY.md"
   },
   "policies": {
     "original_media_access": "read_only",

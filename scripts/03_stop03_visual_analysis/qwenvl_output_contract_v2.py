@@ -246,7 +246,7 @@ def write_qwenvl_contract_outputs(
 
 def selftest() -> int:
     sample = """==========
-Files: ['/Users/yourname/test/frame.jpg']
+Files: ['$USER_HOME/test/frame.jpg']
 
 Prompt: <|im_start|>user
 <|vision_start|><|image_pad|><|vision_end|>xxx<|im_end|>

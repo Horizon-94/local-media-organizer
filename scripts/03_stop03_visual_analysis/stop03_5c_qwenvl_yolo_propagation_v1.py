@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 
 CONTRACT_VERSION = "stop03_5c_qwenvl_yolo_propagation_v1"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_5c_qwenvl_yolo_propagation_v1.json"
 DEFAULT_MIGRATION = (
@@ -24,7 +24,7 @@ DEFAULT_MIGRATION = (
     / "migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql"
 )
 DEFAULT_OUT = Path(
-    "/Users/yourname/Documents/AI-Local/test-output/"
+    "$USER_HOME/Documents/AI-Local/test-output/"
     "stop03_5c_qwenvl_yolo_propagation_v1"
 )
 

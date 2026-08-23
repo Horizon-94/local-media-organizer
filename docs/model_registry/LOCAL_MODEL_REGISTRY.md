@@ -1,8 +1,8 @@
 # LOCAL_MODEL_REGISTRY.md
 
 > 适用项目：本地素材大整理 / media-archive-clean
-> 项目根目录：`/Users/yourname/Documents/AI-Local/media-archive-clean`
-> 模型根目录：`/Users/yourname/Documents/model`
+> 项目根目录：`$APP_RESOURCES/Pipeline`
+> 模型根目录：`$MODEL_ROOT`
 > 生成目的：让后续所有对话、脚本、任务、Codex/Opus 审查都优先使用本机已有模型；找不到模型时必须停止并报告，禁止自动下载。
 
 ---
@@ -47,7 +47,7 @@ BLOCKED_MISSING_LOCAL_MODEL
 当前本地正式模型目录：
 
 ```text
-/Users/yourname/Documents/model
+$MODEL_ROOT
 ```
 
 已确认本地模型总大小：
@@ -64,13 +64,13 @@ BLOCKED_MISSING_LOCAL_MODEL
 
 | 模型目录 | 用途 | 大小 | 路径 |
 |---|---|---:|---|
-| `Qwen3-VL-4B-Instruct-4bit` | 图像理解 / 视觉语言 | 2.90 GB | `/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit` |
-| `whisper-large-v3-turbo` | 语音转写 | 1.51 GB | `/Users/yourname/Documents/model/whisper-large-v3-turbo` |
-| `yoloe26-l-seg` | YOLOE 检测 / 分割 | 1.14 GB | `/Users/yourname/Documents/model/yoloe26-l-seg` |
-| `Qwen3-Embedding-0.6B` | 文本向量 | 1.12 GB | `/Users/yourname/Documents/model/Qwen3-Embedding-0.6B` |
-| `openclip-vit-b-32-laion2b-s34b-b79k` | 图片视觉向量 | 577.11 MB | `/Users/yourname/Documents/model/openclip-vit-b-32-laion2b-s34b-b79k` |
-| `ocr` | OCR 检测 / 识别 | 132.72 MB | `/Users/yourname/Documents/model/ocr` |
-| `silero-vad` | VAD 语音活动检测 | 10.80 MB | `/Users/yourname/Documents/model/silero-vad` |
+| `Qwen3-VL-4B-Instruct-4bit` | 图像理解 / 视觉语言 | 2.90 GB | `$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit` |
+| `whisper-large-v3-turbo` | 语音转写 | 1.51 GB | `$MODEL_ROOT/whisper-large-v3-turbo` |
+| `yoloe26-l-seg` | YOLOE 检测 / 分割 | 1.14 GB | `$MODEL_ROOT/yoloe26-l-seg` |
+| `Qwen3-Embedding-0.6B` | 文本向量 | 1.12 GB | `$MODEL_ROOT/Qwen3-Embedding-0.6B` |
+| `openclip-vit-b-32-laion2b-s34b-b79k` | 图片视觉向量 | 577.11 MB | `$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k` |
+| `ocr` | OCR 检测 / 识别 | 132.72 MB | `$MODEL_ROOT/ocr` |
+| `silero-vad` | VAD 语音活动检测 | 10.80 MB | `$MODEL_ROOT/silero-vad` |
 
 ---
 
@@ -88,13 +88,13 @@ BLOCKED_MISSING_LOCAL_MODEL
 模型路径：
 
 ```text
-/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit
+$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit
 ```
 
 运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/qwen-vl/bin/python
+$BUNDLED_PIPELINE_ENVS/qwen-vl/bin/python
 ```
 
 已确认环境包：
@@ -130,13 +130,13 @@ Pillow
 模型路径：
 
 ```text
-/Users/yourname/Documents/model/whisper-large-v3-turbo
+$MODEL_ROOT/whisper-large-v3-turbo
 ```
 
 运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/whisper/bin/python
+$BUNDLED_PIPELINE_ENVS/whisper/bin/python
 ```
 
 已确认环境包：
@@ -171,13 +171,13 @@ OCR 触发辅助
 模型目录：
 
 ```text
-/Users/yourname/Documents/model/yoloe26-l-seg
+$MODEL_ROOT/yoloe26-l-seg
 ```
 
 核心权重：
 
 ```text
-/Users/yourname/Documents/model/yoloe26-l-seg/weights/yoloe26-l-seg.pt
+$MODEL_ROOT/yoloe26-l-seg/weights/yoloe26-l-seg.pt
 ```
 
 核心权重大小：
@@ -189,7 +189,7 @@ OCR 触发辅助
 运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/media-archive-v06-yolo/bin/python
+$BUNDLED_PIPELINE_ENVS/media-archive-v06-yolo/bin/python
 ```
 
 已确认环境包：
@@ -214,7 +214,7 @@ YOLO("yoloe-11l-seg.pt")
 
 ```text
 必须显式传入本地权重：
-/Users/yourname/Documents/model/yoloe26-l-seg/weights/yoloe26-l-seg.pt
+$MODEL_ROOT/yoloe26-l-seg/weights/yoloe26-l-seg.pt
 ```
 
 如果该文件不存在，必须停止，不允许 Ultralytics 自动下载。
@@ -236,13 +236,13 @@ Qwen-VL 描述文本向量
 模型路径：
 
 ```text
-/Users/yourname/Documents/model/Qwen3-Embedding-0.6B
+$MODEL_ROOT/Qwen3-Embedding-0.6B
 ```
 
 建议运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python
+$BUNDLED_PIPELINE_ENVS/media-archive-v06-visual/bin/python
 ```
 
 该环境已确认：
@@ -260,7 +260,7 @@ numpy
 ```text
 正式接入前需要单独验证 Qwen3-Embedding 的本地加载方式。
 禁止 from_pretrained("Qwen/xxx")。
-必须从 /Users/yourname/Documents/model/Qwen3-Embedding-0.6B 加载。
+必须从 $MODEL_ROOT/Qwen3-Embedding-0.6B 加载。
 ```
 
 ---
@@ -279,19 +279,19 @@ numpy
 模型目录：
 
 ```text
-/Users/yourname/Documents/model/openclip-vit-b-32-laion2b-s34b-b79k
+$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k
 ```
 
 核心权重：
 
 ```text
-/Users/yourname/Documents/model/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors
+$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors
 ```
 
 运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python
+$BUNDLED_PIPELINE_ENVS/media-archive-v06-visual/bin/python
 ```
 
 已确认环境包：
@@ -328,25 +328,25 @@ numpy
 模型根目录：
 
 ```text
-/Users/yourname/Documents/model/ocr
+$MODEL_ROOT/ocr
 ```
 
 检测模型：
 
 ```text
-/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_det
+$MODEL_ROOT/ocr/PP-OCRv6_medium_det
 ```
 
 识别模型：
 
 ```text
-/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_rec
+$MODEL_ROOT/ocr/PP-OCRv6_medium_rec
 ```
 
 运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/media-archive-v06-ocr/bin/python
+$BUNDLED_PIPELINE_ENVS/media-archive-v06-ocr/bin/python
 ```
 
 已确认环境包：
@@ -363,8 +363,8 @@ numpy
 
 ```python
 PaddleOCR(
-    text_detection_model_dir="/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_det",
-    text_recognition_model_dir="/Users/yourname/Documents/model/ocr/PP-OCRv6_medium_rec",
+    text_detection_model_dir="$MODEL_ROOT/ocr/PP-OCRv6_medium_det",
+    text_recognition_model_dir="$MODEL_ROOT/ocr/PP-OCRv6_medium_rec",
     use_doc_orientation_classify=False,
     use_doc_unwarping=False,
     use_textline_orientation=False
@@ -386,7 +386,7 @@ PaddleOCR() 默认可能触发 PaddleX 官方模型下载或使用 ~/.paddlex/of
 注意：
 
 ```text
-当前正式 OCR 主线只允许用 /Users/yourname/Documents/model/ocr。
+当前正式 OCR 主线只允许用 $MODEL_ROOT/ocr。
 不得默认使用 ~/.paddlex/official_models。
 ```
 
@@ -405,13 +405,13 @@ Whisper 前置处理
 模型路径：
 
 ```text
-/Users/yourname/Documents/model/silero-vad
+$MODEL_ROOT/silero-vad
 ```
 
 运行环境：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/media-archive-v06-vad/bin/python
+$BUNDLED_PIPELINE_ENVS/media-archive-v06-vad/bin/python
 ```
 
 已确认：
@@ -436,7 +436,7 @@ numpy
 ### HuggingFace 缓存
 
 ```text
-/Users/yourname/.cache/huggingface
+$USER_HOME/.cache/huggingface
 ```
 
 大小：
@@ -455,7 +455,7 @@ numpy
 ### PaddleX 官方模型缓存
 
 ```text
-/Users/yourname/.paddlex/official_models
+$TASK_RUNTIME/paddlex_cache
 ```
 
 大小：
@@ -477,13 +477,13 @@ numpy
 不能在正式流程里读取该目录。
 如需迁移，必须由用户明确确认。
 建议迁移目标：
-/Users/yourname/Documents/model/ocr-paddlex-official-cache-20260708
+$MODEL_ROOT/ocr-paddlex-official-cache-20260708
 ```
 
 ### ModelScope 缓存
 
 ```text
-/Users/yourname/.cache/modelscope
+$USER_HOME/.cache/modelscope
 ```
 
 大小：
@@ -561,12 +561,12 @@ numpy
 本项目已有本地模型，不应再自动下载模型。
 
 正式模型源：
-/Users/yourname/Documents/model
+$MODEL_ROOT
 
 正式运行环境：
-/Users/yourname/Documents/AI-Local/envs
+$BUNDLED_PIPELINE_ENVS
 
 隐式缓存不是正式模型源：
-/Users/yourname/.cache/*
-/Users/yourname/.paddlex/*
+$USER_HOME/.cache/*
+$USER_HOME/.paddlex/*
 ```

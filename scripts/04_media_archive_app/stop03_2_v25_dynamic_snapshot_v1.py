@@ -13,7 +13,6 @@ import argparse
 import hashlib
 import importlib.util
 import json
-import shutil
 import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
@@ -195,22 +194,39 @@ def build_snapshot(db: Path, project_root: Path, allowed_output_root: Path) -> d
     }
 
 
-def readback(db: Path) -> dict[str, Any]:
-    with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as con:
-        con.row_factory = sqlite3.Row
-        contract = con.execute(
-            "SELECT * FROM pipeline_frozen_contracts WHERE contract_name=?", (CONTRACT_NAME,)
-        ).fetchone()
-        if contract is None:
-            raise RuntimeError("dynamic_v25_contract_missing")
-        rows = con.execute(
-            "SELECT candidate_id,candidate_semantic_sha256,queue_type "
-            "FROM stop03_2_candidate_queue_frozen_v25 ORDER BY candidate_id"
-        ).fetchall()
-        qwen = int(con.execute("SELECT COUNT(*) FROM v_stop03_2_v25_qwenvl_execution_queue").fetchone()[0])
-        ocr = int(con.execute("SELECT COUNT(*) FROM v_stop03_2_v25_ocr_execution_queue").fetchone()[0])
-        integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
-        foreign_keys = len(con.execute("PRAGMA foreign_key_check").fetchall())
+def online_backup(db: Path, target: Path) -> Path:
+    """Create a transactionally consistent SQLite backup, including WAL pages."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    destination = sqlite3.connect(str(target), timeout=30.0)
+    try:
+        source.execute("PRAGMA busy_timeout=30000")
+        destination.execute("PRAGMA busy_timeout=30000")
+        source.backup(destination, pages=1024, sleep=0.05)
+    finally:
+        destination.close()
+        source.close()
+    with sqlite3.connect(f"file:{target.as_posix()}?mode=ro", uri=True) as check:
+        if str(check.execute("PRAGMA integrity_check").fetchone()[0]) != "ok":
+            raise RuntimeError("dynamic_snapshot_backup_integrity_failed")
+    return target
+
+
+def readback_connection(con: sqlite3.Connection) -> dict[str, Any]:
+    con.row_factory = sqlite3.Row
+    contract = con.execute(
+        "SELECT * FROM pipeline_frozen_contracts WHERE contract_name=?", (CONTRACT_NAME,)
+    ).fetchone()
+    if contract is None:
+        raise RuntimeError("dynamic_v25_contract_missing")
+    rows = con.execute(
+        "SELECT candidate_id,candidate_semantic_sha256,queue_type "
+        "FROM stop03_2_candidate_queue_frozen_v25 ORDER BY candidate_id"
+    ).fetchall()
+    qwen = int(con.execute("SELECT COUNT(*) FROM v_stop03_2_v25_qwenvl_execution_queue").fetchone()[0])
+    ocr = int(con.execute("SELECT COUNT(*) FROM v_stop03_2_v25_ocr_execution_queue").fetchone()[0])
+    integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
+    foreign_keys = len(con.execute("PRAGMA foreign_key_check").fetchall())
     id_digest = sha256_text("\n".join(str(row["candidate_id"]) for row in rows))
     semantic_digest = sha256_text(
         "\n".join(f"{row['candidate_id']}:{row['candidate_semantic_sha256']}" for row in rows)
@@ -236,6 +252,11 @@ def readback(db: Path) -> dict[str, Any]:
     }
 
 
+def readback(db: Path) -> dict[str, Any]:
+    with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as con:
+        return readback_connection(con)
+
+
 def commit_snapshot(
     db: Path,
     project_root: Path,
@@ -245,23 +266,41 @@ def commit_snapshot(
 ) -> dict[str, Any]:
     snapshot = build_snapshot(db, project_root, allowed_output_root)
     summary = snapshot["summary"]
-    out.mkdir(parents=True, exist_ok=False)
-    backup = out / "backups" / db.name
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(db, backup)
-    con = sqlite3.connect(str(db))
+    # A failed attempt may have already created the stage directory.  Reusing
+    # it is safe because every retry gets a fresh, immutable online backup and
+    # the final report is only published after a committed readback passes.
+    out.mkdir(parents=True, exist_ok=True)
+    backup_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = online_backup(
+        db,
+        out / "backups" / f"{db.stem}.before_snapshot.{backup_stamp}.sqlite",
+    )
+    con = sqlite3.connect(str(db), timeout=30.0)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
     try:
-        con.executescript(migration.read_text(encoding="utf-8"))
-        existing = con.execute(
-            "SELECT 1 FROM pipeline_frozen_contracts WHERE contract_name=?", (CONTRACT_NAME,)
+        integrity_before = str(con.execute("PRAGMA integrity_check").fetchone()[0])
+        if integrity_before != "ok":
+            raise RuntimeError(f"dynamic_snapshot_source_integrity_failed:{integrity_before}")
+        has_contract_table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_frozen_contracts'"
         ).fetchone()
+        existing = None
+        if has_contract_table:
+            existing = con.execute(
+                "SELECT 1 FROM pipeline_frozen_contracts WHERE contract_name=?", (CONTRACT_NAME,)
+            ).fetchone()
         if existing:
             result = readback(db)
-            result["status"] = "IDEMPOTENT_PASS" if result["status"] == "PASS" else "FAIL"
+            readback_passed = result["status"] == "PASS"
+            result.update({"backup_path": str(backup), **summary})
+            result["status"] = "IDEMPOTENT_PASS" if readback_passed else "FAIL"
             return result
-        con.execute("BEGIN IMMEDIATE")
+        # Keep schema creation, rows and lock contract in one transaction.  A
+        # failure now rolls back cleanly instead of copying a bare main file
+        # over a database that may have live WAL state.
+        con.executescript("BEGIN IMMEDIATE;\n" + migration.read_text(encoding="utf-8"))
         columns = tuple(load_lock_module(project_root).SNAPSHOT_COLUMNS)
         con.executemany(
             f"INSERT INTO stop03_2_candidate_queue_frozen_v25 ({','.join(columns)}) "
@@ -288,18 +327,19 @@ def commit_snapshot(
             f"VALUES ({','.join('?' for _ in fields)})",
             [contract[field] for field in fields],
         )
+        transaction_result = readback_connection(con)
+        if transaction_result["status"] != "PASS":
+            raise RuntimeError("dynamic_snapshot_transaction_readback_failed")
         con.commit()
         result = readback(db)
         if result["status"] != "PASS":
             raise RuntimeError("dynamic_snapshot_readback_failed")
     except Exception:
-        con.rollback()
-        con.close()
-        shutil.copy2(backup, db)
+        if con.in_transaction:
+            con.rollback()
         raise
     finally:
-        if con:
-            con.close()
+        con.close()
     result.update({"backup_path": str(backup), **summary})
     atomic_json(out / "reports/dynamic_v25_snapshot_summary.json", result)
     return result

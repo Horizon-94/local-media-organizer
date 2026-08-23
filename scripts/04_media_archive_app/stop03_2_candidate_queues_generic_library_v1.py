@@ -10,14 +10,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 import math
 import sys
+import threading
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 
-ADAPTER_VERSION = "stop03_2_candidate_queues_generic_library_v2"
+ADAPTER_VERSION = "stop03_2_candidate_queues_generic_library_v3_hotfix_current_task_recovery"
 GENERIC_DENSITY_POLICY_VERSION = "stop03_2_generic_density_policy_v1"
 HIGH_VALUE_TARGETS = {
     "frozen_v25_compatible": None,
@@ -109,6 +111,208 @@ def apply_gate_applicability(
     if summary.get("execution_mode") == "dry-run":
         summary["dry_run_status"] = technical
     return summary
+
+
+def write_failure_diagnostics(
+    frozen: Any,
+    out: Path,
+    result: Mapping[str, Any],
+    summary: Mapping[str, Any],
+) -> None:
+    """Persist read-only gate evidence without changing the frozen selector."""
+    reports = out / "reports"
+    failed_coverage = [
+        dict(row) for row in result.get("coverage_reports") or []
+        if str(row.get("refill_status") or "").startswith("failed_")
+    ]
+    frozen.write_json(
+        reports / "coverage_summary.json",
+        {
+            "technical_status": summary.get("technical_status"),
+            "normal_video_group_count": summary.get("normal_video_group_count"),
+            "normal_video_group_with_coverage_count": summary.get(
+                "normal_video_group_with_coverage_count"
+            ),
+            "normal_video_group_missing_coverage_count": summary.get(
+                "normal_video_group_missing_coverage_count"
+            ),
+            "coverage_anchor_total_count": summary.get("coverage_anchor_total_count"),
+            "coverage_missing_count": summary.get("coverage_missing_count"),
+            "coverage_refill_failed_count": summary.get("coverage_refill_failed_count"),
+        },
+    )
+    frozen.write_csv(reports / "coverage_missing.csv", failed_coverage)
+    frozen.write_csv(reports / "coverage_refill_failed.csv", failed_coverage)
+    frozen.write_csv(
+        reports / "coverage_skipped_no_visual.csv",
+        list(result.get("coverage_skipped_no_visual") or []),
+        fields=("source_content_id", "reason"),
+    )
+    frozen.write_json(
+        reports / "technical_gates.json",
+        {
+            "gates": summary.get("automatic_acceptance_gates") or {},
+            "applicability": summary.get(
+                "automatic_acceptance_gate_applicability"
+            ) or {},
+        },
+    )
+    frozen.write_json(reports / "candidate_dry_run_summary.json", dict(summary))
+
+
+def apply_non_black_coverage_fallbacks(
+    frozen: Any,
+    result: dict[str, Any],
+    *,
+    config: Mapping[str, Any],
+    run_id: str,
+    mode: str,
+    hashes: Mapping[str, str],
+    lineage: Mapping[str, str],
+) -> dict[str, Any]:
+    """Repair failed local anchors with an auditable same-source fallback.
+
+    The frozen V25 selector remains byte-for-byte unchanged.  This adapter is
+    used only after its normal local refill has exhausted all candidates.
+    """
+    failed = [
+        row for row in result.get("coverage_reports") or []
+        if str(row.get("refill_status") or "").startswith("failed_")
+    ]
+    if not failed:
+        return result
+    frames_by_source: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for frame in result.get("rows") or []:
+        if frame.get("media_type") == "video":
+            frames_by_source[str(frame.get("source_content_id") or "")].append(frame)
+    candidates_by_visual = {
+        str(row.get("visual_unit_id") or ""): row
+        for row in result.get("q_rows") or []
+        if row.get("queue_type") == "qwenvl_high_value"
+    }
+    decisions = {
+        str(row.get("visual_unit_id") or ""): row
+        for row in result.get("decisions") or []
+    }
+    repaired_by_source: dict[str, int] = defaultdict(int)
+    for report in failed:
+        source_id = str(report.get("source_content_id") or "")
+        anchor_time = int(report.get("anchor_time_ms") or -1)
+        tail_start = report.get("tail_start_ms")
+        pool = [
+            frame for frame in frames_by_source.get(source_id, [])
+            if frame.get("signature_status") == "PASS"
+            and not frame.get("black_rejected")
+            and frame.get("identity_status") in {"unique", "canonical", "blocked_decoder"}
+        ]
+        if not pool:
+            continue
+        selected = min(
+            pool,
+            key=lambda frame: (
+                int(tail_start is not None and int(frame.get("time_position_ms") or -1) >= int(tail_start)),
+                -int(bool(frame.get("generic_high_signal"))),
+                -float(frame.get("generic_high_signal_score") or 0.0),
+                -float(frame.get("grid_structure") or 0.0),
+                abs(int(frame.get("time_position_ms") or -1) - anchor_time),
+                int(frame.get("time_position_ms") or -1),
+                str(frame.get("visual_unit_id") or ""),
+            ),
+        )
+        visual_id = str(selected["visual_unit_id"])
+        reasons = [
+            "coverage_fallback_after_local_refill_exhausted",
+            "same_source_valid_non_black_frame",
+            "1.1.4_hotfix_current_task_recovery",
+        ]
+        candidate = candidates_by_visual.get(visual_id)
+        if candidate is None:
+            candidate = frozen.make_candidate(
+                selected,
+                queue_type="qwenvl_high_value",
+                role="COVERAGE_FALLBACK",
+                score=float(selected.get("generic_high_signal_score") or 0.0),
+                reasons=reasons,
+                run_id=run_id,
+                mode=mode,
+                hashes=hashes,
+                lineage=lineage,
+                config=config,
+                anchor={
+                    "anchor_index": report.get("anchor_index"),
+                    "anchor_visual_unit_id": report.get("anchor_visual_unit_id"),
+                },
+            )
+            candidate["script_version"] = ADAPTER_VERSION
+            result["q_rows"].append(candidate)
+            candidates_by_visual[visual_id] = candidate
+        else:
+            candidate["reason_codes"] = "|".join(dict.fromkeys([
+                *str(candidate.get("reason_codes") or "").split("|"),
+                *reasons,
+                "coverage_fallback_reused_existing_candidate",
+            ]))
+        decision = decisions.get(visual_id)
+        if decision is not None:
+            anchors = list(decision.get("coverage_anchor_indices") or [])
+            anchor_index = int(report.get("anchor_index") or 0)
+            if anchor_index not in anchors:
+                anchors.append(anchor_index)
+            decision["coverage_anchor_indices"] = anchors
+            decision["coverage_anchor_index"] = anchors[0]
+            decision["qwen_selected"] = True
+            if not decision.get("qwen_role"):
+                decision["qwen_role"] = "COVERAGE_FALLBACK"
+            decision["selection_reason_codes"] = list(dict.fromkeys([
+                *(decision.get("selection_reason_codes") or []), *reasons,
+            ]))
+        report.update({
+            "selected_visual_unit_id": visual_id,
+            "selected_time_ms": int(selected.get("time_position_ms") or -1),
+            "selected_role": "COVERAGE_FALLBACK",
+            "refill_status": "source_non_black_coverage_fallback",
+            "fallback_scope": "same_source_outside_local_interval_allowed",
+        })
+        repaired_by_source[source_id] += 1
+        stats = result["stats"]
+        stats["coverage_refill_failed_count"] -= 1
+        stats["coverage_missing_count"] -= 1
+        stats["coverage_refill_count"] += 1
+        stats["source_non_black_coverage_fallback_count"] += 1
+
+    for source_id, repaired in repaired_by_source.items():
+        still_failed = any(
+            str(row.get("source_content_id") or "") == source_id
+            and str(row.get("refill_status") or "").startswith("failed_")
+            for row in result.get("coverage_reports") or []
+        )
+        if not still_failed:
+            result["stats"]["normal_video_group_missing_coverage_count"] -= 1
+            result["stats"]["normal_video_group_with_coverage_count"] += 1
+        for budget in result.get("video_budget") or []:
+            if str(budget.get("source_content_id") or "") != source_id:
+                continue
+            budget["coverage_selected_count"] = min(
+                int(budget.get("coverage_anchor_count") or 0),
+                int(budget.get("coverage_selected_count") or 0) + repaired,
+            )
+            source_qwen = [
+                row for row in result["q_rows"]
+                if row.get("queue_type") == "qwenvl_high_value"
+                and row.get("media_type") == "video"
+                and str(row.get("source_content_id") or "") == source_id
+            ]
+            budget["qwen_video_count"] = len(source_qwen)
+            budget["coverage_unique_representative_count"] = len({
+                str(row.get("visual_unit_id") or "") for row in source_qwen
+                if "coverage" in str(row.get("candidate_role") or "").lower()
+            })
+    result["q_rows"].sort(key=lambda row: (
+        str(row.get("media_type") or ""), str(row.get("source_relative_path") or ""),
+        int(row.get("time_position_ms") or -1), str(row.get("visual_unit_id") or ""),
+        str(row.get("candidate_role") or ""),
+    ))
+    return result
 
 
 def density_target_count(input_count: int, ratio: float) -> int:
@@ -321,6 +525,42 @@ def load_frozen_v25(project_root: Path) -> Any:
     return module
 
 
+def configure_frozen_v25_paths(
+    frozen: Any, project_root: Path, output_root: Path,
+) -> None:
+    """Bind import-time frozen paths to the selected packaged pipeline.
+
+    Release builds replace developer paths with portable placeholders.  The
+    frozen module derives several constants from ``PROJECT_ROOT`` while it is
+    imported, so changing only ``TEST_OUTPUT_ROOT`` leaves ``RULE_DOCUMENT``
+    pointing at the literal placeholder.  Rebind the complete derived set
+    before preflight or selection without changing the frozen policy.
+    """
+    frozen.PROJECT_ROOT = project_root
+    frozen.TEST_OUTPUT_ROOT = output_root
+    frozen.DEFAULT_DB = project_root / "media_archive.sqlite"
+    frozen.DEFAULT_CONFIG = (
+        project_root / "configs" / "stop03_2_high_value_policy_v25.json"
+    )
+    frozen.RULE_DOCUMENT = (
+        project_root
+        / "docs"
+        / "pipeline_rules"
+        / "STOP03_2_GENERIC_HIGH_VALUE_RULES_V25.md"
+    )
+    frozen.DEFAULT_OUT = output_root / "stop03_2_v25_dry_run"
+
+
+def next_candidate_attempt_root(stage_root: Path) -> Path:
+    """Return a fresh child output while preserving earlier failure evidence."""
+    attempts = stage_root / "candidate_attempts"
+    for number in range(1, 10_000):
+        candidate = attempts / f"attempt_{number:04d}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"candidate_attempt_space_exhausted:{attempts}")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generic-library adapter for frozen Stop03-2 V25")
     parser.add_argument("--mode", choices=["dry-run", "commit"], default="dry-run")
@@ -344,17 +584,60 @@ def main(argv: Sequence[str] | None = None) -> int:
     project_root = Path(__file__).resolve().parents[2]
     allowed = Path(args.allowed_output_root).expanduser().resolve(strict=True)
     db = Path(args.db).expanduser().resolve(strict=True)
-    out = Path(args.out).expanduser().resolve(strict=False)
+    stage_out = Path(args.out).expanduser().resolve(strict=False)
+    out = next_candidate_attempt_root(stage_out)
     config = Path(args.config).expanduser().resolve(strict=True)
     if not within(db, allowed):
         raise RuntimeError(f"database_outside_selected_workspace:{db}")
-    if out == allowed or not within(out, allowed):
-        raise RuntimeError(f"output_outside_selected_workspace:{out}")
+    if stage_out == allowed or not within(stage_out, allowed):
+        raise RuntimeError(f"output_outside_selected_workspace:{stage_out}")
 
     frozen = load_frozen_v25(project_root)
-    frozen.TEST_OUTPUT_ROOT = allowed
+    configure_frozen_v25_paths(frozen, project_root, allowed)
     original_build_summary: Callable[..., dict[str, Any]] = frozen.build_summary
     original_select_candidates: Callable[..., dict[str, Any]] = frozen.select_candidates
+    original_attach_signatures: Callable[..., dict[str, Any]] = frozen.attach_signatures
+    original_fingerprint_one: Callable[..., dict[str, Any]] = frozen.fingerprint_one
+    progress_lock = threading.Lock()
+    progress = {"completed": 0, "total": 0, "workers": 1}
+
+    def emit_progress(current_item: str = "") -> None:
+        print(json.dumps({
+            "contract": "media_archive_stage_runtime_contract_v1",
+            "event": "stage_progress",
+            "completed": progress["completed"],
+            "total": progress["total"],
+            "success": progress["completed"],
+            "skipped": 0,
+            "failed": 0,
+            "current_item": current_item,
+            "actual_workers": progress["workers"],
+        }, ensure_ascii=False), flush=True)
+
+    def fingerprint_with_progress(
+        row: Mapping[str, Any], loaded_config: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        result = original_fingerprint_one(row, loaded_config)
+        with progress_lock:
+            progress["completed"] += 1
+            completed = progress["completed"]
+            total = progress["total"]
+            if completed == total or completed % 25 == 0:
+                emit_progress(str(row.get("source_relative_path") or row.get("visual_unit_id") or ""))
+        return result
+
+    def attach_signatures_with_progress(
+        rows: list[dict[str, Any]], loaded_config: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        with progress_lock:
+            progress["completed"] = 0
+            progress["total"] = len(rows)
+            progress["workers"] = max(1, int(loaded_config.get("signature_workers") or 1))
+            emit_progress("正在校验候选画面")
+        return original_attach_signatures(rows, loaded_config)
+
+    frozen.fingerprint_one = fingerprint_with_progress
+    frozen.attach_signatures = attach_signatures_with_progress
 
     def select_candidates_with_density(
         canonical_rows: list[dict[str, Any]],
@@ -378,6 +661,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         ratio = HIGH_VALUE_TARGETS[args.high_value_mode]
         if ratio is None:
+            result = apply_non_black_coverage_fallbacks(
+                frozen,
+                result,
+                config=loaded_config,
+                run_id=run_id,
+                mode=mode,
+                hashes=hashes,
+                lineage=lineage,
+            )
             result["generic_density_summary"] = {
                 "policy_version": frozen.POLICY_VERSION,
                 "mode": "frozen_v25_compatible",
@@ -410,7 +702,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary["multi_evidence_pair_opportunity_count"] = (
             multi_evidence_pair_opportunity_count(video_budget)
         )
-        return apply_gate_applicability(summary, density)
+        summary = apply_gate_applicability(summary, density)
+        if summary.get("technical_status") != "PASS":
+            write_failure_diagnostics(frozen, out, result or {}, summary)
+        return summary
 
     frozen.select_candidates = select_candidates_with_density
     frozen.build_summary = build_summary_with_applicability

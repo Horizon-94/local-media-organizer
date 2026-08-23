@@ -29,24 +29,35 @@ import stop03_3c_qwenvl_db_orchestrator_v1 as contract
 import stop03_3f_qwenvl_batch75_diagnostic_v1 as batch75
 
 
-SCRIPT_VERSION = "stop03_3f_qwenvl_dynamic_db_orchestrator_v1_20260716"
+SCRIPT_VERSION = "stop03_3f_qwenvl_dynamic_db_orchestrator_v1_20260809"
 BACKEND_VERSION = "mlx_vlm_batch_generate_dynamic_claim_greedy_v1"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_3_qwenvl_db_v1.json"
 DEFAULT_PROMPT = PROJECT_ROOT / "configs/qwenvl_prompt_v2_384.txt"
-DEFAULT_MODEL = Path("/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit")
-DEFAULT_QWEN_PYTHON = Path("/Users/yourname/Documents/AI-Local/envs/qwen-vl/bin/python")
+DEFAULT_MODEL = Path("$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit")
+DEFAULT_QWEN_PYTHON = Path("$BUNDLED_PIPELINE_ENVS/qwen-vl/bin/python")
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "stop03_3f_qwenvl_dynamic_db_full"
 DEFAULT_WORKERS = 3
 DEFAULT_MAX_TOKENS = 384
 DEFAULT_MAX_ATTEMPTS = 2
+DEFAULT_MAX_WORKER_RESTARTS = 2
 COMPACT_RETRY_PROMPT_VERSION = "compact_retry_prompt_v1"
 COMPATIBLE_RESUME_SCRIPT_SHAS = {
     # Initial dynamic-claim version used by the first formal run. Compatibility
     # is intentionally exact and requires an explicit CLI confirmation.
     "682e60a00e8ecbf82d95970f1350fdb58c899d019b424429a52c389a8b116013",
+    # 1.1.5 production runner.  Resume remains explicit because only the
+    # runtime telemetry changed; database item/result contracts are unchanged.
+    "920ff3e0573fe4cffde31bf4257e490a88e7dda90cc29f188003d2d70c3b58f3",
+    # 1.1.8 production runner before the exhausted-worker isolation fix.
+    # Queue/result schemas and item-level idempotency are unchanged.
+    "607291959f277d9a22ece6550fc2fca8fc1ed59c9b30f84361f5c1bbd4241936",
+    # Portable 1.1.8 bundle before the fix, plus the installed hotfix.  Both
+    # retain the same database queue/result contracts.
+    "de2ef4fcbbfb7526d3a9b6713f9cf6dbe243684c3314117fbece670b1a0ab1b0",
+    "82679683d684a36d0b8b2d17a0cac8f2e2389c1d91d75021a97109a16467ee34",
 }
 RETRYABLE_STATUSES = (
     "failed",
@@ -612,6 +623,105 @@ def write_worker_status(
     write_json_atomic(out / "worker_status" / f"worker_{worker_id}.json", value)
 
 
+def read_worker_status(out: Path, worker_id: int) -> dict[str, Any]:
+    """Return the last durable worker heartbeat without trusting stale text logs."""
+    path = out / "worker_status" / f"worker_{worker_id}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def recover_worker_claim(
+    db: Path,
+    run_id: str,
+    *,
+    worker_id: int,
+    candidate_id: str | None,
+    reason: str,
+) -> bool:
+    """Return only the crashed worker's uncommitted claim to the queue.
+
+    The heartbeat is written after a claim and before inference.  A completed
+    item has already changed away from ``running``, so this conditional update
+    cannot duplicate a committed result.  It deliberately never resets every
+    running row: other workers may still be processing safely.
+    """
+    if not candidate_id:
+        return False
+    con = sqlite3.connect(str(db), timeout=30.0)
+    try:
+        con.execute("PRAGMA busy_timeout=30000")
+        con.execute("BEGIN IMMEDIATE")
+        cursor = con.execute(
+            """UPDATE stop03_3_qwenvl_run_items
+            SET status='pending',started_at=NULL,finished_at=NULL,
+                last_error_code='WORKER_INTERRUPTED_REQUEUED',
+                last_error_message=?
+            WHERE run_id=? AND candidate_id=? AND status='running'""",
+            (f"worker={worker_id};{reason}", run_id, candidate_id),
+        )
+        con.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def stage_progress_payload(
+    db: Path,
+    run_id: str,
+    *,
+    worker_id: int,
+    current_item: str,
+) -> dict[str, Any]:
+    """Read committed Qwen progress for the shared stage runtime contract.
+
+    A worker only reports an item after its transaction has committed.  Reading
+    the central run ledger here makes the UI restart-safe and avoids deriving
+    progress from transient log text or in-memory counters.
+    """
+    con = contract.readonly_connection(db)
+    try:
+        counts = {
+            str(status): int(count)
+            for status, count in con.execute(
+                "SELECT status,COUNT(*) FROM stop03_3_qwenvl_run_items "
+                "WHERE run_id=? GROUP BY status",
+                (run_id,),
+            )
+        }
+    finally:
+        con.close()
+    success = counts.get("success", 0)
+    skipped = counts.get("skipped", 0)
+    failed = sum(
+        count for status, count in counts.items()
+        if status not in {"pending", "running", "success", "skipped"}
+    )
+    total = sum(counts.values())
+    completed = success + skipped + failed
+    return {
+        "contract": "media_archive_stage_runtime_contract_v1",
+        "event": "stage_progress",
+        "stage": "qwen_optional_v2",
+        "run_id": run_id,
+        "worker_id": worker_id,
+        "completed": completed,
+        "total": total,
+        "success": success,
+        "skipped": skipped,
+        "failed": failed,
+        "remaining": max(0, total - completed),
+        "queue_pending": counts.get("pending", 0),
+        "queue_running": counts.get("running", 0),
+        "current_item": current_item,
+    }
+
+
 def execute_dynamic_worker(
     *,
     worker_id: int,
@@ -772,7 +882,6 @@ def execute_dynamic_worker(
         lifecycle = "failed"
         error_message = f"{type(exc).__name__}:{exc}"
         state["traceback"] = traceback.format_exc()
-        stop_event.set()
     state.update(
         {
             "lifecycle": lifecycle,
@@ -964,6 +1073,40 @@ def database_checks(db: Path) -> dict[str, Any]:
     }
 
 
+def worker_supervisor_health(
+    *,
+    workers: int,
+    worker_reports: Mapping[int, Mapping[str, Any]],
+    exit_codes: Mapping[int, Optional[int]],
+    retired_worker_ids: set[int],
+) -> dict[str, Any]:
+    """Evaluate surviving worker slots without treating an isolated crash as fatal.
+
+    A worker that exhausts its restart budget is deliberately retired.  It must
+    not make an otherwise complete, database-verified run fail when the other
+    worker slots drained the queue successfully.
+    """
+    configured_ids = set(range(1, workers + 1))
+    surviving_ids = configured_ids - set(retired_worker_ids)
+    completed_ids = {
+        worker_id
+        for worker_id, report in worker_reports.items()
+        if report.get("lifecycle") == "completed"
+        and int(report.get("model_load_count", 0)) == 1
+    }
+    healthy = bool(surviving_ids) and all(
+        worker_id in completed_ids and exit_codes.get(worker_id) == 0
+        for worker_id in surviving_ids
+    )
+    return {
+        "healthy": healthy,
+        "degraded": bool(retired_worker_ids),
+        "completed_worker_ids": sorted(completed_ids),
+        "retired_worker_ids": sorted(retired_worker_ids),
+        "surviving_worker_ids": sorted(surviving_ids),
+    }
+
+
 def run_workers(
     *,
     db: Path,
@@ -975,12 +1118,14 @@ def run_workers(
     max_attempts: int,
     workers: int,
     pre: Mapping[str, Any],
+    max_worker_restarts: int = DEFAULT_MAX_WORKER_RESTARTS,
 ) -> dict[str, Any]:
     context = mp.get_context("spawn")
     stop_event = context.Event()
     report_queue = context.Queue()
-    processes = [
-        context.Process(
+
+    def make_process(worker_id: int, restart_count: int) -> Any:
+        return context.Process(
             target=_worker_entry,
             args=(
                 worker_id,
@@ -995,10 +1140,21 @@ def run_workers(
                 stop_event,
                 report_queue,
             ),
-            name=f"stop03f-dynamic-db-worker-{worker_id}",
+            name=f"stop03f-dynamic-db-worker-{worker_id}-restart-{restart_count}",
         )
+
+    processes = {
+        worker_id: make_process(worker_id, 0)
         for worker_id in range(1, workers + 1)
-    ]
+    }
+    restart_counts = {worker_id: 0 for worker_id in processes}
+    process_history: dict[int, list[dict[str, Any]]] = {
+        worker_id: [] for worker_id in processes
+    }
+    worker_reports: dict[int, dict[str, Any]] = {}
+    retired_workers: dict[int, dict[str, Any]] = {}
+    restarted_claim_count = 0
+    recovery_spawn_count = 0
     interrupted = False
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
@@ -1007,27 +1163,176 @@ def run_workers(
 
     signal.signal(signal.SIGTERM, request_stop)
     try:
-        for process in processes:
+        for process in processes.values():
             process.start()
         try:
-            for process in processes:
-                process.join()
+            last_progress = 0.0
+            while True:
+                # The parent, rather than every model worker, samples the
+                # committed ledger at a bounded cadence.  This keeps progress
+                # truthful without contending with per-item SQLite writes.
+                now = time.monotonic()
+                if now - last_progress >= 1.0:
+                    try:
+                        progress = stage_progress_payload(
+                            db, run_id, worker_id=0, current_item="",
+                        )
+                        alive_workers = sum(
+                            process.is_alive() for process in processes.values()
+                        )
+                        snapshots = {
+                            worker_id: read_worker_status(out, worker_id)
+                            for worker_id in processes
+                        }
+                        active_workers = sum(
+                            process.is_alive()
+                            and bool(snapshots[worker_id].get("current_candidate_id"))
+                            for worker_id, process in processes.items()
+                        )
+                        current_items = [
+                            str(snapshot.get("current_candidate_id"))
+                            for snapshot in snapshots.values()
+                            if snapshot.get("current_candidate_id")
+                        ]
+                        progress.update({
+                            "configured_workers": workers,
+                            "started_workers": sum(
+                                process.pid is not None for process in processes.values()
+                            ),
+                            "alive_workers": alive_workers,
+                            "actual_workers": alive_workers,
+                            "active_workers": active_workers,
+                            "idle_workers": max(0, alive_workers - active_workers),
+                            "crashed_workers": sum(restart_counts.values()),
+                            "restart_count": sum(restart_counts.values()),
+                            "model_workers": alive_workers,
+                            "retired_workers": len(retired_workers),
+                            "current_item": ", ".join(current_items),
+                        })
+                        progress["worker_restart_counts"] = dict(restart_counts)
+                        print(json.dumps(progress, ensure_ascii=False, sort_keys=True), flush=True)
+                    except (OSError, sqlite3.Error):
+                        pass
+                    last_progress = now
+                for process in processes.values():
+                    process.join(timeout=0.1)
+                while True:
+                    try:
+                        report = dict(report_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                    worker_reports[int(report["worker_id"])] = report
+                replacement_started = False
+                for worker_id, process in tuple(processes.items()):
+                    if process.is_alive() or process.exitcode is None:
+                        continue
+                    previous = process_history[worker_id]
+                    if previous and previous[-1]["pid"] == process.pid:
+                        continue
+                    status = read_worker_status(out, worker_id)
+                    lifecycle = str(status.get("lifecycle") or "")
+                    exit_code = process.exitcode
+                    previous.append(
+                        {
+                            "pid": process.pid,
+                            "exit_code": exit_code,
+                            "lifecycle": lifecycle or "missing_heartbeat",
+                            "restart_count": restart_counts[worker_id],
+                        }
+                    )
+                    unexpected = (
+                        not stop_event.is_set()
+                        and (exit_code != 0 or lifecycle == "failed" or not lifecycle)
+                    )
+                    if not unexpected:
+                        continue
+                    candidate_id = status.get("current_candidate_id")
+                    requeued = recover_worker_claim(
+                        db,
+                        run_id,
+                        worker_id=worker_id,
+                        candidate_id=str(candidate_id) if candidate_id else None,
+                        reason=f"exit_code={exit_code};lifecycle={lifecycle or 'unknown'}",
+                    )
+                    restarted_claim_count += int(requeued)
+                    if restart_counts[worker_id] >= max_worker_restarts:
+                        status.update(
+                            {
+                                "lifecycle": "restart_exhausted",
+                                "error_message": (
+                                    f"worker exited unexpectedly; max restarts={max_worker_restarts}"
+                                ),
+                                "finished_at": contract.now_iso(),
+                            }
+                        )
+                        write_worker_status(out, worker_id, status)
+                        retired_workers[worker_id] = {
+                            "exit_code": exit_code,
+                            "restart_count": restart_counts[worker_id],
+                            "requeued_interrupted_claim": requeued,
+                            "reason": f"exit_code={exit_code};lifecycle={lifecycle or 'unknown'}",
+                        }
+                        # Isolate only the exhausted slot.  The old behaviour
+                        # set the shared stop event here, terminating healthy
+                        # workers and stranding committed queue items.
+                        continue
+                    restart_counts[worker_id] += 1
+                    status.update(
+                        {
+                            "lifecycle": "restarting",
+                            "restart_count": restart_counts[worker_id],
+                            "requeued_interrupted_claim": requeued,
+                            "restart_reason": f"exit_code={exit_code};lifecycle={lifecycle or 'unknown'}",
+                        }
+                    )
+                    write_worker_status(out, worker_id, status)
+                    replacement = make_process(worker_id, restart_counts[worker_id])
+                    processes[worker_id] = replacement
+                    replacement.start()
+                    replacement_started = True
+                if not any(process.is_alive() for process in processes.values()):
+                    if not replacement_started:
+                        try:
+                            remaining = int(
+                                stage_progress_payload(
+                                    db, run_id, worker_id=0, current_item="",
+                                )["remaining"]
+                            )
+                        except (OSError, sqlite3.Error):
+                            remaining = 0
+                        recovery_worker_ids = sorted(
+                            set(processes) - set(retired_workers)
+                        )
+                        if remaining > 0 and recovery_worker_ids:
+                            # A healthy worker may have observed an empty queue
+                            # just before the crashed worker's claim was put
+                            # back.  Reuse one surviving slot to drain it.
+                            recovery_worker_id = recovery_worker_ids[0]
+                            replacement = make_process(
+                                recovery_worker_id,
+                                restart_counts[recovery_worker_id],
+                            )
+                            processes[recovery_worker_id] = replacement
+                            replacement.start()
+                            recovery_spawn_count += 1
+                            continue
+                        break
         except KeyboardInterrupt:
             interrupted = True
             stop_event.set()
-            for process in processes:
+            for process in processes.values():
                 if process.is_alive():
                     process.terminate()
-            for process in processes:
+            for process in processes.values():
                 process.join(timeout=10)
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
-    reports: list[dict[str, Any]] = []
-    for _ in processes:
+    while True:
         try:
-            reports.append(dict(report_queue.get(timeout=1.0)))
+            report = dict(report_queue.get_nowait())
         except queue.Empty:
             break
+        worker_reports[int(report["worker_id"])] = report
     reset_interrupted_items(db, run_id)
     counts = finalize_run(
         db,
@@ -1035,17 +1340,23 @@ def run_workers(
         max_attempts=max_attempts,
         interrupted=interrupted,
     )
-    process_exit_codes = {process.name: process.exitcode for process in processes}
+    exit_codes_by_worker = {
+        worker_id: process.exitcode for worker_id, process in processes.items()
+    }
+    process_exit_codes = {
+        process.name: process.exitcode for process in processes.values()
+    }
     expected_count = counts["total"]
     readback = contract.readback_run(db, run_id, expected_count=expected_count)
     db_checks = database_checks(db)
-    worker_reports = sorted(reports, key=lambda item: int(item["worker_id"]))
-    workers_healthy = (
-        len(worker_reports) == workers
-        and all(item["lifecycle"] == "completed" for item in worker_reports)
-        and all(int(item["model_load_count"]) == 1 for item in worker_reports)
-        and all(code == 0 for code in process_exit_codes.values())
+    report_rows = sorted(worker_reports.values(), key=lambda item: int(item["worker_id"]))
+    supervisor_health = worker_supervisor_health(
+        workers=workers,
+        worker_reports=worker_reports,
+        exit_codes=exit_codes_by_worker,
+        retired_worker_ids=set(retired_workers),
     )
+    workers_healthy = bool(supervisor_health["healthy"])
     passed = (
         not interrupted
         and expected_count > 0
@@ -1064,8 +1375,15 @@ def run_workers(
         "scheduling_mode": "dynamic_database_claim",
         "max_attempts": max_attempts,
         "counts": counts,
-        "worker_reports": worker_reports,
+        "worker_reports": report_rows,
         "process_exit_codes": process_exit_codes,
+        "worker_restart_counts": restart_counts,
+        "worker_process_history": process_history,
+        "restarted_claim_count": restarted_claim_count,
+        "recovery_spawn_count": recovery_spawn_count,
+        "retired_workers": retired_workers,
+        "degraded_worker_recovery": supervisor_health["degraded"],
+        "worker_supervisor_health": supervisor_health,
         "workers_healthy": workers_healthy,
         "interrupted": interrupted,
         "readback": readback,

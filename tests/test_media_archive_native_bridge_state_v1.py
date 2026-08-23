@@ -22,6 +22,7 @@ from media_archive_image_video_ui.native_bridge import (  # noqa: E402
     existing_libraries,
     estimate_task_remaining,
     human_duration,
+    run_favorite_collection,
     run_person_cluster_catalog,
     run_person_cluster_search,
     run_search,
@@ -36,6 +37,7 @@ from media_archive_image_video_ui.native_bridge import (  # noqa: E402
     task_pipeline,
 )
 from media_archive_image_video_ui import native_bridge  # noqa: E402
+from media_archive_image_video_ui.repository import ReadonlyMediaRepository  # noqa: E402
 
 
 class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
@@ -156,8 +158,14 @@ class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
 
     def test_person_cluster_search_reads_existing_cluster_without_model(self) -> None:
         class FakeRepository:
-            def person_cluster_results(self, cluster_id, media_type, offset, limit):
-                self.call = (cluster_id, media_type, offset, limit)
+            def person_cluster_results(
+                self, cluster_id, media_type, offset, limit,
+                source_content_id=None, extra_visual_unit_ids=(), extra_person_id="",
+            ):
+                self.call = (
+                    cluster_id, media_type, offset, limit, source_content_id,
+                    list(extra_visual_unit_ids), extra_person_id,
+                )
                 return {
                     "total": 1, "offset": 0, "limit": 30,
                     "next_offset": None, "count_by_media": {"video": 1},
@@ -196,7 +204,41 @@ class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
             report["result_items"][0]["preview_segment_start_timecode"],
             "00:07.000",
         )
-        self.assertEqual(repository.call, ("cluster-1", "all", 0, 30))
+        self.assertEqual(
+            repository.call,
+            ("cluster-1", "all", 0, 30, None, [], ""),
+        )
+
+    def test_favorite_collection_reuses_existing_annotations_without_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.mov"; source.write_bytes(b"source")
+            preview = root / "preview.jpg"; preview.write_bytes(b"preview")
+            database = root / "media_archive.sqlite"
+            con = sqlite3.connect(database)
+            con.executescript(
+                "CREATE TABLE source_assets(source_content_id TEXT PRIMARY KEY,relative_path TEXT,absolute_path TEXT,media_type TEXT);"
+                "CREATE TABLE user_asset_annotations(task_id TEXT,source_content_id TEXT,tags_json TEXT,note TEXT,favorite INTEGER,rating INTEGER,ignored INTEGER,updated_at REAL);"
+                "CREATE TABLE derived_assets(derived_id TEXT PRIMARY KEY,derived_path TEXT,time_position_ms INTEGER);"
+                "CREATE TABLE visual_units(visual_unit_id TEXT PRIMARY KEY,source_content_id TEXT,derived_id TEXT,time_position_ms INTEGER,near_black INTEGER);"
+            )
+            con.execute("INSERT INTO source_assets VALUES(?,?,?,?)", ("source-1", "folder/source.mov", str(source), "video"))
+            con.execute("INSERT INTO user_asset_annotations VALUES(?,?,?,?,?,?,?,?)", ("task-1", "source-1", '["人物甲","采访"]', "优先剪辑", 1, 5, 0, 123.0))
+            con.execute("INSERT INTO derived_assets VALUES(?,?,?)", ("derived-1", str(preview), 12000))
+            con.execute("INSERT INTO visual_units VALUES(?,?,?,?,?)", ("visual-1", "source-1", "derived-1", -1, 0))
+            con.commit(); con.close()
+
+            with mock.patch.object(native_bridge, "task_id_for_database", return_value="task-1"):
+                report = run_favorite_collection(ReadonlyMediaRepository(database), 0, 200)
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["result_total_count"], 1)
+        self.assertEqual(report["result_items"][0]["time_position_ms"], 12000)
+        self.assertEqual(report["result_items"][0]["user_annotation"]["tags"], ["人物甲", "采访"])
+        self.assertEqual(report["result_items"][0]["user_annotation"]["note"], "优先剪辑")
+        self.assertFalse(report["database_write"])
+        self.assertFalse(report["model_run"])
+        self.assertFalse(report["original_media_read"])
 
     def test_object_label_reason_requires_concrete_label_evidence(self) -> None:
         payload = {
@@ -624,6 +666,9 @@ class MediaArchiveNativeBridgeStateTests(unittest.TestCase):
         self.assertEqual(report["task_name"], "旧素材任务")
         self.assertEqual(report["elapsed_seconds"], 1.0)
         self.assertEqual(report["elapsed_human"], "1秒")
+        self.assertGreater(report["index_storage"]["total_bytes"], 0)
+        self.assertEqual(report["index_storage"]["total_file_count"], 3)
+        self.assertFalse(report["index_storage"]["source_root_scanned"])
         self.assertEqual(report["pipeline"]["stages"][0]["done"], 2)
         self.assertIn("少于1秒", report["pipeline"]["stages"][0]["description"])
         self.assertFalse(report["database_write"])

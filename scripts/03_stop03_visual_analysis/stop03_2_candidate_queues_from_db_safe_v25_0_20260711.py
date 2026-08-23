@@ -22,8 +22,8 @@ from PIL import Image, ImageOps
 SCRIPT_VERSION = "stop03_2_candidate_queues_from_db_safe_v25_0_20260711"
 POLICY_VERSION = "stop03_2_generic_high_value_policy_v25"
 STAGE = "stop03_2_candidate_queues_v25"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "stop03_2_high_value_policy_v25.json"
 RULE_DOCUMENT = PROJECT_ROOT / "docs" / "pipeline_rules" / "STOP03_2_GENERIC_HIGH_VALUE_RULES_V25.md"

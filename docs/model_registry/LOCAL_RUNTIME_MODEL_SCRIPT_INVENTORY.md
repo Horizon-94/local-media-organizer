@@ -25,8 +25,8 @@
 同时必须优先读取：
 
 ```text
-/Users/yourname/Documents/AI-Local/media-archive-clean/docs/model_registry/LOCAL_MODEL_REGISTRY.md
-/Users/yourname/Documents/AI-Local/media-archive-clean/docs/model_registry/LOCAL_RUNTIME_MODEL_SCRIPT_INVENTORY.md
+$APP_RESOURCES/Pipeline/docs/model_registry/LOCAL_MODEL_REGISTRY.md
+$APP_RESOURCES/Pipeline/docs/model_registry/LOCAL_RUNTIME_MODEL_SCRIPT_INVENTORY.md
 ```
 
 禁止：
@@ -60,14 +60,14 @@
 
 | 类型 | 路径 | 说明 |
 |---|---|---|
-| 项目根目录 | `/Users/yourname/Documents/AI-Local/media-archive-clean` | 当前正式项目 |
-| 模型根目录 | `/Users/yourname/Documents/model` | 正式模型统一根目录 |
-| 正式 Python 环境目录 | `/Users/yourname/Documents/AI-Local/envs` | 当前主要运行环境 |
-| 旧/备份 App 环境 | `/Users/yourname/Documents/AI-Standalone-Apps/envs` | 复查，不默认使用 |
-| Qwen 旧 runtime | `/Users/yourname/Documents/AI-Local/runtimes/qwenvl/.venv` | 复查，不默认使用 |
-| 测试输出根目录 | `/Users/yourname/Documents/001DZLtestbaogao` | 当前测试输出 |
-| 提示词注册表 | `/Users/yourname/Documents/本地素材大整理配置/提示词注册表` | OCR_TRIGGER / A_CORE 等 |
-| 建议本清单位置 | `/Users/yourname/Documents/AI-Local/media-archive-clean/docs/model_registry/LOCAL_RUNTIME_MODEL_SCRIPT_INVENTORY.md` | 固定清单 |
+| 项目根目录 | `$APP_RESOURCES/Pipeline` | 当前正式项目 |
+| 模型根目录 | `$MODEL_ROOT` | 正式模型统一根目录 |
+| 正式 Python 环境目录 | `$BUNDLED_PIPELINE_ENVS` | 当前主要运行环境 |
+| 旧/备份 App 环境 | `$USER_HOME/Documents/AI-Standalone-Apps/envs` | 复查，不默认使用 |
+| Qwen 旧 runtime | `$USER_HOME/Documents/AI-Local/runtimes/qwenvl/.venv` | 复查，不默认使用 |
+| 测试输出根目录 | `$USER_HOME/Documents/001DZLtestbaogao` | 当前测试输出 |
+| 提示词注册表 | `$USER_HOME/Documents/本地素材大整理配置/提示词注册表` | OCR_TRIGGER / A_CORE 等 |
+| 建议本清单位置 | `$APP_RESOURCES/Pipeline/docs/model_registry/LOCAL_RUNTIME_MODEL_SCRIPT_INVENTORY.md` | 固定清单 |
 
 ---
 
@@ -75,23 +75,23 @@
 
 | 用途 | 模型 | 正式路径 | 状态 |
 |---|---|---|---|
-| Qwen-VL 图像理解 | Qwen3-VL-4B-Instruct-4bit | `/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit/model.safetensors` | 正式 |
-| Whisper 转写 | whisper-large-v3-turbo | `/Users/yourname/Documents/model/whisper-large-v3-turbo/weights.safetensors` | 正式 |
-| 文本向量 | Qwen3-Embedding-0.6B | `/Users/yourname/Documents/model/Qwen3-Embedding-0.6B/model.safetensors` | 正式 |
-| 视觉向量 | OpenCLIP ViT-B-32 LAION2B | `/Users/yourname/Documents/model/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors` | 正式 |
-| YOLOE 检测 | yoloe26-l-seg | `/Users/yourname/Documents/model/yoloe26-l-seg/weights/yoloe26-l-seg.pt` | 正式，但需修 CLIP shim |
-| VAD | silero-vad | `/Users/yourname/Documents/model/silero-vad/data/silero_vad.onnx` | 正式候选 |
-| VAD | silero-vad op18 | `/Users/yourname/Documents/model/silero-vad/data/silero_vad_op18_ifless.onnx` | 正式候选 |
-| VAD | silero-vad 16k | `/Users/yourname/Documents/model/silero-vad/data/silero_vad_16k.safetensors` | 正式候选 |
-| VAD | silero-vad 16k op15 | `/Users/yourname/Documents/model/silero-vad/data/silero_vad_16k_op15.onnx` | 正式候选 |
-| VAD | silero-vad half | `/Users/yourname/Documents/model/silero-vad/data/silero_vad_half.onnx` | 正式候选 |
-| YOLOv8 备用 | yolov8n | `/Users/yourname/Documents/AI-Local/models/yolo/yolov8n.pt` | 备用，不默认替代 YOLOE |
+| Qwen-VL 图像理解 | Qwen3-VL-4B-Instruct-4bit | `$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit/model.safetensors` | 正式 |
+| Whisper 转写 | whisper-large-v3-turbo | `$MODEL_ROOT/whisper-large-v3-turbo/weights.safetensors` | 正式 |
+| 文本向量 | Qwen3-Embedding-0.6B | `$MODEL_ROOT/Qwen3-Embedding-0.6B/model.safetensors` | 正式 |
+| 视觉向量 | OpenCLIP ViT-B-32 LAION2B | `$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors` | 正式 |
+| YOLOE 检测 | yoloe26-l-seg | `$MODEL_ROOT/yoloe26-l-seg/weights/yoloe26-l-seg.pt` | 正式，但需修 CLIP shim |
+| VAD | silero-vad | `$MODEL_ROOT/silero-vad/data/silero_vad.onnx` | 正式候选 |
+| VAD | silero-vad op18 | `$MODEL_ROOT/silero-vad/data/silero_vad_op18_ifless.onnx` | 正式候选 |
+| VAD | silero-vad 16k | `$MODEL_ROOT/silero-vad/data/silero_vad_16k.safetensors` | 正式候选 |
+| VAD | silero-vad 16k op15 | `$MODEL_ROOT/silero-vad/data/silero_vad_16k_op15.onnx` | 正式候选 |
+| VAD | silero-vad half | `$MODEL_ROOT/silero-vad/data/silero_vad_half.onnx` | 正式候选 |
+| YOLOv8 备用 | yolov8n | `$USER_HOME/Documents/AI-Local/models/yolo/yolov8n.pt` | 备用，不默认替代 YOLOE |
 
 备份模型副本存在于：
 
 ```text
-/Users/yourname/Documents/AI-Local/models
-/Users/yourname/Documents/AI-Standalone-Apps/models
+$USER_HOME/Documents/AI-Local/models
+$USER_HOME/Documents/AI-Standalone-Apps/models
 ```
 
 这些副本暂不删除，先标记为 `backup_model_copy_review`。
@@ -102,19 +102,19 @@
 
 | 用途 | 环境名 | Python 路径 | 状态 |
 |---|---|---|---|
-| Qwen-VL | qwen-vl | `/Users/yourname/Documents/AI-Local/envs/qwen-vl/bin/python` | 正式 |
-| Whisper | whisper | `/Users/yourname/Documents/AI-Local/envs/whisper/bin/python` | 正式 |
-| YOLOE / YOLO | media-archive-v06-yolo | `/Users/yourname/Documents/AI-Local/envs/media-archive-v06-yolo/bin/python` | 正式，但默认缺 `clip` |
-| OpenCLIP 视觉向量 | media-archive-v06-visual | `/Users/yourname/Documents/AI-Local/envs/media-archive-v06-visual/bin/python` | 正式 |
-| OCR | media-archive-v06-ocr | `/Users/yourname/Documents/AI-Local/envs/media-archive-v06-ocr/bin/python` | 正式 |
-| VAD | media-archive-v06-vad | `/Users/yourname/Documents/AI-Local/envs/media-archive-v06-vad/bin/python` | 正式 |
-| Embedding | media-archive-embedding | `/Users/yourname/Documents/AI-Local/envs/media-archive-embedding/bin/python` | 正式 |
-| ModelScope | modelscope | `/Users/yourname/Documents/AI-Local/envs/modelscope/bin/python` | 复查，不默认使用 |
-| 旧 YOLO | media-archive-yolo | `/Users/yourname/Documents/AI-Local/envs/media-archive-yolo/bin/python` | 复查，不默认使用 |
-| 旧 Qwen runtime | runtimes/qwenvl/.venv | `/Users/yourname/Documents/AI-Local/runtimes/qwenvl/.venv/bin/python` | 复查，不默认使用 |
-| Standalone Qwen | AI-Standalone-Apps/envs/qwen-vl | `/Users/yourname/Documents/AI-Standalone-Apps/envs/qwen-vl/bin/python` | 复查，不默认使用 |
-| Standalone Whisper | AI-Standalone-Apps/envs/whisper | `/Users/yourname/Documents/AI-Standalone-Apps/envs/whisper/bin/python` | 复查，不默认使用 |
-| YOLOE 模型侧下载环境 | yoloe26-l-seg/.venv_download | `/Users/yourname/Documents/model/yoloe26-l-seg/.venv_download/bin/python` | 只作 CLIP 来源，不作正式运行环境 |
+| Qwen-VL | qwen-vl | `$BUNDLED_PIPELINE_ENVS/qwen-vl/bin/python` | 正式 |
+| Whisper | whisper | `$BUNDLED_PIPELINE_ENVS/whisper/bin/python` | 正式 |
+| YOLOE / YOLO | media-archive-v06-yolo | `$BUNDLED_PIPELINE_ENVS/media-archive-v06-yolo/bin/python` | 正式，但默认缺 `clip` |
+| OpenCLIP 视觉向量 | media-archive-v06-visual | `$BUNDLED_PIPELINE_ENVS/media-archive-v06-visual/bin/python` | 正式 |
+| OCR | media-archive-v06-ocr | `$BUNDLED_PIPELINE_ENVS/media-archive-v06-ocr/bin/python` | 正式 |
+| VAD | media-archive-v06-vad | `$BUNDLED_PIPELINE_ENVS/media-archive-v06-vad/bin/python` | 正式 |
+| Embedding | media-archive-embedding | `$BUNDLED_PIPELINE_ENVS/media-archive-embedding/bin/python` | 正式 |
+| ModelScope | modelscope | `$BUNDLED_PIPELINE_ENVS/modelscope/bin/python` | 复查，不默认使用 |
+| 旧 YOLO | media-archive-yolo | `$BUNDLED_PIPELINE_ENVS/media-archive-yolo/bin/python` | 复查，不默认使用 |
+| 旧 Qwen runtime | runtimes/qwenvl/.venv | `$USER_HOME/Documents/AI-Local/runtimes/qwenvl/.venv/bin/python` | 复查，不默认使用 |
+| Standalone Qwen | AI-Standalone-Apps/envs/qwen-vl | `$USER_HOME/Documents/AI-Standalone-Apps/envs/qwen-vl/bin/python` | 复查，不默认使用 |
+| Standalone Whisper | AI-Standalone-Apps/envs/whisper | `$USER_HOME/Documents/AI-Standalone-Apps/envs/whisper/bin/python` | 复查，不默认使用 |
+| YOLOE 模型侧下载环境 | yoloe26-l-seg/.venv_download | `$MODEL_ROOT/yoloe26-l-seg/.venv_download/bin/python` | 只作 CLIP 来源，不作正式运行环境 |
 
 ---
 
@@ -123,7 +123,7 @@
 当前确认：
 
 ```text
-/Users/yourname/Documents/AI-Local/envs/media-archive-v06-yolo
+$BUNDLED_PIPELINE_ENVS/media-archive-v06-yolo
 ```
 
 有：
@@ -143,7 +143,7 @@ clip
 同时：
 
 ```text
-/Users/yourname/Documents/model/yoloe26-l-seg/.venv_download
+$MODEL_ROOT/yoloe26-l-seg/.venv_download
 ```
 
 有：
@@ -158,7 +158,7 @@ torchvision
 禁止做法：
 
 ```text
-不能把 /Users/yourname/Documents/model/yoloe26-l-seg/.venv_download/lib/python3.9/site-packages
+不能把 $MODEL_ROOT/yoloe26-l-seg/.venv_download/lib/python3.9/site-packages
 整个加入 PYTHONPATH。
 ```
 
@@ -175,13 +175,13 @@ torchvision
 建议 shim 路径：
 
 ```text
-/Users/yourname/Documents/AI-Local/local_python_shims/yoloe_clip_only
+$USER_HOME/Documents/AI-Local/local_python_shims/yoloe_clip_only
 ```
 
 对应 clip 来源：
 
 ```text
-/Users/yourname/Documents/model/yoloe26-l-seg/.venv_download/lib/python3.9/site-packages/clip
+$MODEL_ROOT/yoloe26-l-seg/.venv_download/lib/python3.9/site-packages/clip
 ```
 
 YOLOE 运行前必须打印并验收：
@@ -202,8 +202,8 @@ will_download: false
 当前已确认存在：
 
 ```text
-/Users/yourname/Documents/本地素材大整理配置/提示词注册表/当前提示词_OCR_TRIGGER_v1.0.json
-/Users/yourname/Documents/本地素材大整理配置/提示词注册表/提示词_20260704_OCR_TRIGGER_v1.0.json
+$USER_HOME/Documents/本地素材大整理配置/提示词注册表/当前提示词_OCR_TRIGGER_v1.0.json
+$USER_HOME/Documents/本地素材大整理配置/提示词注册表/提示词_20260704_OCR_TRIGGER_v1.0.json
 ```
 
 YOLOE 关键词 / OCR_TRIGGER 相关任务必须优先使用上述本地 JSON，不允许从聊天上下文猜测。
@@ -276,11 +276,11 @@ YOLOE 关键词 / OCR_TRIGGER 相关任务必须优先使用上述本地 JSON，
 以下内容暂时不删除：
 
 ```text
-/Users/yourname/Documents/model
-/Users/yourname/Documents/AI-Local/envs
-/Users/yourname/Documents/AI-Standalone-Apps/envs
-/Users/yourname/Documents/AI-Local/runtimes
-/Users/yourname/Documents/001DZLtestbaogao
+$MODEL_ROOT
+$BUNDLED_PIPELINE_ENVS
+$USER_HOME/Documents/AI-Standalone-Apps/envs
+$USER_HOME/Documents/AI-Local/runtimes
+$USER_HOME/Documents/001DZLtestbaogao
 ```
 
 原因：还没有经过最终删除候选清单确认。

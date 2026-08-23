@@ -17,14 +17,14 @@ import stop03_5a_joint_db_quality_audit_v1 as quality
 
 
 CONTRACT_VERSION = "stop03_5b_unified_evidence_staging_v1"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_5b_unified_evidence_staging_v1.json"
 DEFAULT_MIGRATION = (
     PROJECT_ROOT / "migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql"
 )
 DEFAULT_OUT = Path(
-    "/Users/yourname/Documents/AI-Local/test-output/"
+    "$USER_HOME/Documents/AI-Local/test-output/"
     "stop03_5b_unified_evidence_staging_v1"
 )
 

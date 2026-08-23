@@ -809,11 +809,29 @@ def run_workers(
                 with active_lock:
                     active -= 1
             counts = refresh_counts(db, run_id)
-            append_jsonl(progress_path, {
+            progress = {
                 "timestamp": utc_now(), "run_id": run_id, "worker_id": worker_id,
                 "last_completed_visual_unit_id": row["visual_unit_id"],
                 "last_status": status, **counts,
-            }, progress_lock)
+            }
+            append_jsonl(progress_path, progress, progress_lock)
+            with active_lock:
+                active_workers = active
+            with progress_lock:
+                print(json.dumps({
+                    "contract": "media_archive_stage_runtime_contract_v1",
+                    "event": "stage_progress",
+                    "completed": counts["success"] + counts["no_face"] + counts["failed"],
+                    "total": sum(counts[key] for key in (
+                        "pending", "running", "success", "no_face", "failed"
+                    )),
+                    "success": counts["success"] + counts["no_face"],
+                    "skipped": 0,
+                    "failed": counts["failed"],
+                    "current_item": str(row["visual_unit_id"]),
+                    "actual_workers": active_workers,
+                    "model_workers": workers,
+                }, ensure_ascii=False), flush=True)
         return {"worker_id": worker_id, "completed": completed, "failed": failed}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:

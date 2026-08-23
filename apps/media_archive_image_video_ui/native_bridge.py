@@ -25,8 +25,9 @@ from .pipeline_orchestrator import (
     validate_stage_acceptance,
 )
 from .local_person_annotations import (
-    annotation_path, detach_cluster, grouped_catalog, load_annotations,
-    merge_identity, name_identity, resolve_clusters,
+    add_visual_membership, annotation_path, create_identity, detach_cluster,
+    ensure_identity, grouped_catalog, load_annotations, merge_identity,
+    name_identity, remove_visual_membership, resolve_clusters,
 )
 from .central_database import (
     asset_annotations,
@@ -41,6 +42,14 @@ from .central_database import (
     task_id_for_database,
 )
 from .processing_profile import build_processing_profile, detect_hardware, save_processing_profile
+from .person_track_suggestions import load_database_suggestions
+from .yoloe_keywords import (
+    load_registry as load_yoloe_registry,
+    materialise_registry as materialise_yoloe_registry,
+    normalise_entries as normalise_yoloe_entries,
+    normalise_profile as normalise_yoloe_profile,
+    profile_from_registry as yoloe_profile_from_registry,
+)
 from .repository import ReadonlyMediaRepository
 from .runtime_contract import (
     default_model_root,
@@ -58,7 +67,7 @@ from .storage_audit import (
 
 
 APP_NAME = "本地数据库"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.3"
 _RESOURCE_CACHE: tuple[float, int | None, dict[str, Any]] = (0.0, None, {})
 
 
@@ -348,6 +357,10 @@ def task_detail(task_path: Path) -> dict[str, Any]:
     }
     acceptance_errors = task_output_acceptance(detail_config, state)
     metrics = repository.stage_metrics()
+    # Directory size is intentionally calculated only for an explicit history
+    # detail request.  existing_libraries() is refreshed with the main UI and
+    # must never walk a large index directory on every refresh.
+    storage = audit_task_storage(resolved_task, largest_limit=1)
     return {
         "status": "PASS",
         "task_id": str(task.get("task_id") or resolved_task.parent.name),
@@ -360,6 +373,12 @@ def task_detail(task_path: Path) -> dict[str, Any]:
         "finished_at": epoch_timecode(state.get("finished_at_epoch")),
         "elapsed_seconds": _state_elapsed_seconds(state),
         "elapsed_human": human_duration(_state_elapsed_seconds(state)),
+        "index_storage": {
+            "total_bytes": int(storage["total_bytes"]),
+            "total_file_count": int(storage["total_file_count"]),
+            "status": str(storage["status"]),
+            "source_root_scanned": bool(storage["source_root_scanned"]),
+        },
         "pipeline": task_pipeline(state, acceptance_errors, metrics),
         "error": str(state.get("error") or task.get("error") or ""),
         "database_write": False,
@@ -768,6 +787,38 @@ def _timelapse_payload(repository: ReadonlyMediaRepository) -> dict[str, Any]:
     return payload
 
 
+def _yoloe_registry_path(config: dict[str, Any]) -> Path:
+    contract_text = str(config.get("runtime_contract_path") or "").strip()
+    if not contract_text:
+        return Path(__file__).resolve().parents[2] / "configs/yoloe_keyword_registry_default_v1.json"
+    contract_path = Path(contract_text).expanduser().absolute()
+    contract = load_runtime_contract(contract_path, model_root=selected_model_root())
+    configured = str((contract.get("configs") or {}).get("yoloe_registry") or "").strip()
+    if configured:
+        return Path(configured).expanduser().absolute()
+    return Path(__file__).resolve().parents[2] / "configs/yoloe_keyword_registry_default_v1.json"
+
+
+def _effective_yoloe_profile(config: dict[str, Any], profile: Any = None) -> dict[str, Any]:
+    registry = load_yoloe_registry(_yoloe_registry_path(config))
+    value = profile.get("yoloe_keywords") if isinstance(profile, dict) else None
+    return normalise_yoloe_profile(value, fallback_registry=registry)
+
+
+def _materialise_task_yoloe_registry(
+    config: dict[str, Any], runtime: dict[str, Any], profile: dict[str, Any], target_dir: Path,
+) -> None:
+    profile["yoloe_keywords"] = _effective_yoloe_profile(config, profile)
+    configured = str((runtime.get("configs") or {}).get("yoloe_registry") or "").strip()
+    registry_path = (
+        Path(configured) if configured
+        else Path(target_dir) / "yoloe_keyword_registry_default_v1.json"
+    )
+    base_registry = registry_path if registry_path.is_file() else _yoloe_registry_path(config)
+    materialise_yoloe_registry(registry_path, base_registry, profile["yoloe_keywords"])
+    runtime.setdefault("configs", {})["yoloe_registry"] = str(registry_path.absolute())
+
+
 def snapshot(
     config: dict[str, Any], repository: Optional[ReadonlyMediaRepository], manager: Optional[SearchJobManager],
 ) -> dict[str, Any]:
@@ -778,6 +829,10 @@ def snapshot(
             saved_profile = json.loads(profile_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             saved_profile = None
+    yoloe_keyword_profile = _effective_yoloe_profile(config, saved_profile)
+    yoloe_default_keyword_profile = yoloe_profile_from_registry(
+        load_yoloe_registry(_yoloe_registry_path(config))
+    )
     current_task = task_state(config)
     acceptance_errors = task_output_acceptance(config, current_task)
     configured = repository is not None and manager is not None
@@ -902,6 +957,8 @@ def snapshot(
         "saved_profile_path": str(profile_path),
         "has_saved_profile": saved_profile is not None,
         "saved_profile": saved_profile,
+        "yoloe_keyword_profile": yoloe_keyword_profile,
+        "yoloe_default_keyword_profile": yoloe_default_keyword_profile,
         "central_database_write": False,
         "model_run": False,
         "original_media_read": False,
@@ -920,6 +977,21 @@ def save_profile(config: dict[str, Any], args: argparse.Namespace) -> dict[str, 
         high_value_mode=args.high_value_mode,
         image_scope=args.image_scope,
     )
+    registry = load_yoloe_registry(_yoloe_registry_path(config))
+    default_keywords = yoloe_profile_from_registry(registry)
+    profile["yoloe_keywords"] = normalise_yoloe_profile({
+        "enable_b_extended": (
+            getattr(args, "yoloe_enable_b_extended", None) == "true"
+            if getattr(args, "yoloe_enable_b_extended", None) is not None
+            else default_keywords["enable_b_extended"]
+        ),
+        "a_core": normalise_yoloe_entries(
+            getattr(args, "yoloe_a_keywords", default_keywords["a_core"]), layer_name="A 层"
+        ),
+        "b_extended": normalise_yoloe_entries(
+            getattr(args, "yoloe_b_keywords", default_keywords["b_extended"]), layer_name="B 层"
+        ),
+    }, fallback_registry=registry)
     # A default processing profile belongs to the application, not to whichever
     # library happens to be active while the user opens Settings.  New-task
     # creation reads this same path.
@@ -975,9 +1047,11 @@ def save_task_draft(config: dict[str, Any], args: argparse.Namespace) -> dict[st
 def _load_or_default_profile(config: dict[str, Any]) -> dict[str, Any]:
     path = application_state_root() / "profiles" / "processing_profile_v1.json"
     if path.is_file():
-        return json.loads(path.read_text(encoding="utf-8"))
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        profile["yoloe_keywords"] = _effective_yoloe_profile(config, profile)
+        return profile
     hardware = detect_hardware()
-    return build_processing_profile(
+    profile = build_processing_profile(
         hardware,
         scheduler_mode="stage_serial",
         model_workers=hardware["recommendation"]["model_workers"],
@@ -986,6 +1060,8 @@ def _load_or_default_profile(config: dict[str, Any]) -> dict[str, Any]:
         high_value_mode="target_15",
         image_scope="frozen_current_policy",
     )
+    profile["yoloe_keywords"] = _effective_yoloe_profile(config)
+    return profile
 
 
 def _helper_command(config_path: Path, command: str, *arguments: str) -> list[str]:
@@ -1126,6 +1202,7 @@ def start_existing_task(
             requested_scheduler_mode=str(profile.get("scheduler", {}).get("mode") or "stage_serial"),
             effective_config_dir=repair_dir / "runtime_configs",
         )
+        _materialise_task_yoloe_registry(config, runtime, profile, repair_dir / "runtime_configs")
         payload = {
             "task_contract": "media_archive_image_video_maintenance_task_v1",
             "task_id": task_id, "name": str(library_task.get("name") or "未命名素材库"),
@@ -1140,7 +1217,7 @@ def start_existing_task(
             "stage_output_root": str(stage_output_root),
             "state_path": str(state_path), "log_path": str(log_path),
             "profile": profile, "runtime": runtime, "status": "queued",
-            "software_version": "1.2.0",
+            "software_version": APP_VERSION,
             "central_contract_required": True,
             "strong_fingerprint_required": True,
             "created_at": created_at,
@@ -1236,6 +1313,7 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
         requested_scheduler_mode=requested_scheduler,
         effective_config_dir=task_dir / "runtime_configs",
     )
+    _materialise_task_yoloe_registry(config, runtime, profile, task_dir / "runtime_configs")
     payload = {
         "task_contract": "media_archive_image_video_task_v1",
         "task_id": task_id,
@@ -1251,7 +1329,7 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
         "status": "queued",
         "profile": profile,
         "runtime": runtime,
-        "software_version": "1.2.0",
+        "software_version": APP_VERSION,
         "central_contract_required": True,
         "strong_fingerprint_required": True,
         "created_at": created_at,
@@ -1590,6 +1668,116 @@ def _save_person_annotation_payload(
     save_central_person_annotations(database, task_id, payload)
 
 
+def _manual_person_links(
+    database: Path | None, visual_unit_ids: Sequence[str],
+) -> dict[str, list[dict[str, Any]]]:
+    identifiers = {str(value) for value in visual_unit_ids if str(value)}
+    if not identifiers or database is None:
+        return {}
+    payload = _load_person_annotation_payload(database)[0]
+    identities = dict(payload.get("identities") or {})
+    result: dict[str, list[dict[str, Any]]] = {}
+    for identity_id, memberships in dict(payload.get("visual_memberships") or {}).items():
+        identity = dict(identities.get(identity_id) or {})
+        clean_members = [dict(value or {}) for value in memberships or []]
+        sources = {str(value.get("source_content_id") or "") for value in clean_members}
+        for value in clean_members:
+            visual_id = str(value.get("visual_unit_id") or "")
+            if visual_id not in identifiers:
+                continue
+            result.setdefault(visual_id, []).append({
+                "person_cluster_id": str(identity_id),
+                "member_count": len(clean_members),
+                "distinct_source_count": len({source for source in sources if source}),
+                "cluster_confidence": "human_confirmed",
+                "human_review_status": "confirmed",
+                "display_name": str(identity.get("display_name") or "").strip() or "自建人物",
+                "is_local_identity": True,
+                "manual_assignment": True,
+            })
+    return result
+
+
+def _merge_person_links(
+    machine: dict[str, list[dict[str, Any]]],
+    manual: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    merged = {key: [dict(value) for value in values] for key, values in machine.items()}
+    for visual_id, links in manual.items():
+        existing = {str(value.get("person_cluster_id") or "") for value in merged.get(visual_id, [])}
+        merged.setdefault(visual_id, []).extend(
+            dict(value) for value in links
+            if str(value.get("person_cluster_id") or "") not in existing
+        )
+    return merged
+
+
+def run_source_frame_search(
+    repository: ReadonlyMediaRepository,
+    source_content_id: str,
+    preview_window_ms: int,
+    result_offset: int = 0,
+    result_limit: int = 60,
+) -> dict[str, Any]:
+    """Browse all existing indexed frames for one source, without models."""
+    started = time.monotonic()
+    page = repository.visual_frame_results(
+        source_content_id=source_content_id,
+        offset=result_offset,
+        limit=result_limit,
+    )
+    half_window = max(0, int(preview_window_ms) // 2)
+    items: list[dict[str, Any]] = []
+    for row in page["items"]:
+        position = max(0, int(row.get("time_position_ms") or 0))
+        items.append({
+            "result_id": f"source_frame_{row['visual_unit_id']}",
+            "visual_unit_id": str(row["visual_unit_id"]),
+            "source_content_id": str(row["source_content_id"]),
+            "source_frame_count": int(row.get("source_frame_count") or page["total"]),
+            "result_level": "frame",
+            "derived_id": str(row["derived_id"]),
+            "source_relative_path": str(row.get("relative_path") or ""),
+            "media_type": str(row.get("media_type") or ""),
+            "time_position_ms": position,
+            "timecode": _media_timecode(position),
+            "preview_segment_start_ms": max(0, position - half_window),
+            "preview_segment_start_timecode": _media_timecode(max(0, position - half_window)),
+            "preview_segment_end_timecode": _media_timecode(position + half_window),
+            "preview_path": str(row.get("preview_path") or ""),
+            "source_path": str(row.get("source_path") or ""),
+            "source_online": bool(row.get("source_online")),
+            "can_open_original": bool(row.get("can_open_original")),
+            "score": 1.0,
+            "hybrid_score": None,
+            "openclip_cosine": None,
+            "text_semantic_score": None,
+            "text_preview": f"该视频在 {_media_timecode(position)} 的已索引画面。",
+            "environment_label": "该视频全部索引画面",
+            "hit_reason": "source_timeline",
+            "hit_field": "source_content_id",
+            "relevance_reasons": ["source_timeline"],
+        })
+    visual_ids = [str(row.get("visual_unit_id") or "") for row in items]
+    links = _merge_person_links(
+        repository.person_clusters_for_visual_units(visual_ids),
+        _manual_person_links(getattr(repository, "db_path", None), visual_ids),
+    )
+    for item in items:
+        item["person_clusters"] = links.get(str(item["visual_unit_id"]), [])
+    return {
+        "status": "PASS", "query": "该视频全部索引画面",
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "coverage": None, "result_count": len(items), "result_items": items,
+        "result_total_count": int(page["total"]),
+        "result_offset": int(page["offset"]), "result_limit": int(page["limit"]),
+        "next_result_offset": page["next_offset"],
+        "result_count_by_media": page["count_by_media"],
+        "database_write": False, "model_run": False, "network_used": False,
+        "original_media_read": False,
+    }
+
+
 def run_person_cluster_search(
     repository: ReadonlyMediaRepository,
     person_cluster_id: str,
@@ -1603,19 +1791,33 @@ def run_person_cluster_search(
     started = time.monotonic()
     repository_db = getattr(repository, "db_path", None)
     annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
-        "contract": "media_archive_local_person_annotations_v1", "identities": {}, "cluster_to_identity": {}
+        "contract": "media_archive_local_person_annotations_v1", "identities": {},
+        "cluster_to_identity": {}, "visual_memberships": {},
     }
     resolved_cluster_ids = resolve_clusters(annotations, person_cluster_id)
     cluster_selector: str | list[str] = (
-        resolved_cluster_ids[0] if len(resolved_cluster_ids) == 1 else resolved_cluster_ids
+        resolved_cluster_ids[0] if len(resolved_cluster_ids) == 1
+        else (resolved_cluster_ids or [person_cluster_id])
     )
+    identities = dict(annotations.get("identities") or {})
+    cluster_to_identity = dict(annotations.get("cluster_to_identity") or {})
+    identity_id = (
+        person_cluster_id if person_cluster_id in identities
+        else str(cluster_to_identity.get(person_cluster_id) or "")
+    )
+    manual_memberships = list(
+        dict(annotations.get("visual_memberships") or {}).get(identity_id, [])
+    )
+    extra_visual_ids = [str(value.get("visual_unit_id") or "") for value in manual_memberships]
     if source_content_id:
         page = repository.person_cluster_results(
             cluster_selector, media_type, result_offset, result_limit, source_content_id,
+            extra_visual_ids, identity_id,
         )
     else:
         page = repository.person_cluster_results(
-            cluster_selector, media_type, result_offset, result_limit,
+            cluster_selector, media_type, result_offset, result_limit, None,
+            extra_visual_ids, identity_id,
         )
     half_window = max(0, int(preview_window_ms) // 2)
     items = []
@@ -1625,6 +1827,9 @@ def run_person_cluster_search(
         end_ms = position + half_window
         cluster_id = str(row["person_cluster_id"])
         visual_id = str(row["visual_unit_id"])
+        row_identity_id = str(cluster_to_identity.get(cluster_id) or identity_id or person_cluster_id)
+        identity = dict(identities.get(row_identity_id) or {})
+        person_name = str(identity.get("display_name") or "").strip() or "同一匿名人物"
         items.append({
             "result_id": f"person5e_{cluster_id}_{visual_id}",
             "visual_unit_id": visual_id,
@@ -1657,12 +1862,14 @@ def run_person_cluster_search(
             "hit_field": "person_reid",
             "relevance_reasons": ["same_person_reid"],
             "person_clusters": [{
-                "person_cluster_id": cluster_id,
+                "person_cluster_id": row_identity_id,
                 "member_count": int(row.get("member_count") or 0),
                 "distinct_source_count": int(row.get("distinct_source_count") or 0),
                 "cluster_confidence": str(row.get("cluster_confidence") or ""),
                 "human_review_status": str(row.get("human_review_status") or ""),
-                "display_name": "同一匿名人物",
+                "display_name": person_name,
+                "is_local_identity": row_identity_id in identities,
+                "manual_assignment": visual_id in extra_visual_ids,
             }],
         })
     return {
@@ -1686,6 +1893,276 @@ def run_person_cluster_search(
     }
 
 
+def run_person_track_suggestions(
+    repository: ReadonlyMediaRepository,
+    person_cluster_id: str,
+    media_type: str,
+    preview_window_ms: int,
+    result_offset: int = 0,
+    result_limit: int = 30,
+) -> dict[str, Any]:
+    """Suggest nearby side/back views without changing machine or human identity data."""
+    started = time.monotonic()
+    annotations = _load_person_annotation_payload(repository.db_path)[0]
+    resolved_cluster_ids = resolve_clusters(annotations, person_cluster_id)
+    identities = dict(annotations.get("identities") or {})
+    cluster_to_identity = dict(annotations.get("cluster_to_identity") or {})
+    identity_id = (
+        person_cluster_id if person_cluster_id in identities
+        else str(cluster_to_identity.get(person_cluster_id) or "")
+    )
+    identity = dict(identities.get(identity_id) or {})
+    display_name = str(identity.get("display_name") or "").strip() or "所选待确认人物"
+    existing_manual_ids = {
+        str(value.get("visual_unit_id") or "")
+        for value in dict(annotations.get("visual_memberships") or {}).get(identity_id, [])
+    }
+    suggestions = [
+        value for value in load_database_suggestions(
+            repository.db_path, resolved_cluster_ids or [person_cluster_id]
+        )
+        if value.visual_unit_id not in existing_manual_ids
+    ]
+    if media_type == "image":
+        suggestions = []
+    safe_offset = max(0, int(result_offset))
+    safe_limit = max(1, min(int(result_limit), 100))
+    selected = suggestions[safe_offset:safe_offset + safe_limit]
+    page = repository.visual_frame_results(
+        visual_unit_ids=[value.visual_unit_id for value in selected],
+        media_type="video",
+        offset=0,
+        limit=max(1, len(selected)),
+    ) if selected else {"items": []}
+    rows = {str(row["visual_unit_id"]): dict(row) for row in page["items"]}
+    half_window = max(0, int(preview_window_ms) // 2)
+    items: list[dict[str, Any]] = []
+    for suggestion in selected:
+        row = rows.get(suggestion.visual_unit_id)
+        if row is None:
+            continue
+        position = max(0, int(row.get("time_position_ms") or suggestion.time_position_ms))
+        start_ms = max(0, position - half_window)
+        items.append({
+            "result_id": f"person_track_{suggestion.visual_unit_id}",
+            "visual_unit_id": suggestion.visual_unit_id,
+            "source_content_id": suggestion.source_content_id,
+            "source_frame_count": 1,
+            "result_level": "frame",
+            "derived_id": str(row["derived_id"]),
+            "source_relative_path": str(row.get("relative_path") or ""),
+            "media_type": str(row.get("media_type") or "video"),
+            "time_position_ms": position,
+            "timecode": _media_timecode(position),
+            "preview_segment_start_ms": start_ms,
+            "preview_segment_start_timecode": _media_timecode(start_ms),
+            "preview_segment_end_timecode": _media_timecode(position + half_window),
+            "preview_path": str(row.get("preview_path") or ""),
+            "source_path": str(row.get("source_path") or ""),
+            "source_online": bool(row.get("source_online")),
+            "can_open_original": bool(row.get("can_open_original")),
+            "score": suggestion.score,
+            "hybrid_score": None,
+            "openclip_cosine": None,
+            "text_semantic_score": None,
+            "text_preview": (
+                f"这是“{display_name}”在同一视频、邻近时间中的侧脸/背影候选；"
+                f"距离已识别人脸锚点 {suggestion.anchor_distance_ms / 1000:.1f} 秒。"
+                f"{suggestion.review_reason}。确认前不会加入人物。"
+            ),
+            "environment_label": "同视频人物轨迹候选",
+            "hit_reason": "same_person_track_suggestion",
+            "hit_field": "person_track_suggestion",
+            "relevance_reasons": ["same_person_track_suggestion"],
+            "person_clusters": [],
+        })
+    return {
+        "status": "PASS",
+        "query": f"{display_name}的侧脸/背影候选",
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "coverage": None,
+        "result_count": len(items),
+        "result_items": items,
+        "result_total_count": len(suggestions),
+        "result_offset": safe_offset,
+        "result_limit": safe_limit,
+        "next_result_offset": (
+            safe_offset + safe_limit
+            if safe_offset + safe_limit < len(suggestions) else None
+        ),
+        "result_count_by_media": {"video": len(suggestions)},
+        "database_write": False,
+        "model_run": False,
+        "original_media_read": False,
+    }
+
+
+def run_favorite_collection(
+    repository: ReadonlyMediaRepository,
+    result_offset: int = 0,
+    result_limit: int = 200,
+) -> dict[str, Any]:
+    """Return source-level user favorites without running search or models.
+
+    Existing 1.2.0 annotations are keyed by source_content_id.  Keeping that
+    contract makes this view immediately useful for historical libraries and
+    avoids a destructive schema migration.  The representative frame and
+    descriptive evidence are read from already-generated local artifacts.
+    """
+    started = time.monotonic()
+    task_id = task_id_for_database(repository.db_path)
+    safe_offset = max(0, int(result_offset))
+    safe_limit = max(1, min(int(result_limit), 500))
+    with repository.connect() as con:
+        if not ReadonlyMediaRepository._table_exists(con, "user_asset_annotations"):
+            return {
+                "status": "PASS", "result_count": 0, "result_items": [],
+                "result_total_count": 0, "result_offset": safe_offset,
+                "result_limit": safe_limit, "next_result_offset": None,
+                "database_write": False, "model_run": False,
+                "original_media_read": False,
+            }
+        total = int(con.execute(
+            "SELECT COUNT(*) FROM user_asset_annotations WHERE task_id=? AND favorite=1",
+            (task_id,),
+        ).fetchone()[0])
+        rows = con.execute(
+            """SELECT a.source_content_id,a.tags_json,a.note,a.favorite,a.rating,
+                      a.ignored,a.updated_at,s.relative_path,s.absolute_path,
+                      s.media_type
+               FROM user_asset_annotations AS a
+               JOIN source_assets AS s USING(source_content_id)
+               WHERE a.task_id=? AND a.favorite=1
+               ORDER BY a.updated_at DESC,a.source_content_id
+               LIMIT ? OFFSET ?""",
+            (task_id, safe_limit, safe_offset),
+        ).fetchall()
+        has_qwen = ReadonlyMediaRepository._table_exists(con, "stop03_3_qwenvl_results")
+        has_ocr = ReadonlyMediaRepository._table_exists(con, "stop03_4_ocr_results")
+        has_labels = ReadonlyMediaRepository._table_exists(con, "visual_labels")
+        result_rows: list[dict[str, Any]] = []
+        for row in rows:
+            source_id = str(row["source_content_id"])
+            visual = con.execute(
+                """SELECT v.visual_unit_id,v.derived_id,
+                          CASE WHEN v.time_position_ms >= 0 THEN v.time_position_ms
+                               WHEN d.time_position_ms >= 0 THEN d.time_position_ms ELSE 0 END AS time_position_ms,
+                          d.derived_path
+                   FROM visual_units AS v
+                   JOIN derived_assets AS d USING(derived_id)
+                   WHERE v.source_content_id=?
+                   ORDER BY COALESCE(v.near_black,0),v.time_position_ms,v.visual_unit_id
+                   LIMIT 1""",
+                (source_id,),
+            ).fetchone()
+            visual_id = str(visual["visual_unit_id"] if visual else "")
+            position = max(0, int(visual["time_position_ms"] if visual else 0))
+            description = ""
+            if has_qwen:
+                qwen = con.execute(
+                    """SELECT clean_text FROM stop03_3_qwenvl_results
+                       WHERE source_content_id=? AND result_status='success'
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (source_id,),
+                ).fetchone()
+                description = str(qwen[0] or "") if qwen else ""
+            ocr_text = ""
+            if has_ocr:
+                ocr = con.execute(
+                    """SELECT ocr_text FROM stop03_4_ocr_results
+                       WHERE source_content_id=? AND result_status='success'
+                         AND TRIM(ocr_text)<>'' ORDER BY created_at DESC LIMIT 1""",
+                    (source_id,),
+                ).fetchone()
+                ocr_text = str(ocr[0] or "") if ocr else ""
+            labels: list[dict[str, Any]] = []
+            if has_labels and visual_id:
+                labels = [
+                    {"label": str(label[0]), "label_zh": None, "confidence": float(label[1])}
+                    for label in con.execute(
+                        """SELECT label,MAX(confidence) FROM visual_labels
+                           WHERE visual_unit_id=? GROUP BY label
+                           ORDER BY MAX(confidence) DESC,label LIMIT 5""",
+                        (visual_id,),
+                    )
+                ]
+            try:
+                tags = json.loads(str(row["tags_json"] or "[]"))
+            except json.JSONDecodeError:
+                tags = []
+            source_path = Path(str(row["absolute_path"] or "")).expanduser()
+            preview_path = Path(str(visual["derived_path"] or "")).expanduser() if visual else None
+            half_window = 5_000
+            note = str(row["note"] or "")
+            text_parts = [value for value in (note, description, ocr_text) if value]
+            result_rows.append({
+                "result_id": f"favorite_{source_id}",
+                "visual_unit_id": visual_id,
+                "source_content_id": source_id,
+                "source_frame_count": int(con.execute(
+                    "SELECT COUNT(*) FROM visual_units WHERE source_content_id=?", (source_id,),
+                ).fetchone()[0]),
+                "result_level": "source",
+                "derived_id": str(visual["derived_id"] if visual else ""),
+                "source_relative_path": str(row["relative_path"] or ""),
+                "media_type": str(row["media_type"] or ""),
+                "time_position_ms": position,
+                "timecode": _media_timecode(position),
+                "preview_segment_start_ms": max(0, position - half_window),
+                "preview_segment_start_timecode": _media_timecode(max(0, position - half_window)),
+                "preview_segment_end_timecode": _media_timecode(position + half_window),
+                "preview_path": str(preview_path) if preview_path and preview_path.is_file() else "",
+                "source_path": str(source_path) if source_path.is_file() else "",
+                "source_online": source_path.is_file(),
+                "can_open_original": source_path.is_file(),
+                "score": 1.0,
+                "hybrid_score": None,
+                "openclip_cosine": None,
+                "text_semantic_score": None,
+                "text_preview": "\n".join(text_parts) or "本地收藏素材",
+                "environment_label": "我的收藏",
+                "hit_reason": "user_favorite",
+                "hit_field": "user_annotation",
+                "relevance_reasons": ["user_favorite"],
+                "matched_object_labels": labels,
+                "matched_text_terms": [],
+                "user_annotation": {
+                    "tags": tags if isinstance(tags, list) else [],
+                    "note": note, "favorite": True,
+                    "rating": int(row["rating"] or 0),
+                    "ignored": bool(row["ignored"]),
+                    "updated_at": float(row["updated_at"] or 0),
+                },
+            })
+    favorite_visual_ids = [str(row["visual_unit_id"]) for row in result_rows]
+    cluster_links = _merge_person_links(
+        repository.person_clusters_for_visual_units(favorite_visual_ids),
+        _manual_person_links(
+            getattr(repository, "db_path", None), favorite_visual_ids,
+        ),
+    )
+    annotations = _load_person_annotation_payload(repository.db_path)[0]
+    identities = dict(annotations.get("identities") or {})
+    cluster_to_identity = dict(annotations.get("cluster_to_identity") or {})
+    for row in result_rows:
+        links = cluster_links.get(str(row["visual_unit_id"]), [])
+        for link in links:
+            identity = identities.get(str(cluster_to_identity.get(link["person_cluster_id"]) or ""), {})
+            link["display_name"] = str(identity.get("display_name") or "").strip() or "同一匿名人物"
+        row["person_clusters"] = links
+    next_offset = safe_offset + len(result_rows)
+    return {
+        "status": "PASS", "query": "我的收藏",
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "coverage": None, "result_count": len(result_rows),
+        "result_items": result_rows, "result_total_count": total,
+        "result_offset": safe_offset, "result_limit": safe_limit,
+        "next_result_offset": next_offset if next_offset < total else None,
+        "database_write": False, "model_run": False,
+        "network_used": False, "original_media_read": False,
+    }
+
+
 def run_person_cluster_catalog(
     repository: ReadonlyMediaRepository,
     offset: int = 0,
@@ -1696,9 +2173,55 @@ def run_person_cluster_catalog(
     page = repository.person_cluster_catalog(0, requested_limit)
     repository_db = getattr(repository, "db_path", None)
     annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
-        "contract": "media_archive_local_person_annotations_v1", "identities": {}, "cluster_to_identity": {}
+        "contract": "media_archive_local_person_annotations_v1", "identities": {},
+        "cluster_to_identity": {}, "visual_memberships": {},
     }
     grouped = grouped_catalog(page["items"], annotations)
+    identities = dict(annotations.get("identities") or {})
+    visual_memberships = dict(annotations.get("visual_memberships") or {})
+    grouped_by_id = {str(row["person_cluster_id"]): row for row in grouped}
+    for identity_id, memberships in visual_memberships.items():
+        clean_members = [dict(value or {}) for value in memberships or []]
+        visual_ids = [str(value.get("visual_unit_id") or "") for value in clean_members]
+        if not visual_ids:
+            continue
+        frames = repository.visual_frame_results(
+            visual_unit_ids=visual_ids, offset=0, limit=5_000,
+        )["items"]
+        if not frames:
+            continue
+        annotation = dict(identities.get(identity_id) or {})
+        existing = grouped_by_id.get(str(identity_id))
+        if existing is not None:
+            existing["member_count"] = max(
+                int(existing.get("member_count") or 0), len(frames),
+            )
+            existing["distinct_source_count"] = max(
+                int(existing.get("distinct_source_count") or 0),
+                len({str(row.get("source_content_id") or "") for row in frames}),
+            )
+            existing["is_local_identity"] = True
+            continue
+        first = frames[0]
+        item = {
+            **first,
+            "person_cluster_id": str(identity_id),
+            "display_name": str(annotation.get("display_name") or ""),
+            "tags": list(annotation.get("tags") or []),
+            "member_count": len(frames),
+            "distinct_source_count": len({
+                str(row.get("source_content_id") or "") for row in frames
+            }),
+            "cluster_confidence": "human_confirmed",
+            "human_review_status": "confirmed",
+            "merged_cluster_count": 0,
+            "is_local_identity": True,
+        }
+        grouped.append(item)
+        grouped_by_id[str(identity_id)] = item
+    grouped.sort(key=lambda row: (
+        -int(row.get("member_count") or 0), str(row.get("person_cluster_id") or "")
+    ))
     page = {
         "total": len(grouped), "offset": max(0, int(offset)),
         "limit": requested_limit,
@@ -1732,8 +2255,79 @@ def run_person_cluster_catalog(
         "network_used": False,
         "original_media_read": False,
         "capability_note": (
-            "当前只按可见人脸归并；背影、严重遮挡和过小人脸不会仅凭服装强行合并。"
+            "机器分组只依据可见人脸；你可以把背影、遮挡或漏检画面人工加入自建人物，"
+            "人工结果独立保存且不会改写机器识别。"
         ),
+    }
+
+
+def _validated_visual_membership(
+    repository: ReadonlyMediaRepository, visual_unit_id: str, source_content_id: str,
+) -> tuple[str, str]:
+    visual_id = str(visual_unit_id or "").strip()
+    source_id = str(source_content_id or "").strip()
+    if not visual_id or not source_id:
+        raise ValueError("请选择一个有效画面")
+    page = repository.visual_frame_results(
+        visual_unit_ids=[visual_id], offset=0, limit=1,
+    )
+    if not page["items"] or str(page["items"][0].get("source_content_id") or "") != source_id:
+        raise ValueError("画面与素材来源不匹配")
+    return visual_id, source_id
+
+
+def update_person_create(
+    repository: ReadonlyMediaRepository, display_name: str, tags: str,
+    visual_unit_id: str, source_content_id: str,
+) -> dict[str, Any]:
+    name = " ".join(str(display_name or "").split())[:120]
+    if not name:
+        raise ValueError("请填写新人物名称")
+    visual_id, source_id = _validated_visual_membership(
+        repository, visual_unit_id, source_content_id,
+    )
+    payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    identity_id = create_identity(
+        payload, name,
+        [value for value in re.split(r"[,，;；]", tags) if value.strip()],
+    )
+    add_visual_membership(payload, identity_id, visual_id, source_id)
+    _save_person_annotation_payload(repository.db_path, task_id, payload)
+    return {
+        "status": "PASS", "message": f"已新建人物“{name}”并加入当前画面",
+        "person_identity_id": identity_id, "annotation_path": str(repository.db_path),
+        "database_write": True, "local_metadata_write": True,
+    }
+
+
+def update_person_add_visual(
+    repository: ReadonlyMediaRepository, identifier: str,
+    visual_unit_id: str, source_content_id: str,
+) -> dict[str, Any]:
+    visual_id, source_id = _validated_visual_membership(
+        repository, visual_unit_id, source_content_id,
+    )
+    payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    identity_id = add_visual_membership(payload, identifier, visual_id, source_id)
+    _save_person_annotation_payload(repository.db_path, task_id, payload)
+    name = str(dict(payload.get("identities") or {}).get(identity_id, {}).get("display_name") or "自建人物")
+    return {
+        "status": "PASS", "message": f"当前画面已加入“{name}”",
+        "person_identity_id": identity_id, "annotation_path": str(repository.db_path),
+        "database_write": True, "local_metadata_write": True,
+    }
+
+
+def update_person_remove_visual(
+    repository: ReadonlyMediaRepository, identifier: str, visual_unit_id: str,
+) -> dict[str, Any]:
+    payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    identity_id = remove_visual_membership(payload, identifier, str(visual_unit_id or "").strip())
+    _save_person_annotation_payload(repository.db_path, task_id, payload)
+    return {
+        "status": "PASS", "message": "已移除当前画面的人工人物关联；机器结果未修改",
+        "person_identity_id": identity_id, "annotation_path": str(repository.db_path),
+        "database_write": True, "local_metadata_write": True,
     }
 
 
@@ -1772,8 +2366,20 @@ def update_person_detach(
     repository: ReadonlyMediaRepository, cluster_id: str,
 ) -> dict[str, Any]:
     payload, task_id = _load_writable_person_annotation_payload(repository.db_path)
+    identities = dict(payload.get("identities") or {})
+    mapped_identity = (
+        cluster_id if cluster_id in identities
+        else str(dict(payload.get("cluster_to_identity") or {}).get(cluster_id) or "")
+    )
+    retained_visuals = list(
+        dict(payload.get("visual_memberships") or {}).get(mapped_identity, [])
+    )
     clusters = resolve_clusters(payload, cluster_id)
     detached = [detach_cluster(payload, cluster_id) for cluster_id in clusters]
+    if retained_visuals and detached:
+        payload.setdefault("visual_memberships", {})[detached[0]] = retained_visuals
+        if mapped_identity != detached[0]:
+            payload["visual_memberships"].pop(mapped_identity, None)
     _save_person_annotation_payload(repository.db_path, task_id, payload)
     return {
         "status": "PASS", "message": f"已拆分为 {len(detached)} 个独立本地人物；机器识别原记录未修改",
@@ -1930,6 +2536,13 @@ def run_search(
         )
         if hasattr(repository, "person_clusters_for_visual_units")
         else {}
+    )
+    result_visual_ids = [str(row.get("visual_unit_id") or "") for row in result_rows]
+    cluster_links = _merge_person_links(
+        cluster_links,
+        _manual_person_links(
+            getattr(repository, "db_path", None), result_visual_ids,
+        ),
     )
     public_results = []
     for row in result_rows:
@@ -2232,6 +2845,14 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--source-mtime-max", type=int)
     search.add_argument("--has-ocr", action="store_true")
     search.add_argument("--has-person", action="store_true")
+    favorites = subparsers.add_parser("favorites")
+    favorites.add_argument("--result-offset", type=int, default=0)
+    favorites.add_argument("--result-limit", type=int, choices=range(1, 501), default=200)
+    source_frames = subparsers.add_parser("source-frames")
+    source_frames.add_argument("--source-content-id", required=True)
+    source_frames.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
+    source_frames.add_argument("--result-offset", type=int, default=0)
+    source_frames.add_argument("--result-limit", type=int, choices=range(1, 201), default=60)
     person = subparsers.add_parser("person-cluster")
     person.add_argument("--cluster-id", required=True)
     person.add_argument("--media-type", choices=("all", "image", "video"), default="all")
@@ -2239,6 +2860,12 @@ def build_parser() -> argparse.ArgumentParser:
     person.add_argument("--result-offset", type=int, default=0)
     person.add_argument("--result-limit", type=int, choices=range(1, 101), default=30)
     person.add_argument("--source-content-id", default="")
+    person_tracks = subparsers.add_parser("person-track-suggestions")
+    person_tracks.add_argument("--cluster-id", required=True)
+    person_tracks.add_argument("--media-type", choices=("all", "image", "video"), default="all")
+    person_tracks.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
+    person_tracks.add_argument("--result-offset", type=int, default=0)
+    person_tracks.add_argument("--result-limit", type=int, choices=range(1, 101), default=30)
     people = subparsers.add_parser("person-clusters")
     people.add_argument("--result-offset", type=int, default=0)
     people.add_argument("--result-limit", type=int, choices=range(1, 201), default=100)
@@ -2251,6 +2878,18 @@ def build_parser() -> argparse.ArgumentParser:
     person_merge.add_argument("--target-person-id", required=True)
     person_detach = subparsers.add_parser("person-detach")
     person_detach.add_argument("--person-id", required=True)
+    person_create = subparsers.add_parser("person-create")
+    person_create.add_argument("--display-name", required=True)
+    person_create.add_argument("--tags", default="")
+    person_create.add_argument("--visual-unit-id", required=True)
+    person_create.add_argument("--source-content-id", required=True)
+    person_add_visual = subparsers.add_parser("person-add-visual")
+    person_add_visual.add_argument("--person-id", required=True)
+    person_add_visual.add_argument("--visual-unit-id", required=True)
+    person_add_visual.add_argument("--source-content-id", required=True)
+    person_remove_visual = subparsers.add_parser("person-remove-visual")
+    person_remove_visual.add_argument("--person-id", required=True)
+    person_remove_visual.add_argument("--visual-unit-id", required=True)
     profile = subparsers.add_parser("save-profile")
     profile.add_argument("--scheduler-mode", choices=("auto", "pipeline_async", "stage_serial"), required=True)
     profile.add_argument("--model-workers", type=int, required=True)
@@ -2258,6 +2897,9 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--frame-interval-seconds", type=float, required=True)
     profile.add_argument("--high-value-mode", choices=("frozen_v25_compatible", "target_15", "target_20", "target_30"), required=True)
     profile.add_argument("--image-scope", choices=("frozen_current_policy", "all_images"), required=True)
+    profile.add_argument("--yoloe-a-keywords", required=True)
+    profile.add_argument("--yoloe-b-keywords", required=True)
+    profile.add_argument("--yoloe-enable-b-extended", choices=("true", "false"), required=True)
     models = subparsers.add_parser("save-model-root")
     models.add_argument("--path", type=Path, required=True)
     task = subparsers.add_parser("save-task")
@@ -2353,6 +2995,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.source_mtime_min, args.source_mtime_max,
                 args.has_ocr, args.has_person,
             )
+        elif args.command == "favorites":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = run_favorite_collection(
+                repository, args.result_offset, args.result_limit,
+            )
+        elif args.command == "source-frames":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = run_source_frame_search(
+                repository, args.source_content_id, args.preview_window_ms,
+                args.result_offset, args.result_limit,
+            )
         elif args.command == "person-cluster":
             if repository is None:
                 raise RuntimeError("请先新建或连接一个素材库")
@@ -2360,6 +3015,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 repository, args.cluster_id, args.media_type,
                 args.preview_window_ms, args.result_offset, args.result_limit,
                 args.source_content_id or None,
+            )
+        elif args.command == "person-track-suggestions":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = run_person_track_suggestions(
+                repository, args.cluster_id, args.media_type,
+                args.preview_window_ms, args.result_offset, args.result_limit,
             )
         elif args.command == "person-clusters":
             if repository is None:
@@ -2383,6 +3045,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if repository is None:
                 raise RuntimeError("请先新建或连接一个素材库")
             report = update_person_detach(repository, args.person_id)
+        elif args.command == "person-create":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = update_person_create(
+                repository, args.display_name, args.tags,
+                args.visual_unit_id, args.source_content_id,
+            )
+        elif args.command == "person-add-visual":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = update_person_add_visual(
+                repository, args.person_id,
+                args.visual_unit_id, args.source_content_id,
+            )
+        elif args.command == "person-remove-visual":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = update_person_remove_visual(
+                repository, args.person_id, args.visual_unit_id,
+            )
         elif args.command == "save-profile":
             report = save_profile(config, args)
         elif args.command == "save-model-root":

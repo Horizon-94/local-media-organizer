@@ -65,11 +65,15 @@ class AudioProductionIntegrationTests(unittest.TestCase):
         media_index = command.index("--media-type")
         self.assertEqual(command[media_index + 1], "video")
 
-    def test_new_full_task_appends_audio_as_stage_20(self) -> None:
+    def test_new_full_task_coextracts_audio_after_video_frames(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             plan = build_stage_plan(self._task(Path(temp), "full"))
-        self.assertEqual(plan[-1]["key"], "audio_search_enrichment")
-        self.assertIn("20_audio_search_enrichment", " ".join(plan[-1]["command"]))
+        keys = [stage["key"] for stage in plan]
+        video_index = keys.index("video_frames")
+        self.assertEqual(keys[video_index + 1], "audio_search_enrichment")
+        self.assertIn("--coextract-audio", plan[video_index]["command"])
+        self.assertIn("03b_audio_search_enrichment", " ".join(plan[video_index + 1]["command"]))
+        self.assertIn("--preextracted-audio-manifest", plan[video_index + 1]["command"])
 
     def test_migration_and_temporary_audio_retention_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

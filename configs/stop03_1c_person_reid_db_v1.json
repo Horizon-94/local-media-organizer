@@ -2,7 +2,7 @@
   "contract_version": "stop03_1c_person_reid_db_v1",
   "enabled": true,
   "model_name": "InsightFace-buffalo_l",
-  "model_dir": "/Users/yourname/Documents/model/insightface/buffalo_l",
+  "model_dir": "$MODEL_ROOT/insightface/buffalo_l",
   "detector_file": "det_10g.onnx",
   "recognizer_file": "w600k_r50.onnx",
   "runtime_backend": "opencv_dnn_cpu",

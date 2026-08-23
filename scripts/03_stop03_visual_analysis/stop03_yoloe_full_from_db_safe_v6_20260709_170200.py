@@ -35,14 +35,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SCRIPT_VERSION = "stop03_yoloe_full_from_db_safe_v6_20260709_170200"
 STAGE = "stop03_yoloe_full"
-DEFAULT_DB = Path("/Users/yourname/Documents/AI-Local/media-archive-clean/media_archive.sqlite")
-DEFAULT_MODEL = Path("/Users/yourname/Documents/model/yoloe26-l-seg/weights/yoloe26-l-seg.pt")
-DEFAULT_MOBILECLIP = Path("/Users/yourname/Documents/model/yoloe26-l-seg/mobileclip2_b.ts")
-DEFAULT_OUT = Path("/Users/yourname/Documents/AI-Local/test-output/stop03-yoloe-full-db-safe-v6_20260709_170200")
-DEFAULT_REGISTRY = Path("/Users/yourname/Documents/本地素材大整理配置/提示词注册表/当前提示词_OCR_TRIGGER_v1.0.json")
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-MODEL_ROOT = Path("/Users/yourname/Documents/model")
-EXPECTED_PYTHON = Path("/Users/yourname/Documents/AI-Local/envs/media-archive-v06-yolo/bin/python")
+DEFAULT_DB = Path("$APP_RESOURCES/Pipeline/media_archive.sqlite")
+DEFAULT_MODEL = Path("$MODEL_ROOT/yoloe26-l-seg/weights/yoloe26-l-seg.pt")
+DEFAULT_MOBILECLIP = Path("$MODEL_ROOT/yoloe26-l-seg/mobileclip2_b.ts")
+DEFAULT_OUT = Path("$USER_HOME/Documents/AI-Local/test-output/stop03-yoloe-full-db-safe-v6_20260709_170200")
+DEFAULT_REGISTRY = Path("$USER_HOME/Documents/本地素材大整理配置/提示词注册表/当前提示词_OCR_TRIGGER_v1.0.json")
+PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
+MODEL_ROOT = Path("$MODEL_ROOT")
+EXPECTED_PYTHON = Path("$BUNDLED_PIPELINE_ENVS/media-archive-v06-yolo/bin/python")
 EXPECTED_SCRIPT_LOCAL = PROJECT_ROOT / "scripts/03_stop03_visual_analysis/stop03_yoloe_full_from_db_safe_v6_20260709_170200.py"
 REQUIRED_LOCAL_ASSETS = {
     "db": DEFAULT_DB,
@@ -241,7 +241,7 @@ def runtime_preflight(db: Path, model: Path, mobileclip: Path, registry: Optiona
     os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
     os.environ.setdefault("ULTRALYTICS_OFFLINE", "1")
     os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
-    os.environ.setdefault("YOLO_CONFIG_DIR", "/Users/yourname/Documents/AI-Local/test-output/ultralytics-offline-config")
+    os.environ.setdefault("YOLO_CONFIG_DIR", "$USER_HOME/Documents/AI-Local/test-output/ultralytics-offline-config")
 
     py = Path(sys.executable)
     py_real = py.resolve()
@@ -323,7 +323,7 @@ def install_offline_guard(mobileclip_path: Path) -> Dict[str, Any]:
     os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
     os.environ.setdefault("ULTRALYTICS_OFFLINE", "1")
     os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
-    os.environ.setdefault("YOLO_CONFIG_DIR", "/Users/yourname/Documents/AI-Local/test-output/ultralytics-offline-config")
+    os.environ.setdefault("YOLO_CONFIG_DIR", "$USER_HOME/Documents/AI-Local/test-output/ultralytics-offline-config")
     if _OFFLINE_INSTALLED:
         return report
 
