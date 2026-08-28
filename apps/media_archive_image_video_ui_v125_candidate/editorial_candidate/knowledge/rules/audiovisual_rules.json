@@ -1,0 +1,21 @@
+{
+  "contract_version": "cinematic_audiovisual_rules_v1",
+  "knowledge_type": "common_practice",
+  "rules": [
+    {"id":"synchronous_sound","use":"画面内动作或人物与同期声音一致时增强现场证据","risk":"错位会制造错误事件关系"},
+    {"id":"asynchronous_sound","use":"声音来源在画外但空间或叙事关系明确","risk":"来源不明会造成误导"},
+    {"id":"diegetic","use":"保留现场世界中的声音帮助建立空间","risk":"不能仅凭有音轨就认定声音可用"},
+    {"id":"non_diegetic","use":"旁白和音乐组织信息或情绪","risk":"音乐不能替代事实证明"},
+    {"id":"room_tone","use":"填补对话剪点并维持空间连续","risk":"不同地点底噪拼接会暴露剪点"},
+    {"id":"ambience","use":"建立地点、时间和劳动环境","risk":"通用环境声冒充真实现场"},
+    {"id":"sound_bridge","use":"同一声音跨镜头维持连续或引向新空间","risk":"声音关系不真实"},
+    {"id":"J_cut","use":"下一镜声音先出现，制造预期并柔化转场","risk":"提前泄露不应揭示的信息"},
+    {"id":"L_cut","use":"前镜声音延续到后镜，保护表达并引入反应或环境","risk":"延续过久让声音主体不清"},
+    {"id":"prelap","use":"新场景声音预先进入，为地点或人物出现作准备","risk":"时空关系不清时会被误读"},
+    {"id":"dialogue_continuation","use":"人物声音继续时可切到证据、过程或反应","risk":"不应盖掉关键面部表达"},
+    {"id":"narration_over_broll","use":"旁白承担不可见命题，B-roll只承担可见部分","risk":"画面诱导观众把旁白当成画面事实"},
+    {"id":"silence","use":"转折、迟疑、结果或结束处给观众感受空间","risk":"没有动机的静音像音频故障"},
+    {"id":"music_transition","use":"帮助章节、情绪或节奏转变","risk":"音乐节拍不能强迫不合适镜头入选"},
+    {"id":"audio_motivated_cut","use":"由声音事件触发切到来源、反应或后果","risk":"声音与画面并非同一事件"}
+  ]
+}

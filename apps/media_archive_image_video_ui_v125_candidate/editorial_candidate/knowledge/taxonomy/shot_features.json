@@ -1,0 +1,26 @@
+{
+  "contract_version": "cinematic_shot_features_v1",
+  "knowledge_type": "established_principle",
+  "fields": {
+    "shot_size": ["extreme_close_up", "close_up", "medium_close_up", "medium", "medium_wide", "full", "wide", "extreme_wide"],
+    "framing": ["single", "two_shot", "group", "over_shoulder", "POV", "insert", "detail", "cutaway", "frontal", "profile", "back_view", "empty_frame", "screen_recording"],
+    "camera_angle": ["eye_level", "high", "low", "overhead", "bird_eye", "ground_level", "dutch"],
+    "camera_motion": ["static", "pan", "tilt", "push_in", "pull_out", "dolly", "truck", "tracking", "follow", "orbit", "crane", "jib", "handheld", "gimbal", "zoom", "whip_pan", "unknown"],
+    "subject_motion": ["static", "approach", "depart", "cross_left", "cross_right", "rise", "fall", "work_action", "unknown"],
+    "composition": ["centered", "symmetry", "thirds", "negative_space", "leading_lines", "frame_within_frame", "foreground_layer", "depth", "balanced", "asymmetrical", "repetition", "diagonal", "geometric", "subject_isolation", "look_room", "headroom"],
+    "lighting": ["natural", "practical", "soft", "hard", "front", "side", "backlight", "silhouette", "mixed"],
+    "color": ["warm", "cool", "neutral", "high_saturation", "low_saturation", "high_contrast", "low_contrast", "monochrome", "log_ungraded"],
+    "perspective": ["normal", "wide_lens", "long_lens", "compressed", "deep_space", "distorted"],
+    "depth_of_field": ["deep", "medium", "shallow", "rack_focus"],
+    "gaze": ["to_camera", "offscreen_left", "offscreen_right", "down", "up", "unknown"],
+    "screen_direction": ["left_to_right", "right_to_left", "toward_camera", "away_from_camera", "unknown"],
+    "technical_usability": ["usable", "needs_review", "out_of_focus", "motion_blur", "unstable", "underexposed", "overexposed", "blocked", "near_black", "missing_preview"]
+  },
+  "free_text_fields": ["subject", "action", "environment", "foreground", "background"],
+  "principles": [
+    "镜头本体字段只描述画面可观察到什么，不直接声称它适合表达什么。",
+    "camera_motion 与 subject_motion 必须分开。",
+    "单帧可以保守判断景别、构图和角度，但不能可靠判断摄影机运动。",
+    "LOG 或未调色画面不使用色调好坏作为选片结论。"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cinematic_selection_knowledge_v1",
+  "type": "object",
+  "required": ["contract_version", "knowledge_type"],
+  "properties": {
+    "contract_version": {"type": "string", "minLength": 3},
+    "knowledge_type": {
+      "enum": ["established_principle", "common_practice", "research_finding", "heuristic", "project_preference"]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,19 @@
+{
+  "contract_version": "cinematic_documentary_rules_v1",
+  "knowledge_type": "project_preference",
+  "rules": [
+    {"id":"authenticity","prefer":"时间、人物、地点关系能够被现有证据支持","avoid":"用相似素材冒充具体事实"},
+    {"id":"real_event_evidence","prefer":"直接展示本次真实事件、动作或结果","avoid":"装饰画面替代事实"},
+    {"id":"archive","prefer":"来源、时间和身份可说明的档案","avoid":"无出处画面被当成历史证据"},
+    {"id":"observational_shot","prefer":"保留足够时间让行动自行展开","avoid":"为追求节奏把过程切碎"},
+    {"id":"interview","prefer":"关键自我判断、转折和情绪保留人物同期表达","avoid":"整段泛化 B-roll 盖住人物"},
+    {"id":"reaction","prefer":"触发关系可信的真实反应","avoid":"普通表情被解释成特定心理"},
+    {"id":"environment","prefer":"交代人物所处真实空间和条件","avoid":"无地点归属的通用风景"},
+    {"id":"labor_process","prefer":"动作起点、关键步骤、结果和人物关系","avoid":"只有机器或手部碎片，没有过程"},
+    {"id":"contextual_broll","prefer":"与当前人物、地点、时间或行动有可说明关系","avoid":"只因同类题材就覆盖"},
+    {"id":"detail_broll","prefer":"能证明具体物件、痕迹或步骤的细节","avoid":"细节来源不明"},
+    {"id":"time_transition","prefer":"光线、季节、状态或明确标识支持时间变化","avoid":"把不同日期素材剪成连续事件"},
+    {"id":"natural_imperfection","prefer":"不影响理解的真实晃动、停顿和不完美可以保留","avoid":"把技术完美置于关键证据之上"}
+  ],
+  "principle":"真实证据价值可以高于构图漂亮。"
+}

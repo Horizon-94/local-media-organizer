@@ -1,0 +1,18 @@
+{
+  "contract_version": "cinematic_sequence_rules_v1",
+  "knowledge_type": "heuristic",
+  "rules": [
+    {"id":"no_exact_duplicate","bonus":0,"penalty":18,"condition":"同一候选再次出现","reason":"除非明确 callback，否则重复同一时间窗会像素材不足"},
+    {"id":"near_time_duplicate","bonus":0,"penalty":14,"condition":"同一源抽样点相距五秒以内","reason":"通常属于同一画面或同一动作阶段"},
+    {"id":"source_repetition","bonus":0,"penalty":8,"condition":"连续镜头来自同一原片","reason":"可能形成跳切或信息重复"},
+    {"id":"location_repetition","bonus":0,"penalty":5,"condition":"连续三镜地点与构图都近似","reason":"缺少视觉推进"},
+    {"id":"shot_size_progression","bonus":5,"penalty":4,"condition":"景别从建立到行动再到细节，或有明确反向动机","reason":"空间和注意力得到推进"},
+    {"id":"composition_repetition","bonus":0,"penalty":4,"condition":"相邻镜头主体位置与构图高度相似","reason":"可能产生无意跳动"},
+    {"id":"motion_continuity","bonus":4,"penalty":6,"condition":"动作或银幕方向可接续/冲突","reason":"运动连续性影响剪点自然度"},
+    {"id":"evidence_then_reaction","bonus":5,"penalty":0,"condition":"事实/行动后出现真实反应","reason":"让事件落到人物体验"},
+    {"id":"breathing_after_density","bonus":4,"penalty":0,"condition":"连续高信息镜头后出现环境或停顿","reason":"给观众消化信息的时间"},
+    {"id":"documentary_process_duration","bonus":4,"penalty":5,"condition":"过程镜头保留动作起落/被切得过碎","reason":"观察时间和真实过程比单纯快切重要"},
+    {"id":"short_video_change_density","bonus":4,"penalty":5,"condition":"信息或视觉变化符合/低于段落节奏","reason":"网感依赖有效变化，不等于盲目缩短镜头"},
+    {"id":"intentional_callback","bonus":7,"penalty":0,"condition":"结尾明确回收前文母题且标为 CALLBACK","reason":"有动机的重复可以形成结构闭环"}
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "contract_version": "cinematic_rerank_weights_v1",
+  "knowledge_type": "heuristic",
+  "weights": {
+    "semantic_relevance": 0.10,
+    "subject_match": 0.16,
+    "shot_role_match": 0.12,
+    "truthfulness": 0.12,
+    "narrative_fit": 0.10,
+    "editorial_utility": 0.12,
+    "evidence_strength": 0.10,
+    "cinematic_fit": 0.05,
+    "sequence_compatibility": 0.07,
+    "technical_usability": 0.04,
+    "aesthetic_quality": 0.01,
+    "authenticity": 0.01,
+    "user_preference_placeholder": 0.0
+  },
+  "penalties": {
+    "duplicate_penalty": 18.0,
+    "repetition_penalty": 10.0,
+    "continuity_penalty": 8.0,
+    "generic_broll_penalty": 15.0,
+    "gate_penalty": 18.0
+  },
+  "principles": [
+    "所有规则默认是 soft rule。",
+    "aesthetic_quality 不得替代 editorial_utility。",
+    "纪录片中 evidence_strength 与 authenticity 可以高于画面漂亮程度。",
+    "权重由本文件配置，代码不得写成不可调整的永久结论。"
+  ]
+}

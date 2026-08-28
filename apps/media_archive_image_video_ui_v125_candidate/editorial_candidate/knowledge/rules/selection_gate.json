@@ -1,0 +1,24 @@
+{
+  "contract_version": "cinematic_selection_gate_policy_v1",
+  "knowledge_type": "heuristic",
+  "gate_penalties": {
+    "PASS": 0.0,
+    "SOFT_GATE": 18.0,
+    "HARD_GATE": 100.0
+  },
+  "thresholds": {
+    "subject_pass": 72.0,
+    "subject_hard_mismatch": 22.0,
+    "shot_role_pass": 68.0,
+    "evidence_weak": 48.0,
+    "high_confidence": 0.75
+  },
+  "principles": [
+    "文稿需求与事实边界先于语义相似度。",
+    "人物是否抢主体必须由当前文稿任务动态决定。",
+    "未知证据保持 UNKNOWN，不为了字段完整而猜测。",
+    "仅有 NEED_SOURCE_REVIEW 标记时不自动降为 SOFT_GATE；它是回看原片提示，只有同时存在主体、职责、事实或证据问题时才降权。",
+    "SOFT_GATE 保留为后备候选，HARD_GATE 只保留后台诊断。",
+    "美学与技术分不得越过主体和事实边界。"
+  ]
+}

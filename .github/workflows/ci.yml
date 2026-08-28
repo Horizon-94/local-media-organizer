@@ -28,3 +28,16 @@ jobs:
           tests/test_media_archive_image_video_native_app_v1.py
           tests/test_media_archive_pipeline_orchestrator_v1.py
           tests/test_media_archive_generic_sampling_density_v1.py
+      - name: 1.2.6 hotfix9 maintenance regression (synthetic data only)
+        run: >-
+          python -m pytest -q
+          tests/test_v126_editorial_layout.py
+          tests/test_v126_light_selection_rows.py
+          tests/test_v126_search_modes.py
+          tests/test_v126_search_ui_performance.py
+          tests/test_v126_search_to_editorial.py
+          tests/test_v126_ui_hotfix2.py
+          tests/test_v125_editorial_session.py
+          tests/test_v125_editorial_favorites.py
+          tests/test_v125_editorial_trim.py
+          tests/test_v125_editorial_preview.py

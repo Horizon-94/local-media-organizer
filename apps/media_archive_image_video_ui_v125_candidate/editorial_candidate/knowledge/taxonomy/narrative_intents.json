@@ -1,0 +1,23 @@
+{
+  "contract_version": "cinematic_narrative_intents_v1",
+  "knowledge_type": "common_practice",
+  "intents": [
+    "hook", "setup", "context", "explanation", "claim", "evidence",
+    "personal_reflection", "emotional_statement", "conflict", "escalation",
+    "turning_point", "reveal", "comparison", "transition", "summary",
+    "callback", "payoff", "ending", "audio_cue"
+  ],
+  "intent_strategies": {
+    "personal_reflection": {"prefer": ["KEEP_A_ROLL", "REACTION", "BREATHING"], "avoid": ["generic_broll_full_sentence"]},
+    "emotional_statement": {"prefer": ["KEEP_A_ROLL", "REACTION", "EMOTION"], "avoid": ["unverified_psychology"]},
+    "evidence": {"prefer": ["EVIDENCE", "ARCHIVAL_EVIDENCE", "SOFTWARE_EVIDENCE", "PROCESS"], "avoid": ["decorative_substitute"]},
+    "turning_point": {"prefer": ["KEEP_A_ROLL", "REACTION", "REVEAL"], "avoid": ["generic_broll_full_sentence"]},
+    "setup": {"prefer": ["ESTABLISH", "CONTEXT", "RELATIONSHIP"], "avoid": []},
+    "context": {"prefer": ["CONTEXT", "ESTABLISH", "ILLUSTRATION"], "avoid": []},
+    "explanation": {"prefer": ["ILLUSTRATION", "PROCESS", "DETAIL"], "avoid": ["unrelated_atmosphere"]},
+    "claim": {"prefer": ["KEEP_A_ROLL", "EVIDENCE", "ILLUSTRATION"], "avoid": ["false_evidence"]},
+    "hook": {"prefer": ["REVEAL", "CONTRAST", "ACTION", "KEEP_A_ROLL"], "avoid": ["slow_generic_opening"]},
+    "ending": {"prefer": ["PAYOFF", "CALLBACK", "BREATHING", "KEEP_A_ROLL"], "avoid": ["new_unresolved_information"]}
+    ,"audio_cue": {"prefer": ["KEEP_A_ROLL", "TRANSITION"], "avoid": ["instruction_keyword_as_broll", "generic_broll_full_sentence"]}
+  }
+}

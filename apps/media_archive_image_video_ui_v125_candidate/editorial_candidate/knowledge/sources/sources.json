@@ -1,0 +1,94 @@
+{
+  "contract_version": "cinematic_knowledge_sources_v1",
+  "knowledge_type": "research_finding",
+  "copyright_policy": "只保存本项目自己的结构化总结与出处；不复制论文、教材、电影帧或数据集内容。",
+  "sources": [
+    {
+      "source_title": "ShotBench: Expert-Level Cinematic Understanding in Vision-Language Models",
+      "author": "Liu et al.", "year": 2025,
+      "url": "https://arxiv.org/abs/2506.21356", "repository": "https://github.com/Vchitect/ShotBench",
+      "license": "no_license_detected_in_repository", "knowledge_type": "research_finding",
+      "used_for": ["shot_size", "framing", "camera_angle", "lighting", "composition", "camera_motion"],
+      "note": "只吸收八维度分类思路；不复制数据和问答。"
+    },
+    {
+      "source_title": "CineTechBench: A Benchmark for Cinematographic Technique Understanding and Generation",
+      "author": "Wang et al.", "year": 2025,
+      "url": "https://arxiv.org/abs/2505.15145", "repository": "https://github.com/PRIS-CV/CineTechBench",
+      "license": "no_license_detected_in_repository", "knowledge_type": "research_finding",
+      "used_for": ["shot_scale", "shot_angle", "composition", "camera_movement", "lighting", "color", "focal_length"],
+      "note": "只吸收维度设计；不复制专家标注。"
+    },
+    {
+      "source_title": "The Anatomy of Video Editing: A Dataset and Benchmark Suite for AI-Assisted Video Editing",
+      "author": "Argaw et al.", "year": 2022,
+      "url": "https://arxiv.org/abs/2207.09812", "repository": "https://github.com/dawitmureja/AVE",
+      "license": "no_license_detected_in_repository", "knowledge_type": "research_finding",
+      "used_for": ["footage_organization", "assisted_assembly", "shot_attributes"],
+      "note": "用于评估维度设计，不导入数据集。"
+    },
+    {
+      "source_title": "Thinking Like a Director: Film Editing Patterns for Virtual Cinematographic Storytelling",
+      "author": "Wu et al.", "year": 2018,
+      "url": "https://doi.org/10.1145/3241057", "repository": "https://github.com/husky-helen/FilmAnnotation",
+      "license": "CeCILL-Libre stated in README; repository license not detected", "knowledge_type": "research_finding",
+      "used_for": ["editing_patterns", "directing", "shot_sequence"],
+      "note": "只总结模式，不复制电影标注或片段。"
+    },
+    {
+      "source_title": "B-Script: Transcript-based B-roll Video Editing with Recommendations",
+      "author": "Huber et al.", "year": 2019,
+      "url": "https://research.adobe.com/publication/b-script-transcript-based-b-roll-video-editing-with-recommendations/",
+      "license": "publication; no code/data license asserted here", "knowledge_type": "research_finding",
+      "used_for": ["transcript_based_editing", "broll_position", "human_in_the_loop"],
+      "note": "支持文稿驱动推荐与人工最终决定。"
+    },
+    {
+      "source_title": "MovieNet: A Holistic Dataset for Movie Understanding",
+      "author": "Huang et al.", "year": 2020,
+      "url": "https://arxiv.org/abs/2007.10937", "repository": "https://github.com/movienet/movienet-tools",
+      "license": "no_license_detected_in_repository; dataset has separate agreement", "knowledge_type": "research_finding",
+      "used_for": ["shot_scale", "shot_movement", "scene", "action", "place"],
+      "note": "不下载 MovieNet；只参考公开任务分类。"
+    },
+    {
+      "source_title": "A Unified Framework for Shot Type Classification Based on Subject Centric Lens",
+      "author": "Rao et al.", "year": 2020,
+      "url": "https://movienet.github.io/projects/eccv20shot.html", "license": "publication", "knowledge_type": "research_finding",
+      "used_for": ["shot_scale", "camera_motion_vs_subject_motion"],
+      "note": "明确静态摄影机不等于主体静止。"
+    },
+    {
+      "source_title": "Shot Sequence Ordering for Video Editing",
+      "author": "Li et al.", "year": 2025,
+      "url": "https://arxiv.org/abs/2503.17975", "repository": "https://github.com/litchiar/ShotSeqBench",
+      "license": "Apache-2.0", "knowledge_type": "research_finding",
+      "used_for": ["sequence_order", "sequence_metrics"],
+      "note": "用于序列评估思路，不采用其数据。"
+    },
+    {
+      "source_title": "Introduction to Film & TV: Editing",
+      "author": "Oklahoma State University Open Textbook", "year": 2023,
+      "url": "https://open.library.okstate.edu/introfilmtv/part/editing/", "license": "see source site", "knowledge_type": "established_principle",
+      "used_for": ["continuity_editing", "180_degree", "30_degree", "eyeline_match", "jump_cut"]
+    },
+    {
+      "source_title": "Columbia Film Language Glossary",
+      "author": "Columbia University", "year": null,
+      "url": "https://filmglossary.ccnmtl.columbia.edu/", "license": "educational web resource", "knowledge_type": "established_principle",
+      "used_for": ["film_language", "eyeline_match", "editing_examples"]
+    },
+    {
+      "source_title": "Perform J cuts and L cuts",
+      "author": "Adobe", "year": 2025,
+      "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/trim-clips/perform-j-cuts-and-l-cuts.html", "license": "copyrighted documentation; summarized only", "knowledge_type": "common_practice",
+      "used_for": ["J_cut", "L_cut", "split_edit"]
+    },
+    {
+      "source_title": "Honest Truths: Looking at a Groundbreaking Ethics Report",
+      "author": "Patricia Aufderheide / International Documentary Association", "year": 2015,
+      "url": "https://www.documentary.org/feature/honest-truths-looking-groundbreaking-ethics-report-five-years-later", "license": "copyrighted article; summarized only", "knowledge_type": "common_practice",
+      "used_for": ["documentary_authenticity", "viewer_trust", "subject_responsibility"]
+    }
+  ]
+}

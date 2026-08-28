@@ -1,0 +1,15 @@
+{
+  "contract_version": "cinematic_editorial_functions_v1",
+  "knowledge_type": "common_practice",
+  "functions": [
+    "KEEP_A_ROLL", "EVIDENCE", "ILLUSTRATION", "ESTABLISH", "CONTEXT", "ACTION",
+    "PROCESS", "DETAIL", "REACTION", "EMOTION", "ATMOSPHERE", "RELATIONSHIP",
+    "CONTRAST", "REVEAL", "METAPHOR", "TRANSITION", "BREATHING", "PAYOFF",
+    "CALLBACK", "ARCHIVAL_EVIDENCE", "SOFTWARE_EVIDENCE"
+  ],
+  "principles": [
+    "KEEP_A_ROLL 是一等合法结果，不是搜索失败。",
+    "一句文稿不必强行铺满 B-roll。",
+    "用途描述镜头在当前剪辑位置承担什么责任，不等同于镜头内容标签。"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "contract_version": "cinematic_directing_rules_v1",
+  "knowledge_type": "common_practice",
+  "rules": [
+    {"id":"point_of_view","selection_question":"观众此刻跟谁看、知道多少？","prefer":"与当前人物或叙述视角一致的镜头","avoid":"无动机切换观察者"},
+    {"id":"audience_information","selection_question":"这个镜头增加了什么新信息？","prefer":"新增空间、动作、证据或反应","avoid":"只重复旁白字面"},
+    {"id":"reveal_and_withhold","selection_question":"答案现在应出现还是应延后？","prefer":"按故事节拍控制信息","avoid":"提前泄露转折或把必要信息藏得过久"},
+    {"id":"story_beat","selection_question":"这句话改变了什么？","prefer":"能体现该变化的镜头职责","avoid":"与上一节拍功能相同的泛化覆盖"},
+    {"id":"emotional_beat","selection_question":"情绪来自真实反应、声音还是观众联想？","prefer":"经上下文验证的反应或保留 A-roll","avoid":"由普通表情推断具体心理"},
+    {"id":"scene_objective","selection_question":"人物此刻要完成什么？","prefer":"体现行动目标、阻碍或结果","avoid":"只有环境没有行动关系"},
+    {"id":"character_priority","selection_question":"谁是当前信息和情绪的中心？","prefer":"优先保护主要人物的表达与反应","avoid":"用无关 B-roll 盖掉关键人物"},
+    {"id":"reaction_priority","selection_question":"事件发生后谁的反应最重要？","prefer":"真实且时间关系可信的反应","avoid":"反应先于触发却被剪成因果"},
+    {"id":"geography","selection_question":"观众是否知道人和物在哪里？","prefer":"必要时先建立或重新建立空间","avoid":"连续细节使空间失去归属"},
+    {"id":"blocking","selection_question":"人物位置和移动怎样改变关系？","prefer":"能看清位置变化和行动动机","avoid":"只选漂亮瞬间而失去走位过程"},
+    {"id":"coverage","selection_question":"现有素材是否覆盖建立、行动、细节、反应和结果？","prefer":"用不同职责补齐而非重复同一画面","avoid":"把拍摄覆盖率误当成每句必须有 B-roll"},
+    {"id":"tension_release","selection_question":"这一拍要加压还是释放？","prefer":"用时长、距离、信息与声音配合节拍","avoid":"仅以快速运镜代替真实张力"},
+    {"id":"visual_motivation","selection_question":"为什么此刻必须切到这个画面？","prefer":"由视线、动作、声音、证据或叙事信息触发","avoid":"只因为素材题材相似"}
+  ]
+}

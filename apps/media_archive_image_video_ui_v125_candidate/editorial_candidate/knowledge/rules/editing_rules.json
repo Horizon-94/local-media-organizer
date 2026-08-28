@@ -1,0 +1,23 @@
+{
+  "contract_version": "cinematic_editing_rules_v1",
+  "knowledge_type": "common_practice",
+  "rules": [
+    {"id":"continuity_editing","applies_when":["观众需要清楚理解连续时空"],"avoid_when":["明确需要制造断裂或不安"],"previous_requirements":["已建立人物和空间"],"next_requirements":["方向、视线、动作或时间关系可接续"],"narrative_effect":"让剪辑退到故事后面","failure_modes":["空间突然变化","人物方向反转"],"documentary_fit":"high"},
+    {"id":"180_degree","applies_when":["两人关系、行进方向或空间轴线需要保持"],"avoid_when":["有意越轴且已重新建立空间"],"previous_requirements":["可识别轴线或银幕方向"],"next_requirements":["主体保持一致左右关系"],"narrative_effect":"维持空间方向","failure_modes":["人物像突然换位","行进方向反转"],"documentary_fit":"high"},
+    {"id":"30_degree","applies_when":["同一主体连续切换机位"],"avoid_when":["有意使用跳切"],"previous_requirements":["已知前镜机位或构图"],"next_requirements":["角度或景别变化足够明显"],"narrative_effect":"避免无意跳动","failure_modes":["相似构图只略有位移"],"documentary_fit":"high"},
+    {"id":"eyeline_match","applies_when":["人物看向画外对象"],"avoid_when":["视线对象有意延后揭示"],"previous_requirements":["明确视线方向"],"next_requirements":["展示合理方向上的对象或人物"],"narrative_effect":"连接人物注意力与信息","failure_modes":["对象方向相反","对象并非人物所看"],"documentary_fit":"high"},
+    {"id":"match_on_action","applies_when":["同一动作有两个角度"],"avoid_when":["动作阶段不一致"],"previous_requirements":["动作已开始"],"next_requirements":["动作在相同阶段继续"],"narrative_effect":"用动作掩盖剪点","failure_modes":["动作重复","手位或物体位置跳变"],"documentary_fit":"high"},
+    {"id":"screen_direction","applies_when":["人物、车辆或视线跨镜头延续"],"avoid_when":["已用建立镜头重新定位"],"previous_requirements":["已知前镜方向"],"next_requirements":["后镜方向一致或变化有动机"],"narrative_effect":"保持行进与关系清楚","failure_modes":["无提示反向"],"documentary_fit":"high"},
+    {"id":"spatial_continuity","applies_when":["观众必须理解地点和人物关系"],"avoid_when":["空间未知本身是叙事目标"],"previous_requirements":["建立或上下文镜头"],"next_requirements":["细节仍可归属同一空间"],"narrative_effect":"提供地理清晰度","failure_modes":["细节无地点归属"],"documentary_fit":"high"},
+    {"id":"temporal_continuity","applies_when":["事件被呈现为连续发生"],"avoid_when":["明确省略、回忆或蒙太奇"],"previous_requirements":["时间基线清楚"],"next_requirements":["光线、动作和状态可延续"],"narrative_effect":"维持事件时间","failure_modes":["成熟度、天气或服装突然变化"],"documentary_fit":"high"},
+    {"id":"cutaway","applies_when":["需要隐藏删减、补充环境或暂离主动作"],"avoid_when":["插入物与现场无关且会制造错误联想"],"previous_requirements":["主场景已建立"],"next_requirements":["能够自然回到主动作"],"narrative_effect":"连接、省略或补充信息","failure_modes":["变成泛化空镜","切走关键反应"],"documentary_fit":"high"},
+    {"id":"insert","applies_when":["关键物件、手部、文字或步骤需要看清"],"avoid_when":["细节并非当前事件真实组成"],"previous_requirements":["观众知道细节属于谁/哪里"],"next_requirements":["回到动作或结果"],"narrative_effect":"提供具体证据","failure_modes":["失去空间归属","错误物件替代"],"documentary_fit":"high"},
+    {"id":"reaction_cut","applies_when":["人物接收信息或事件产生反应"],"avoid_when":["表情无法证明被描述的心理"],"previous_requirements":["反应触发点可理解"],"next_requirements":["回到触发者、对象或后续行动"],"narrative_effect":"让事件落到人物身上","failure_modes":["用普通表情伪造心理因果"],"documentary_fit":"high"},
+    {"id":"match_cut","applies_when":["两个镜头在概念、形状或动作上可形成有意联系"],"avoid_when":["联系会被误读为事实连续"],"previous_requirements":["前镜有清晰匹配特征"],"next_requirements":["后镜匹配可识别"],"narrative_effect":"跨时空建立联系","failure_modes":["只有题材相似，没有清楚匹配点"],"documentary_fit":"medium"},
+    {"id":"jump_cut","applies_when":["需要压缩时间、增强直接感或有意暴露剪辑"],"avoid_when":["希望保持观察时间与动作连续"],"previous_requirements":["同主体同机位可识别"],"next_requirements":["时间跳跃有节奏和动机"],"narrative_effect":"压缩、加速或制造断裂","failure_modes":["看起来只是剪错"],"documentary_fit":"medium"},
+    {"id":"cross_cutting","applies_when":["两条行动线需要并置或制造同时性"],"avoid_when":["没有证据证明同时发生却会被理解为同时"],"previous_requirements":["两条线已分别建立"],"next_requirements":["交替能推进比较、冲突或汇合"],"narrative_effect":"建立并行关系或张力","failure_modes":["错误同时性","频繁切换造成信息碎片"],"documentary_fit":"medium"},
+    {"id":"montage","applies_when":["压缩过程、时间或累积多个例子"],"avoid_when":["单一真实过程需要完整观察"],"previous_requirements":["观众知道蒙太奇的主题"],"next_requirements":["落到结果、转折或新的完整场景"],"narrative_effect":"压缩并累积意义","failure_modes":["漂亮镜头堆砌","缺少进展"],"documentary_fit":"medium"},
+    {"id":"dissolve_fade","applies_when":["明显时间推移、章节结束、记忆或情绪过渡"],"avoid_when":["普通连续动作"],"previous_requirements":["前一段有结束感"],"next_requirements":["后一段有新时空或新阶段"],"narrative_effect":"标记时间或章节变化","failure_modes":["转场滥用","把无关镜头柔化成假联系"],"documentary_fit":"medium"},
+    {"id":"whip_transition","applies_when":["相邻镜头都有同向快速运动且风格允许"],"avoid_when":["观察型纪录片或没有真实运动证据"],"previous_requirements":["前镜甩动方向清楚"],"next_requirements":["后镜以兼容运动进入"],"narrative_effect":"高能量转场","failure_modes":["只靠效果遮盖不匹配"],"documentary_fit":"low"}
+  ]
+}

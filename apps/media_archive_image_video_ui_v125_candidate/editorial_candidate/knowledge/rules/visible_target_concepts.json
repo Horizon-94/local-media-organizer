@@ -1,0 +1,57 @@
+{
+  "contract_version": "cinematic_visible_target_concepts_v1",
+  "knowledge_type": "common_practice",
+  "principle": "A sentence that names a directly verifiable object or service must be matched against visible evidence of that target before global story motifs are considered.",
+  "concepts": [
+    {
+      "id": "DELIVERY_SERVICE",
+      "label": "快递与物流服务",
+      "trigger_terms": ["快递", "物流", "配送", "取件", "寄件", "包裹"],
+      "candidate_terms": ["快递", "物流", "配送", "取件", "寄件", "包裹", "驿站", "快递站", "快递车", "配送车", "交接"],
+      "content_requirement": "让观众看到快递服务确实抵达当地：快递站或驿站、包裹、配送车辆、取件或交接动作至少出现一项；只有同地点的其他题材画面不能证明这件事。",
+      "aesthetic_requirement": "先用全景或中景交代服务点与周围环境，再用中近景或细节确认包裹、取件或交接；保持平视、日常、克制，避免拍成门店广告。",
+      "editing_responsibility": "承担生活条件的具体事实例证，把抽象的“便利”落到一件观众能看见的日常事情上。",
+      "capture_suggestion": "可补拍服务点外观、人员取件或交接、包裹细节三类镜头；拍摄标签和手机屏幕时避开真实姓名、地址和电话号码。"
+    },
+    {
+      "id": "DEVICE_REPAIR_SERVICE",
+      "label": "设备维修服务",
+      "trigger_terms": ["手机能修", "修手机", "手机维修", "维修手机", "维修店"],
+      "candidate_terms": ["手机", "维修", "修理", "维修店", "手机店", "工具", "拆机", "检测", "柜台"],
+      "content_requirement": "让观众看到设备维修服务真实存在：维修门店、待修设备、检测或维修动作至少出现一项，普通使用手机的画面不能替代维修证据。",
+      "aesthetic_requirement": "先交代门店或柜台，再用中近景、手部细节展示检测与维修；画面信息清楚即可，不追求产品广告式光效。",
+      "editing_responsibility": "承担当地服务能力的事实例证，与同段其他生活条件形成并列信息。",
+      "capture_suggestion": "可补拍维修门店外观、递交设备、检测或拆装细节；注意遮挡设备密码、联系人和顾客隐私。"
+    },
+    {
+      "id": "MEDICINE_ACCESS",
+      "label": "药品购买与医疗服务",
+      "trigger_terms": ["买药", "药店", "药也好买", "药能买", "药品"],
+      "candidate_terms": ["药店", "药房", "药品", "药盒", "买药", "柜台", "处方", "医疗", "诊所"],
+      "content_requirement": "让观众看到获得药品或基础医疗服务的真实路径：药店或药房、药品柜台、购买动作或可辨认的药品包装至少出现一项。",
+      "aesthetic_requirement": "以门店建立镜头配合柜台或药盒细节，构图清楚、平视自然；不要把普通商业街空镜当成已经证明可以买药。",
+      "editing_responsibility": "承担生活服务可达性的具体例证，并与前后并列事实共同形成信息累积。",
+      "capture_suggestion": "可补拍药店外观、柜台选购和药盒细节；避免拍到处方、病历、付款信息和顾客正脸。"
+    },
+    {
+      "id": "SOFTWARE_ERROR_EVIDENCE",
+      "label": "软件错误证据",
+      "trigger_terms": ["报错", "错误提示", "错误信息", "搜索失败", "加载失败"],
+      "candidate_terms": ["报错", "错误", "错误提示", "弹窗", "失败", "异常", "搜索结果", "软件界面", "屏幕录制"],
+      "content_requirement": "让观众直接看到软件界面中的错误状态、失败结果或提示文字；普通电脑操作和代码画面不能替代真实报错证据。",
+      "aesthetic_requirement": "优先清楚可读的屏幕录制或界面特写，保证错误提示在安全区内、停留时间足以阅读。",
+      "editing_responsibility": "承担事实证明，明确告诉观众问题实际发生在哪里。",
+      "capture_suggestion": "可重新录制从触发操作到错误出现的完整过程，并隐藏账号、路径、密钥和个人信息。"
+    },
+    {
+      "id": "RETAIL_TRANSACTION",
+      "label": "购买与交易行为",
+      "trigger_terms": ["买得到", "买不到", "购买", "付款", "结账", "卖出去"],
+      "candidate_terms": ["购买", "付款", "结账", "柜台", "商店", "门店", "商品", "收银", "交易"],
+      "content_requirement": "让观众看到实际购买或交易发生的对象、地点或动作，只有商品陈列或街景不能自动证明交易已经发生。",
+      "aesthetic_requirement": "用空间建立镜头说明地点，再以中景或细节呈现选择、递交、付款或取得商品的关键动作。",
+      "editing_responsibility": "承担可见行为证据或过程说明，避免把题材相近的商业空镜误当成结果。",
+      "capture_suggestion": "可补拍进入门店、选择商品、付款或取得商品的动作链；隐藏金额、账号和个人身份信息。"
+    }
+  ]
+}
