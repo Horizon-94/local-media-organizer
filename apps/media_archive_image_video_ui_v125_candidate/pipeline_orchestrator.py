@@ -413,7 +413,7 @@ def validate_stage_acceptance(task: dict[str, Any], stage_key: str) -> str:
 
 
 def validate_final_pipeline_acceptance(task: dict[str, Any]) -> dict[str, str]:
-    """Run the final, read-only 19-stage gate before search can be opened."""
+    """Run the final read-only full-pipeline gate before search can be opened."""
     db = Path(task["database"])
     errors: dict[str, str] = {}
     if not db.is_file():

@@ -2,13 +2,14 @@
 
 一个面向 macOS 的本地素材整理与搜索工具。它可以扫描图片和视频、生成预览与抽帧、建立本地 SQLite 索引，并通过 OCR、视觉标签、图文描述和向量检索提供离线搜索。
 
-当前维护源码记录：**1.2.6 热修复9**（2026-08-29）。
+当前维护源码记录：**1.2.7**（2026-08-31）。
 
-本次同步已经在本机安装验证的搜索/选片应用模块、对应测试与版本记录，
-**不发布新的 App / DMG，不把旧安装包当作热修复9**。
-原通用发行入口仍保留1.2.3；请勿用该旧构建入口声称已构建热修复9。
-详见 [热修复9说明](docs/releases/1.2.6-hotfix9.md) 与
-[热修复1–9历史](docs/history/1.2.6-hotfixes.md)。
+本次同步已经验证的通用搜索、选片界面和跨素材库查询源码、合成数据测试与版本记录。
+规则不绑定具体文稿、题材、人物、素材库名称或本机数据库路径。
+详见 [1.2.7 发行说明](docs/releases/1.2.7.md)。
+
+1.2.7同时提供通用源码和Apple Silicon便携DMG。便携DMG内含程序与六套Python运行环境，
+但不包含模型、数据库、素材或用户配置；安装后由用户在设置页选择自行下载的模型总目录。
 
 版权所有：**Copyright (C) 2026 [Horizon-94](https://github.com/Horizon-94)**
 官方源码：<https://github.com/Horizon-94/local-media-organizer>
@@ -28,10 +29,10 @@
 
 普通用户优先从 GitHub Releases 下载由 Horizon-94 发布的 macOS DMG。
 DMG 内含应用和 Python 运行环境，但**不含任何第三方模型**。
-官方 1.2.3 通用 DMG 仅面向 Apple Silicon（M 系列芯片），不提供 Intel、
+官方 1.2.7 通用 DMG 仅面向 Apple Silicon（M 系列芯片），不提供 Intel、
 Rosetta 或 Universal Binary 兼容构建。
 
-1. 安装 DMG 中的 `本地数据库.app`。
+1. 把 DMG 中的 `本地数据库 1.2.7.app` 拖入“应用程序”。
 2. 按 [模型安装说明](docs/MODEL_SETUP.md) 下载模型。
 3. 默认把模型放到：
 
@@ -39,8 +40,9 @@ Rosetta 或 Universal Binary 兼容构建。
    ~/Library/Application Support/素材大整理/Models
    ```
 
-4. 也可以在应用的“处理设置 → 本地模型位置”中选择其他总目录。
-5. 第一次运行时选择素材目录和索引输出目录；原始素材保持只读。
+4. 打开应用，在“设置 → 本地模型位置”中选择模型总目录并点击“检查并保存”。
+5. 11项模型全部显示“已找到”后退出并重新打开应用。
+6. 第一次运行时选择素材目录和索引输出目录；原始素材保持只读。
 
 官方 Release 如未使用 Apple Developer ID 签名和公证，会被 macOS
 Gatekeeper 提示。请只下载 Horizon-94 仓库中的发布附件，并核对发布页

@@ -513,7 +513,20 @@ struct TaskDetailResponse: Decodable {
     let startedAt: String?; let finishedAt: String?; let pipeline: PipelineState
     let elapsedSeconds: Double?; let elapsedHuman: String?
     let indexStorage: TaskIndexStorage?
+    let maintenanceRuns: [MaintenanceRun]?
     let error: String?
+}
+struct MaintenanceStage: Decodable, Identifiable {
+    let key: String; let name: String; let status: String
+    let elapsedSeconds: Double?; let elapsedHuman: String?
+    var id: String { key }
+}
+struct MaintenanceRun: Decodable, Identifiable {
+    let taskId: String; let mode: String; let displayName: String; let status: String
+    let createdAt: String; let startedAt: String?; let finishedAt: String?
+    let elapsedSeconds: Double?; let elapsedHuman: String?; let timingComplete: Bool
+    let stages: [MaintenanceStage]
+    var id: String { taskId }
 }
 struct TaskIndexStorage: Decodable {
     let totalBytes: Int64; let totalFileCount: Int
@@ -553,7 +566,7 @@ struct TaskComparisonResponse: Decodable {
     let status: String; let categoryDifference: [String: StorageDifference]
     let interpretation: String; let readOnly: Bool; let deletionPerformed: Bool
 }
-struct SearchCoverage: Decodable {
+struct SearchCoverage: Codable {
     let eligibleVisualUnitCount: Int
     let scannedVisualVectorCount: Int
     let scannedTextVectorCount: Int
@@ -563,7 +576,11 @@ struct SearchProgressEvent: Decodable {
     let message: String; let detail: String?
     let completed: Int?; let total: Int?; let elapsedSeconds: Double?
 }
-struct PersonClusterLink: Decodable, Identifiable {
+struct SearchResultStreamEvent: Decodable {
+    let contract: String; let items: [SearchResult]
+    let resultCountSoFar: Int; let totalHint: Int?
+}
+struct PersonClusterLink: Codable, Identifiable {
     let personClusterId: String; let memberCount: Int
     let distinctSourceCount: Int; let clusterConfidence: String
     let humanReviewStatus: String; let displayName: String
@@ -582,8 +599,8 @@ struct PersonClusterCatalogResponse: Decodable {
     let status: String; let total: Int; let items: [PersonClusterSummary]
     let capabilityNote: String?; let error: String?
 }
-struct SearchResult: Decodable, Identifiable {
-    struct ObjectLabelHit: Decodable {
+struct SearchResult: Codable, Identifiable {
+    struct ObjectLabelHit: Codable {
         let label: String?; let labelZh: String?; let confidence: Double?
     }
     let resultId: String?; let visualUnitId: String?; let sourceRelativePath: String?; let mediaType: String?
@@ -600,8 +617,10 @@ struct SearchResult: Decodable, Identifiable {
     let matchedTextTerms: [String]?
     let audioTranscriptMatch: Bool?; let audioEvidenceId: String?
     let audioStartTimeMs: Int?; let audioEndTimeMs: Int?; let audioHitTimeMs: Int?
+    let sourceMatchCount: Int?; let sourceMatchTimecodes: [String]?
     let personClusters: [PersonClusterLink]?
     let userAnnotation: UserAssetAnnotation?
+    let libraryTaskId: String?; let libraryTaskName: String?; let libraryDatabase: String?
     // Legacy rows may lack result_id. A random ID recreated the entire card
     // (and its edit state) on every progress tick or layout update.
     var id: String {
@@ -612,7 +631,7 @@ struct SearchResult: Decodable, Identifiable {
         resultId ?? "\(sourceContentId ?? "unknown")|\(timecode ?? "00:00")|\(previewPath ?? "")"
     }
 }
-struct UserAssetAnnotation: Decodable {
+struct UserAssetAnnotation: Codable {
     let tags: [String]; let note: String; let favorite: Bool
     let rating: Int; let ignored: Bool; let updatedAt: Double?
 }
@@ -621,10 +640,13 @@ struct SearchResponse: Decodable {
     let resultCount: Int?; let resultItems: [SearchResult]?; let error: String?
     let resultTotalCount: Int?; let resultOffset: Int?; let resultLimit: Int?
     let nextResultOffset: Int?; let resultCountByMedia: [String: Int]?
+    let searchScope: String?; let libraryCount: Int?; let libraryNames: [String]?
+    let skippedLibraries: [[String: String]]?; let resultCapReached: Bool?
+    let crossLibraryDuplicateCount: Int?
 }
 private struct SearchNavigationSnapshot {
     let returnTitle: String
-    let query: String; let mediaType: String; let previewWindow: String
+    let query: String; let mediaType: String; let previewWindow: String; let searchScope: String
     let searchPathPrefix: String; let searchDateFrom: String; let searchDateTo: String
     let searchRequireOCR: Bool; let searchRequirePerson: Bool
     let searchStatus: String; let searchDiagnostic: String
@@ -634,13 +656,15 @@ private struct SearchNavigationSnapshot {
     let lastSearchSignature: String; let lastSearchMediaSummary: String
     let lastSuccessfulSearchDuration: Double?
     let activePersonClusterId: String; let activePersonSourceId: String
-    let activeSourceContentId: String; let selectedPersonClusterId: String
+    let activeSourceContentId: String; let activeSourceDatabase: String
+    let selectedPersonClusterId: String
     let selectedExportResults: [String: SearchResult]; let exportStatus: String
 }
 struct SearchMetadataFilters: Decodable {
     let mediaType: String?; let previewWindowMs: Int?; let pathPrefix: String?
     let sourceMtimeMin: Int?; let sourceMtimeMax: Int?
     let hasOcr: Bool?; let hasPerson: Bool?
+    let searchScope: String?
 }
 struct SearchHistoryItem: Decodable, Identifiable {
     let queryId: String; let queryText: String; let filters: SearchMetadataFilters
@@ -655,6 +679,52 @@ struct SavedSearchItem: Decodable, Identifiable {
 struct SearchMetadataResponse: Decodable {
     let status: String; let taskId: String
     let history: [SearchHistoryItem]; let savedSearches: [SavedSearchItem]
+}
+struct SearchResultCacheEntry: Codable {
+    let database: String; let signature: String; let queryText: String
+    let createdAt: Double; let searchTotalCount: Int
+    let results: [SearchResult]; let coverage: SearchCoverage?
+    let nextResultOffset: Int?; let mediaSummary: String
+    let elapsedSeconds: Double?
+}
+
+// The cache is independent from the material SQLite database. It stores only
+// recent result metadata and existing preview paths, never media bytes.
+enum SearchResultCacheStore {
+    private static let queue = DispatchQueue(label: "search.result-cache", qos: .utility)
+    private static var url: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalMediaOrganizer/SearchCache/recent_v1.json")
+    }
+    private static func read() -> [SearchResultCacheEntry] {
+        guard let data = try? Data(contentsOf: url), data.count <= 64 * 1024 * 1024 else { return [] }
+        return (try? JSONDecoder().decode([SearchResultCacheEntry].self, from: data)) ?? []
+    }
+    static func load(database: String, completion: @escaping ([SearchResultCacheEntry]) -> Void) {
+        queue.async {
+            let rows = read().filter { $0.database == database }.prefix(10)
+            DispatchQueue.main.async { completion(Array(rows)) }
+        }
+    }
+    static func save(_ entry: SearchResultCacheEntry) {
+        queue.async {
+            var rows = read().filter { !($0.database == entry.database && $0.signature == entry.signature) }
+            rows.insert(entry, at: 0)
+            // Keep ten recent queries per library and cap the shared file.
+            var counts: [String: Int] = [:]
+            rows = rows.filter {
+                let count = counts[$0.database, default: 0]
+                guard count < 10 else { return false }
+                counts[$0.database] = count + 1; return true
+            }
+            rows = Array(rows.prefix(40))
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                try encoder.encode(rows).write(to: url, options: .atomic)
+            } catch { /* Search remains usable; cache failure is non-fatal. */ }
+        }
+    }
 }
 struct ActionResponse: Decodable {
     let status: String; let message: String?; let path: String?
@@ -1091,6 +1161,7 @@ final class ArchiveModel: ObservableObject {
     @Published var loadError = ""
     @Published var query = ""
     @Published var mediaType = "全部"
+    @Published var searchScope = "当前素材库"
     @Published var previewWindow = "10 秒"
     @Published var searchPathPrefix = ""
     @Published var searchDateFrom = ""
@@ -1122,6 +1193,7 @@ final class ArchiveModel: ObservableObject {
     @Published var activePersonClusterId = ""
     @Published var activePersonSourceId = ""
     @Published var activeSourceContentId = ""
+    @Published var activeSourceDatabase = ""
     @Published var searchNavigationDepth = 0
     @Published var searchNavigationTitle = ""
     @Published var selectedPersonClusterId = ""
@@ -1199,6 +1271,7 @@ final class ArchiveModel: ObservableObject {
     private var editorialSessionId = UUID().uuidString
     private var editorialSessionRestoring = false
     private let editorialWriter = EditorialSessionWriter()
+    private var editorialAutosaveWorkItem: DispatchWorkItem?
     private let editorialDisplayText = EditorialDisplayText()
     private var editorialSaveRevision = 0
     @Published var editorialFavoritesPresented = false
@@ -1227,6 +1300,8 @@ final class ArchiveModel: ObservableObject {
     private var lastSearchMediaSummary = ""
     private var searchNavigationStack: [SearchNavigationSnapshot] = []
     private var searchPrewarmAttempted = false
+    private var recentSearchResultCache: [String: SearchResultCacheEntry] = [:]
+    private var searchStreamHasPublished = false
 
     let taskModes = ["第一次完整整理", "增量整理", "修复缺失内容", "重建搜索入口", "补充音频搜索"]
 
@@ -1247,8 +1322,8 @@ final class ArchiveModel: ObservableObject {
         case "增量整理": return "在原素材库中重新对账，只处理新增、变更或缺少结果的素材；已完成且有效的结果不会重跑。"
         case "修复缺失内容": return "逐阶段核对数据库与正式产物；只补缺失或无效结果，已有成功记录不重跑。"
         case "重建搜索入口": return "只复用现有描述、OCR、标签和向量，重建数据库搜索入口；不读取原始素材，也不运行识别模型。"
-        case "补充音频搜索": return "只读取所选索引中的视频，提取人声、转写文字并建立音频文本向量；不会重跑前19阶段。临时音频在逐视频写库后立即删除，只保留文本、时间点和向量。"
-        default: return "从素材扫描开始建立一个新的完整素材库。"
+        case "补充音频搜索": return "只读取所选索引中的视频，提取人声、转写文字并建立音频文本向量；不会重跑其他整理阶段。临时音频在逐视频写库后立即删除，只保留文本、时间点和向量。"
+        default: return "从素材扫描开始建立一个新的完整素材库；完整流程包含人声音频转写搜索，实际阶段数会按图片分析范围自动确定。"
         }
     }
 
@@ -1270,6 +1345,7 @@ final class ArchiveModel: ObservableObject {
     deinit {
         refreshTimer?.invalidate()
         searchElapsedTimer?.invalidate()
+        editorialAutosaveWorkItem?.cancel()
     }
 
     private func decoder() -> JSONDecoder {
@@ -1300,6 +1376,7 @@ final class ArchiveModel: ObservableObject {
     private func runSearchHelper(
         _ arguments: [String],
         progress: @escaping (SearchProgressEvent) -> Void,
+        stream: @escaping (SearchResultStreamEvent) -> Void,
         completion: @escaping (Data?, String?) -> Void
     ) {
         let helper = helperURL; let config = configURL
@@ -1339,16 +1416,16 @@ final class ArchiveModel: ObservableObject {
                         while let newline = pending.firstIndex(of: 10) {
                             let lineData = pending.prefix(upTo: newline)
                             pending.removeSubrange(...newline)
-                            guard let line = String(data: lineData, encoding: .utf8),
-                                  line.hasPrefix("SEARCH_PROGRESS_JSON="),
-                                  let jsonData = String(
-                                    line.dropFirst("SEARCH_PROGRESS_JSON=".count)
-                                  ).data(using: .utf8),
-                                  let event = try? self.decoder().decode(
-                                    SearchProgressEvent.self, from: jsonData
-                                  )
-                            else { continue }
-                            DispatchQueue.main.async { progress(event) }
+                            guard let line = String(data: lineData, encoding: .utf8) else { continue }
+                            if line.hasPrefix("SEARCH_PROGRESS_JSON="),
+                               let jsonData = String(line.dropFirst("SEARCH_PROGRESS_JSON=".count)).data(using: .utf8),
+                               let event = try? self.decoder().decode(SearchProgressEvent.self, from: jsonData) {
+                                DispatchQueue.main.async { progress(event) }
+                            } else if line.hasPrefix("SEARCH_RESULT_STREAM_JSON="),
+                                      let jsonData = String(line.dropFirst("SEARCH_RESULT_STREAM_JSON=".count)).data(using: .utf8),
+                                      let event = try? self.decoder().decode(SearchResultStreamEvent.self, from: jsonData) {
+                                DispatchQueue.main.async { stream(event) }
+                            }
                         }
                     }
                     readGroup.leave()
@@ -1389,7 +1466,7 @@ final class ArchiveModel: ObservableObject {
         searchStartedAt = Date()
         searchElapsedSeconds = 0
         searchElapsedTimer = Timer.scheduledTimer(
-            withTimeInterval: 0.2, repeats: true
+            withTimeInterval: 0.5, repeats: true
         ) { [weak self] _ in
             guard let self, let started = self.searchStartedAt else { return }
             self.searchElapsedSeconds = Date().timeIntervalSince(started)
@@ -1678,9 +1755,11 @@ final class ArchiveModel: ObservableObject {
         serverNextSearchOffset = nil; lastSearchSignature = ""
         activePersonClusterId = ""; activePersonSourceId = ""
         activeSourceContentId = ""
+        activeSourceDatabase = ""
         clearSearchNavigation()
         selectedPersonClusterId = ""; searchDiagnostic = ""
         searchHistory = []; savedSearches = []; savedSearchName = ""
+        recentSearchResultCache = [:]
         searchStatus = "已切换搜索素材库；请输入关键词开始搜索"
     }
 
@@ -1688,7 +1767,7 @@ final class ArchiveModel: ObservableObject {
         guard !searchResults.isEmpty else { return }
         searchNavigationStack.append(SearchNavigationSnapshot(
             returnTitle: title,
-            query: query, mediaType: mediaType, previewWindow: previewWindow,
+            query: query, mediaType: mediaType, previewWindow: previewWindow, searchScope: searchScope,
             searchPathPrefix: searchPathPrefix, searchDateFrom: searchDateFrom,
             searchDateTo: searchDateTo, searchRequireOCR: searchRequireOCR,
             searchRequirePerson: searchRequirePerson,
@@ -1702,6 +1781,7 @@ final class ArchiveModel: ObservableObject {
             activePersonClusterId: activePersonClusterId,
             activePersonSourceId: activePersonSourceId,
             activeSourceContentId: activeSourceContentId,
+            activeSourceDatabase: activeSourceDatabase,
             selectedPersonClusterId: selectedPersonClusterId,
             selectedExportResults: selectedExportResults, exportStatus: exportStatus
         ))
@@ -1718,6 +1798,7 @@ final class ArchiveModel: ObservableObject {
     func navigateBackInSearch() {
         guard !searching, let snapshot = searchNavigationStack.popLast() else { return }
         query = snapshot.query; mediaType = snapshot.mediaType; previewWindow = snapshot.previewWindow
+        searchScope = snapshot.searchScope
         searchPathPrefix = snapshot.searchPathPrefix; searchDateFrom = snapshot.searchDateFrom
         searchDateTo = snapshot.searchDateTo; searchRequireOCR = snapshot.searchRequireOCR
         searchRequirePerson = snapshot.searchRequirePerson
@@ -1731,6 +1812,7 @@ final class ArchiveModel: ObservableObject {
         activePersonClusterId = snapshot.activePersonClusterId
         activePersonSourceId = snapshot.activePersonSourceId
         activeSourceContentId = snapshot.activeSourceContentId
+        activeSourceDatabase = snapshot.activeSourceDatabase
         selectedPersonClusterId = snapshot.selectedPersonClusterId
         selectedExportResults = snapshot.selectedExportResults; exportStatus = snapshot.exportStatus
         searchProgress = nil; searchCancelling = false
@@ -1796,13 +1878,111 @@ final class ArchiveModel: ObservableObject {
             : "共 \(searchTotalCount) 条可靠结果\(lastSearchMediaSummary) · 当前显示 \(searchResults.count) 条\(reused ? " · 已即时复用本次结果" : elapsed) · 搜索结果只读，查询历史仅保存在当前素材库"
     }
 
-    func search(loadMore: Bool = false) {
+    private func searchSignature(_ clean: String) -> String {
+        "\(clean)\u{0}\(searchScope)\u{0}\(mediaType)\u{0}\(previewWindow)\u{0}\(searchPathPrefix)\u{0}\(searchDateFrom)\u{0}\(searchDateTo)\u{0}\(searchRequireOCR)\u{0}\(searchRequirePerson)"
+    }
+
+    private var activeSearchCacheKey: String {
+        if searchScope == "全部素材库" {
+            let databases = (snapshot?.existingLibraries ?? []).map(\.database).sorted()
+            return "all|" + databases.joined(separator: "|")
+        }
+        return snapshot?.searchRuntime.databasePreflight?.databasePath ?? ""
+    }
+
+    func resultBelongsToActiveLibrary(_ result: SearchResult) -> Bool {
+        guard let database = result.libraryDatabase, !database.isEmpty else { return true }
+        guard let current = snapshot?.searchRuntime.databasePreflight?.databasePath else { return false }
+        return URL(fileURLWithPath: database).standardizedFileURL
+            == URL(fileURLWithPath: current).standardizedFileURL
+    }
+
+    func openSearchHistory(_ item: SearchHistoryItem) {
+        applySearchMetadata(item.queryText, filters: item.filters)
+        let clean = item.queryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let signature = searchSignature(clean)
+        if let cached = recentSearchResultCache[signature], cached.database == activeSearchCacheKey {
+            clearSearchNavigation()
+            lastSearchSignature = signature
+            bufferedSearchResults = cached.results
+            searchResults = Array(cached.results.prefix(30))
+            searchCoverage = cached.coverage
+            searchTotalCount = cached.searchTotalCount
+            serverNextSearchOffset = cached.nextResultOffset
+            lastSearchMediaSummary = cached.mediaSummary
+            lastSuccessfulSearchDuration = cached.elapsedSeconds
+            updateSearchPageMarker()
+            searchStatus = "已立即恢复上次的 \(searchResults.count) 条画面；正在后台刷新，浏览不必等待。"
+            search(forceRefresh: true, keepVisibleResults: true)
+        } else {
+            search()
+        }
+    }
+
+    private func cacheSearchResult(
+        signature: String, queryText: String, response: SearchResponse
+    ) {
+        let database = activeSearchCacheKey
+        guard !database.isEmpty else { return }
+        let entry = SearchResultCacheEntry(
+            database: database, signature: signature, queryText: queryText,
+            createdAt: Date().timeIntervalSince1970,
+            searchTotalCount: response.resultTotalCount ?? bufferedSearchResults.count,
+            results: Array(bufferedSearchResults.prefix(200)), coverage: response.coverage,
+            nextResultOffset: response.nextResultOffset,
+            mediaSummary: lastSearchMediaSummary,
+            elapsedSeconds: response.elapsedSeconds ?? lastSuccessfulSearchDuration
+        )
+        recentSearchResultCache[signature] = entry
+        if recentSearchResultCache.count > 10 {
+            let keep = recentSearchResultCache.values.sorted { $0.createdAt > $1.createdAt }.prefix(10)
+            recentSearchResultCache = Dictionary(uniqueKeysWithValues: keep.map { ($0.signature, $0) })
+        }
+        SearchResultCacheStore.save(entry)
+    }
+
+    private func loadSearchResultCache() {
+        let database = activeSearchCacheKey
+        guard !database.isEmpty else { recentSearchResultCache = [:]; return }
+        SearchResultCacheStore.load(database: database) { rows in
+            guard database == self.activeSearchCacheKey else { return }
+            self.recentSearchResultCache = Dictionary(uniqueKeysWithValues: rows.map { ($0.signature, $0) })
+        }
+    }
+
+    func searchScopeChanged() {
+        guard !searching else { return }
+        searchResults = []; bufferedSearchResults = []
+        searchCoverage = nil; searchTotalCount = 0
+        nextSearchOffset = nil; serverNextSearchOffset = nil
+        lastSearchSignature = ""; lastSearchMediaSummary = ""
+        clearSearchNavigation(); selectedExportResults = [:]
+        recentSearchResultCache = [:]
+        loadSearchResultCache()
+        searchStatus = searchScope == "全部素材库"
+            ? "将依次只读搜索全部已登记素材库，并统一排序去重。"
+            : "将只读搜索当前素材库。"
+    }
+
+    private func decodeSearchPayload(
+        _ data: Data,
+        completion: @escaping (SearchResponse?, ErrorResponse?) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let decoder = self.decoder()
+            let success = try? decoder.decode(SearchResponse.self, from: data)
+            let failure = success == nil ? try? decoder.decode(ErrorResponse.self, from: data) : nil
+            DispatchQueue.main.async { completion(success, failure) }
+        }
+    }
+
+    func search(loadMore: Bool = false, forceRefresh: Bool = false, keepVisibleResults: Bool = false) {
         if loadMore, lastSearchSignature.hasPrefix("person-track:"), !selectedPersonClusterId.isEmpty {
             searchPersonTrackSuggestions(selectedPersonClusterId, loadMore: true)
             return
         }
         if loadMore, !activeSourceContentId.isEmpty {
-            browseSourceFrames(activeSourceContentId, loadMore: true)
+            browseSourceFrames(activeSourceContentId, database: activeSourceDatabase, loadMore: true)
             return
         }
         if loadMore, !activePersonClusterId.isEmpty {
@@ -1817,14 +1997,14 @@ final class ArchiveModel: ObservableObject {
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { searchStatus = "请输入要搜索的内容"; return }
         guard let advancedArguments = searchAdvancedArguments() else { return }
-        let signature = "\(clean)\u{0}\(mediaType)\u{0}\(previewWindow)\u{0}\(searchPathPrefix)\u{0}\(searchDateFrom)\u{0}\(searchDateTo)\u{0}\(searchRequireOCR)\u{0}\(searchRequirePerson)"
+        let signature = searchSignature(clean)
         let continuing = loadMore && signature == lastSearchSignature
         if !loadMore { clearSearchNavigation() }
         if continuing && searchResults.count < bufferedSearchResults.count {
             showNextBufferedSearchPage()
             return
         }
-        if !loadMore && signature == lastSearchSignature && !bufferedSearchResults.isEmpty {
+        if !loadMore && !forceRefresh && signature == lastSearchSignature && !bufferedSearchResults.isEmpty {
             searchResults = Array(bufferedSearchResults.prefix(30))
             updateSearchPageMarker()
             finishSearchStatus(reused: true)
@@ -1834,84 +2014,134 @@ final class ArchiveModel: ObservableObject {
         if continuing && serverNextSearchOffset == nil { return }
         searching = true
         searchCancelling = false
+        searchStreamHasPublished = false
         searchProgress = SearchProgressEvent(
             contract: "media_archive_search_progress_v1",
             stage: "starting", stageIndex: 1, totalStages: 7,
             message: "正在启动本地只读搜索",
-            detail: "查询“\(clean)” · 范围：\(mediaType) · 预览：\(previewWindow)",
+            detail: "查询“\(clean)” · 素材库：\(searchScope) · 范围：\(mediaType) · 预览：\(previewWindow)",
             completed: nil, total: nil, elapsedSeconds: 0
         )
         startSearchTimer()
         if !continuing {
-            searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
+            if !keepVisibleResults {
+                searchResults = []; bufferedSearchResults = []
+                searchTotalCount = 0; nextSearchOffset = nil
+                searchCoverage = nil; serverNextSearchOffset = nil
+                lastSearchMediaSummary = ""
+            }
             // A new query must not display coverage from the previous media
             // filter while the replacement search is still running.
-            searchCoverage = nil
             lastSearchSignature = signature; activePersonClusterId = ""
             activePersonSourceId = ""
             activeSourceContentId = ""
+            activeSourceDatabase = ""
             selectedPersonClusterId = ""; searchDiagnostic = ""
-            bufferedSearchResults = []; serverNextSearchOffset = nil
-            lastSearchMediaSummary = ""
         }
         searchStatus = continuing
             ? "正在获取下一批结果；已有结果会继续保留…"
-            : "正在搜索“\(clean)”；下方会实时显示范围、阶段和耗时…"
+            : (keepVisibleResults
+               ? "已显示上次结果；正在后台刷新“\(clean)”，当前画面可继续浏览…"
+               : "正在搜索“\(clean)”；下方会实时显示范围、阶段和耗时…")
         let media = mediaType == "视频" ? "video" : (mediaType == "图片" ? "image" : (mediaType == "音频（人声转写）" ? "audio" : "all"))
         let window = previewWindow == "5 秒" ? "5000" : "10000"
         runSearchHelper([
             "search", "--query", clean, "--media-type", media,
             "--preview-window-ms", window, "--result-offset", String(offset),
-            "--result-limit", "200",
+            "--result-limit", "200", "--search-scope",
+            searchScope == "全部素材库" ? "all" : "current",
         ] + advancedArguments, progress: { event in
             self.searchProgress = event
             if let elapsed = event.elapsedSeconds {
                 self.searchElapsedSeconds = max(self.searchElapsedSeconds, elapsed)
             }
+        }, stream: { event in
+            if !continuing && !self.searchStreamHasPublished {
+                self.bufferedSearchResults = []
+                self.searchResults = []
+                self.serverNextSearchOffset = nil
+                self.searchStreamHasPublished = true
+            }
+            let existing = Set(self.bufferedSearchResults.map(\.id))
+            self.bufferedSearchResults.append(contentsOf: event.items.filter { !existing.contains($0.id) })
+            // Keep the foreground growing while protecting SwiftUI from a
+            // 200-row publication burst. More rows remain buffered.
+            let visibleLimit = min(60, self.bufferedSearchResults.count)
+            self.searchResults = Array(self.bufferedSearchResults.prefix(visibleLimit))
+            self.searchTotalCount = max(self.searchTotalCount, event.resultCountSoFar)
+            self.updateSearchPageMarker()
+            self.searchStatus = "搜索仍在继续 · 已先显示 \(self.searchResults.count) 个结果，可以立即浏览和向下滚动"
         }) { data, error in
             let wasCancelled = self.searchCancelling
-            self.searching = false
-            self.searchCancelling = false
-            self.stopSearchTimer()
             if wasCancelled {
+                self.searching = false
+                self.searchCancelling = false
+                self.stopSearchTimer()
                 self.searchProgress = nil
                 self.loadSearchMetadata()
                 self.searchStatus = "已取消本次搜索；已有结果未受影响"
                 return
             }
-            if let data, let response = try? self.decoder().decode(SearchResponse.self, from: data), response.status == "PASS" {
-                let incoming = response.resultItems ?? []
-                if continuing {
-                    let existing = Set(self.bufferedSearchResults.map(\.id))
-                    self.bufferedSearchResults.append(
-                        contentsOf: incoming.filter { !existing.contains($0.id) }
-                    )
+            guard let data else {
+                self.searching = false; self.searchCancelling = false; self.stopSearchTimer()
+                self.searchStatus = keepVisibleResults
+                    ? "上次结果仍可浏览；后台刷新失败：\(error ?? "未知错误")"
+                    : (error ?? "搜索失败，请检查本地模型和索引状态")
+                self.searchDiagnostic = error ?? ""; self.searchProgress = nil
+                return
+            }
+            self.searchStatus = keepVisibleResults
+                ? "上次结果仍可浏览；后台搜索已完成，正在整理新结果…"
+                : "搜索已完成，正在后台整理结果…"
+            self.decodeSearchPayload(data) { response, failure in
+                self.searching = false; self.searchCancelling = false; self.stopSearchTimer()
+                if let response, response.status == "PASS" {
+                    let incoming = response.resultItems ?? []
+                    let streamedVisibleCount = self.searchStreamHasPublished ? self.searchResults.count : 0
+                    if continuing {
+                        let existing = Set(self.bufferedSearchResults.map(\.id))
+                        self.bufferedSearchResults.append(contentsOf: incoming.filter { !existing.contains($0.id) })
+                    } else {
+                        self.bufferedSearchResults = incoming; self.searchResults = []
+                    }
+                    self.searchCoverage = response.coverage
+                    self.searchTotalCount = response.resultTotalCount ?? self.bufferedSearchResults.count
+                    self.serverNextSearchOffset = response.nextResultOffset
+                    let mediaCounts = response.resultCountByMedia ?? [:]
+                    let mediaSummary = media == "all"
+                        ? " · 图片 \(mediaCounts["image"] ?? 0) 条，视频 \(mediaCounts["video"] ?? 0) 条" : ""
+                    let librarySummary = response.searchScope == "all"
+                        ? " · 已搜索 \(response.libraryCount ?? 0) 个素材库" : ""
+                    self.lastSearchMediaSummary = mediaSummary + librarySummary
+                    self.lastSuccessfulSearchDuration = response.elapsedSeconds ?? self.searchElapsedSeconds
+                    if streamedVisibleCount > 0 {
+                        self.searchResults = Array(self.bufferedSearchResults.prefix(max(30, streamedVisibleCount)))
+                        self.updateSearchPageMarker()
+                    } else {
+                        self.showNextBufferedSearchPage()
+                    }
+                    self.finishSearchStatus()
+                    if response.searchScope == "all", response.resultCapReached == true {
+                        self.searchStatus += " · 当前展示跨库综合排序前 200 条"
+                    }
+                    if let skipped = response.skippedLibraries, !skipped.isEmpty {
+                        self.searchStatus += " · \(skipped.count) 个素材库未通过预检，可查看诊断"
+                        self.searchDiagnostic = skipped.map {
+                            "\($0["library"] ?? "未命名素材库")：\($0["reason"] ?? "无法搜索")"
+                        }.joined(separator: "\n")
+                    }
+                    if response.skippedLibraries?.isEmpty != false { self.searchDiagnostic = "" }
+                    self.searchProgress = nil
+                    if !continuing { self.cacheSearchResult(signature: signature, queryText: clean, response: response) }
+                } else if let failure {
+                    self.searchStatus = keepVisibleResults
+                        ? "上次结果仍可浏览；后台刷新失败：\(failure.displayMessage)"
+                        : (failure.displayMessage.isEmpty ? "搜索失败" : failure.displayMessage)
+                    self.searchDiagnostic = failure.diagnosticText; self.searchProgress = nil
                 } else {
-                    self.bufferedSearchResults = incoming
-                    self.searchResults = []
+                    self.searchStatus = keepVisibleResults ? "上次结果仍可浏览；后台返回无法解析" : "搜索失败，返回结果无法解析"
+                    self.searchDiagnostic = error ?? ""; self.searchProgress = nil
                 }
-                self.searchCoverage = response.coverage
-                self.searchTotalCount = response.resultTotalCount
-                    ?? self.bufferedSearchResults.count
-                self.serverNextSearchOffset = response.nextResultOffset
-                let mediaCounts = response.resultCountByMedia ?? [:]
-                self.lastSearchMediaSummary = media == "all"
-                    ? " · 图片 \(mediaCounts["image"] ?? 0) 条，视频 \(mediaCounts["video"] ?? 0) 条"
-                    : ""
-                self.lastSuccessfulSearchDuration = response.elapsedSeconds
-                    ?? self.searchElapsedSeconds
-                self.showNextBufferedSearchPage()
-                self.finishSearchStatus()
-                self.searchDiagnostic = ""
-                self.searchProgress = nil
-            } else if let data, let failure = try? self.decoder().decode(ErrorResponse.self, from: data) {
-                self.searchStatus = failure.displayMessage.isEmpty ? "搜索失败" : failure.displayMessage
-                self.searchDiagnostic = failure.diagnosticText
-                self.searchProgress = nil
-            } else {
-                self.searchStatus = error ?? "搜索失败，请检查本地模型和索引状态"
-                self.searchDiagnostic = error ?? ""
-                self.searchProgress = nil
             }
         }
     }
@@ -1927,6 +2157,7 @@ final class ArchiveModel: ObservableObject {
                 self.searchHistory = response.history
                 self.savedSearches = response.savedSearches
                 self.searchMetadataStatus = ""
+                self.loadSearchResultCache()
             } catch {
                 self.searchMetadataStatus = "搜索历史解析失败：\(error.localizedDescription)"
             }
@@ -1940,6 +2171,7 @@ final class ArchiveModel: ObservableObject {
         searchPathPrefix = filters.pathPrefix ?? ""
         searchRequireOCR = filters.hasOcr ?? false
         searchRequirePerson = filters.hasPerson ?? false
+        searchScope = filters.searchScope == "all" ? "全部素材库" : "当前素材库"
         searchDateFrom = filters.sourceMtimeMin.map(dateText) ?? ""
         searchDateTo = filters.sourceMtimeMax.map(dateText) ?? ""
     }
@@ -1986,6 +2218,7 @@ final class ArchiveModel: ObservableObject {
         runHelper([
             "save-search", "--name", cleanName, "--query", cleanQuery,
             "--media-type", media, "--preview-window-ms", window,
+            "--search-scope", searchScope == "全部素材库" ? "all" : "current",
         ] + advancedArguments) { data, error in
             if data != nil {
                 self.searchMetadataStatus = "已保存到当前素材库"
@@ -2012,13 +2245,17 @@ final class ArchiveModel: ObservableObject {
             completion?(false, message)
             return
         }
-        runHelper([
+        var arguments = [
             "annotate-source", "--source-content-id", sourceId,
             "--tags", tags, "--note", note,
             "--favorite", favorite ? "true" : "false",
             "--rating", String(rating),
             "--ignored", ignored ? "true" : "false",
-        ]) { data, error in
+        ]
+        if let database = result.libraryDatabase, !database.isEmpty {
+            arguments += ["--database", database]
+        }
+        runHelper(arguments) { data, error in
             let message = data != nil
                 ? "素材标签、备注和星标已保存；模型结果未修改"
                 : (error ?? "保存素材备注失败")
@@ -2324,7 +2561,16 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
-    func browseSourceFrames(_ sourceContentId: String, loadMore: Bool = false) {
+    func browseSourceFrames(_ result: SearchResult) {
+        guard let sourceContentId = result.sourceContentId else { return }
+        browseSourceFrames(
+            sourceContentId, database: result.libraryDatabase ?? "", loadMore: false,
+        )
+    }
+
+    func browseSourceFrames(
+        _ sourceContentId: String, database: String = "", loadMore: Bool = false
+    ) {
         let cleanId = sourceContentId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanId.isEmpty, !searching else { return }
         let continuing = loadMore && activeSourceContentId == cleanId
@@ -2337,16 +2583,19 @@ final class ArchiveModel: ObservableObject {
             searchResults = []; searchTotalCount = 0; nextSearchOffset = nil
             searchCoverage = nil; searchDiagnostic = ""
             activeSourceContentId = cleanId
+            activeSourceDatabase = database
             activePersonClusterId = ""; activePersonSourceId = ""
             lastSearchSignature = "source-frames:\(cleanId)"
         }
         searchStatus = continuing ? "正在加载该视频的更多画面…" : "正在读取该视频的全部索引画面…"
         let window = previewWindow == "5 秒" ? "5000" : "10000"
-        runHelper([
+        var arguments = [
             "source-frames", "--source-content-id", cleanId,
             "--preview-window-ms", window,
             "--result-offset", String(offset), "--result-limit", "60",
-        ]) { data, error in
+        ]
+        if !database.isEmpty { arguments += ["--database", database] }
+        runHelper(arguments) { data, error in
             self.searching = false
             if let data, let response = try? self.decoder().decode(SearchResponse.self, from: data),
                response.status == "PASS" {
@@ -2720,6 +2969,7 @@ final class ArchiveModel: ObservableObject {
         // Keep them visible as reference; never silently turn them into mtime filters.
         searchPathPrefix = ""; searchDateFrom = ""; searchDateTo = ""
         searchRequireOCR = false; searchRequirePerson = false; mediaType = "全部"
+        searchScope = "当前素材库"
         activePersonClusterId = ""; activePersonSourceId = ""; activeSourceContentId = ""; selectedPersonClusterId = ""
         searchResults = []; bufferedSearchResults = []; searchCoverage = nil
         searchTotalCount = 0; nextSearchOffset = nil; serverNextSearchOffset = nil; lastSearchSignature = ""
@@ -2811,13 +3061,8 @@ final class ArchiveModel: ObservableObject {
             timelineName: editorialTimelineName, frameRate: editorialFrameRate, includeBackups: editorialIncludeBackups)
     }
 
-    func autosaveEditorialSession() {
-        guard let session = captureEditorialSession() else { return }
-        editorialSaveRevision += 1
-        let revision = editorialSaveRevision
-        editorialSessionStatus = "正在后台保存第 \(session.activeBeat + 1) 句的进度…请等到“已保存”再强制退出。"
-        let url = editorialSessionDirectory.appendingPathComponent(session.sessionId + ".json")
-        editorialWriter.submit(session, to: url) { [weak self] result in
+    private func submitEditorialAutosave(_ session: EditorialSession, revision: Int) {
+        editorialWriter.submit(session, to: editorialSessionDirectory.appendingPathComponent(session.sessionId + ".json")) { [weak self] result in
             guard let self, self.editorialSessionId == session.sessionId, self.editorialSaveRevision == revision else { return }
             switch result {
             case .success: self.editorialSessionStatus = "已自动保存 · 第 \(session.activeBeat + 1) 句 · \(Date().formatted(date: .omitted, time: .standard))。关闭后可继续最近工程。"
@@ -2826,8 +3071,24 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
+    func autosaveEditorialSession(immediate: Bool = false) {
+        guard let session = captureEditorialSession() else { return }
+        editorialSaveRevision += 1
+        let revision = editorialSaveRevision
+        editorialSessionStatus = "正在后台保存第 \(session.activeBeat + 1) 句的进度…请等到“已保存”再强制退出。"
+        editorialAutosaveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.editorialSaveRevision == revision else { return }
+            self.submitEditorialAutosave(session, revision: revision)
+        }
+        editorialAutosaveWorkItem = work
+        if immediate { work.perform() }
+        else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: work) }
+    }
+
     func finishEditorialSaves(_ completion: @escaping EditorialSessionWriter.Completion) {
-        autosaveEditorialSession()
+        editorialAutosaveWorkItem?.cancel()
+        autosaveEditorialSession(immediate: true)
         editorialWriter.finish(completion)
     }
 
@@ -4773,7 +5034,7 @@ struct HistoryPage: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(library.taskName).font(.headline)
                     Text(library.sourceRoot).font(.caption).foregroundStyle(archiveMuted)
-                    Text("图片 \(library.imageCount) · 视频 \(library.videoCount) · 总用时 \(library.elapsedHuman ?? "--") · \(library.createdAt)").font(.caption2).foregroundStyle(archiveMuted)
+                    Text("图片 \(library.imageCount) · 视频 \(library.videoCount) · 原始整理用时 \(library.elapsedHuman ?? "--") · \(library.createdAt)").font(.caption2).foregroundStyle(archiveMuted)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 6) {
@@ -4864,7 +5125,7 @@ struct HistoryPage: View {
                 Panel { VStack(alignment: .leading, spacing: 6) {
                     Text(detail.taskName).font(.title3.bold())
                     Text("任务状态：\(detail.taskStatus) · 总进度 \(String(format: "%.1f%%", detail.pipeline.overallPercent))").foregroundStyle(archiveMuted)
-                    Text("开始：\(detail.startedAt ?? "--") · 结束：\(detail.finishedAt ?? "--") · 总用时：\(detail.elapsedHuman ?? formatSeconds(detail.elapsedSeconds))")
+                    Text("开始：\(detail.startedAt ?? "--") · 结束：\(detail.finishedAt ?? "--") · 原始整理用时：\(detail.elapsedHuman ?? formatSeconds(detail.elapsedSeconds))")
                         .font(.caption).foregroundStyle(archiveMuted)
                     if let storage = detail.indexStorage {
                         Text("索引占用：\(formatBytes(storage.totalBytes)) · \(storage.totalFileCount.formatted()) 个文件（只统计索引任务目录，不读取原始素材）")
@@ -4907,6 +5168,34 @@ struct HistoryPage: View {
                             if stage.total > 0 { Text("\(stage.done) / \(stage.total)").font(.caption).foregroundStyle(archiveMuted) }
                         }.padding(.vertical, 5)
                     }
+                    if let maintenanceRuns = detail.maintenanceRuns, !maintenanceRuns.isEmpty {
+                        Divider()
+                        Text("后续维护记录（不计入原始阶段数）").font(.headline)
+                        Text("补充音频、修复和重建任务单独保存；这里显示旧项目原来缺失的记录。")
+                            .font(.caption).foregroundStyle(archiveMuted)
+                        ForEach(maintenanceRuns) { run in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(run.displayName).font(.subheadline.bold())
+                                    Spacer()
+                                    Text(run.status == "success" ? "已完成" : (run.status == "cancelled" ? "已中止" : run.status))
+                                        .font(.caption)
+                                        .foregroundStyle(run.status == "success" ? archiveGreen : archiveOrange)
+                                }
+                                Text("开始：\(run.startedAt ?? "--") · 结束：\(run.finishedAt ?? "--") · \(run.timingComplete ? "已记录用时：\(run.elapsedHuman ?? formatSeconds(run.elapsedSeconds))" : "已记录运行区间：\(run.elapsedHuman ?? formatSeconds(run.elapsedSeconds))（任务未完成，用时可能不完整）")")
+                                    .font(.caption).foregroundStyle(archiveMuted)
+                                if run.stages.count > 1 {
+                                    ForEach(run.stages) { stage in
+                                        Text("\(stage.name) · \(stage.status == "success" ? "已完成" : (stage.status == "cancelled" ? "已中止" : stage.status)) · \(stage.elapsedHuman ?? "用时未完整记录")")
+                                            .font(.caption2).foregroundStyle(archiveMuted)
+                                    }
+                                }
+                            }
+                            .padding(8)
+                            .background(Color.black.opacity(0.025))
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                        }
+                    }
                 } }
             }
         } else { Panel { Text("还没有可显示的任务记录。") } }
@@ -4943,8 +5232,12 @@ struct SearchResultSummaryRow: View {
                             set: { model.setSelectedForExport(result, selected: $0) }
                         )).toggleStyle(.checkbox)
                     }
+                    if let libraryName = result.libraryTaskName, !libraryName.isEmpty {
+                        Label("素材库：\(libraryName)", systemImage: "externaldrive")
+                            .font(.caption).foregroundStyle(archiveBlue)
+                    }
                     Text(result.mediaType == "video"
-                         ? "片段 \(result.previewSegmentStartTimecode ?? "--") → \(result.previewSegmentEndTimecode ?? "--") · 命中 \(result.timecode ?? "--")"
+                         ? "片段 \(result.previewSegmentStartTimecode ?? "--") → \(result.previewSegmentEndTimecode ?? "--") · 命中 \(result.timecode ?? "--")" + ((result.sourceMatchCount ?? 1) > 1 ? " · 已合并 \(result.sourceMatchCount ?? 1) 个相关抽帧" : "")
                          : "图片素材").font(.caption).foregroundStyle(archiveBlue).lineLimit(1)
                     Text((result.audioTranscriptMatch == true ? "人声转写：" : "画面描述：") + (result.textPreview ?? "暂无文字描述，可查看已有画面。"))
                         .font(.subheadline).lineLimit(3).frame(height: 54, alignment: .topLeading)
@@ -4955,12 +5248,14 @@ struct SearchResultSummaryRow: View {
             HStack(spacing: 10) {
                 Button(result.mediaType == "video" ? "播放命中片段" : "打开图片") { model.open(result) }
                     .buttonStyle(.borderedProminent).disabled(result.canOpenOriginal != true)
-                if result.mediaType == "video", let sourceId = result.sourceContentId {
-                    Button("浏览全部画面") { model.browseSourceFrames(sourceId) }.buttonStyle(.bordered)
+                if result.mediaType == "video", result.sourceContentId != nil {
+                    Button("浏览全部画面") { model.browseSourceFrames(result) }.buttonStyle(.bordered)
                 }
                 Button("详情 / 命中依据") { inspect(.evidence) }
                 Button("收藏与备注") { inspect(.annotations) }
                 Button("人物归类") { inspect(.person) }
+                    .disabled(!model.resultBelongsToActiveLibrary(result))
+                    .help(model.resultBelongsToActiveLibrary(result) ? "管理当前素材库的人物" : "请先切换到该结果所属素材库再管理人物")
                 Button("Finder") { model.reveal(result) }.disabled(result.canOpenOriginal != true)
                 Spacer(minLength: 0)
             }.font(.caption).frame(height: 28)
@@ -4983,7 +5278,7 @@ struct SearchResultSummaryRow: View {
                     .help(model.editorialSearchMessages[result.exportSelectionId] ?? "")
             }
         // Each mode has a constant row height: no per-row expanding forms.
-        }.padding(12).frame(height: model.editorialSearchTarget == nil ? 196 : 270)
+        }.padding(12).textSelection(.enabled).frame(height: model.editorialSearchTarget == nil ? 196 : 270)
          .frame(maxWidth: .infinity, alignment: .leading)
          .background(Color.white).cornerRadius(10)
     }
@@ -5045,7 +5340,15 @@ struct SearchResultCard: View {
                     )).toggleStyle(.checkbox)
                     Text(String(format: "综合匹配 %.0f%%", (result.score ?? 0) * 100)).font(.caption).foregroundStyle(archiveBlue)
                 }
+                if let libraryName = result.libraryTaskName, !libraryName.isEmpty {
+                    Label("素材库：\(libraryName)", systemImage: "externaldrive")
+                        .font(.caption).foregroundStyle(archiveBlue)
+                }
                 if result.mediaType == "video" { Text("命中片段：\(result.previewSegmentStartTimecode ?? "--") – \(result.previewSegmentEndTimecode ?? "--") · 命中点：\(result.timecode ?? "--")").font(.subheadline).foregroundStyle(archiveMuted) }
+                if result.mediaType == "video", let count = result.sourceMatchCount, count > 1 {
+                    Text("同一原视频的 \(count) 个相关抽帧已合并为这个代表结果" + ((result.sourceMatchTimecodes ?? []).isEmpty ? "；可浏览该视频全部画面。" : "：" + (result.sourceMatchTimecodes ?? []).prefix(6).joined(separator: "、") + "；可浏览全部画面。"))
+                        .font(.caption).foregroundStyle(archiveBlue)
+                }
                 if result.audioTranscriptMatch == true {
                     Label(
                         "人声转写命中 · 音频时间 \(audioTimecode(result.audioStartTimeMs)) – \(audioTimecode(result.audioEndTimeMs))",
@@ -5085,12 +5388,14 @@ struct SearchResultCard: View {
                             }
                             .buttonStyle(.bordered)
                             .help("只读取本地人物组；人工人物不会改写机器识别结果")
+                            .disabled(!model.resultBelongsToActiveLibrary(result))
                             if cluster.manualAssignment == true {
                                 Button("移出人工人物") {
                                     model.removeResult(result, fromPerson: cluster.personClusterId) { success, message in
                                         manualPersonFailed = !success; manualPersonStatus = message
                                     }
                                 }.buttonStyle(.borderless)
+                                 .disabled(!model.resultBelongsToActiveLibrary(result))
                             }
                         }
                     }
@@ -5100,9 +5405,10 @@ struct SearchResultCard: View {
                     Button("展开这个素材中的 \(frames) 个画面") {
                         model.searchPersonCluster(cluster.personClusterId, sourceContentId: sourceId)
                     }.buttonStyle(.bordered)
+                     .disabled(!model.resultBelongsToActiveLibrary(result))
                 }
                 Text("所属位置：\(result.sourceRelativePath ?? "")").font(.caption2).foregroundStyle(archiveMuted)
-                if result.visualUnitId?.isEmpty == false {
+                if result.visualUnitId?.isEmpty == false && model.resultBelongsToActiveLibrary(result) {
                 EditorialDisclosure("人工人物归类", initiallyExpanded: initialPanel == .person) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("机器没有识别到正脸也可以人工归类；一张画面可加入多个人物，结果只保存在本机。")
@@ -5189,8 +5495,8 @@ struct SearchResultCard: View {
                     }.buttonStyle(PrimaryButtonStyle()).disabled(result.canOpenOriginal != true)
                     Button("在 Finder 中显示") { model.reveal(result) }
                         .disabled(result.canOpenOriginal != true)
-                    if result.mediaType == "video", let sourceId = result.sourceContentId {
-                        Button("浏览该视频全部画面") { model.browseSourceFrames(sourceId) }
+                    if result.mediaType == "video", result.sourceContentId != nil {
+                        Button("浏览该视频全部画面") { model.browseSourceFrames(result) }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -5213,19 +5519,20 @@ struct SearchResultCard: View {
                     }.padding(10).background(Color.blue.opacity(0.05)).cornerRadius(8)
                 }
             }
-        }.padding(14).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
+        }.padding(14).textSelection(.enabled).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07)))
     }
 }
 
 struct SearchPage: View {
     @EnvironmentObject var model: ArchiveModel
     @State private var detailRequest: SearchDetailRequest?
+    @FocusState private var queryFieldFocused: Bool
     // Native List owns scrolling/row reuse. A LazyVStack re-estimates hundreds
     // of variable-height cards while scrolling, shifting the scroll position.
     // Keep the controls in one measured header row, separate from result rows.
     var body: some View { List {
       VStack(alignment: .leading, spacing: 18) {
-        PageHeader(title: "搜索素材", subtitle: "搜索当前选中的素材库；可在任务历史中切换到另一个已完成项目。")
+        PageHeader(title: "搜索素材", subtitle: "可搜索当前素材库，或统一搜索全部已登记素材库。")
         if let beat = model.editorialSearchBeat, let board = model.editorialBoard {
             Panel { VStack(alignment: .leading, spacing: 9) {
                 HStack {
@@ -5259,8 +5566,25 @@ struct SearchPage: View {
                 .font(.caption).foregroundStyle(archiveOrange)
         }
         if let activeLibrary = model.snapshot?.existingLibraries.first(where: { $0.isActive }) {
-            Label("当前搜索库：\(activeLibrary.taskName)（图片 \(activeLibrary.imageCount)，视频 \(activeLibrary.videoCount)）", systemImage: "externaldrive.fill")
-                .font(.subheadline).foregroundStyle(archiveBlue)
+            Panel { HStack(spacing: 14) {
+                Label("当前搜索库：\(activeLibrary.taskName)（图片 \(activeLibrary.imageCount)，视频 \(activeLibrary.videoCount)）", systemImage: "externaldrive.fill")
+                    .font(.subheadline).foregroundStyle(archiveBlue)
+                Spacer()
+                Picker("搜索范围", selection: $model.searchScope) {
+                    Text("当前素材库").tag("当前素材库")
+                    Text("全部素材库（\(model.snapshot?.existingLibraries.count ?? 0) 个）").tag("全部素材库")
+                }
+                .frame(width: 270)
+                .disabled(model.searching || model.editorialSearchTarget != nil)
+                .onChange(of: model.searchScope) { _ in model.searchScopeChanged() }
+            } }
+            if model.editorialSearchTarget != nil {
+                Text("文稿补选只搜索当前工程素材库，避免把其他项目素材误加入时间线。")
+                    .font(.caption).foregroundStyle(archiveOrange)
+            } else if model.searchScope == "全部素材库" {
+                Text("全部素材库会逐库只读查询，再按综合匹配统一排序并合并重复原文件；结果卡会标明所属素材库。")
+                    .font(.caption).foregroundStyle(archiveMuted)
+            }
         }
         if model.searchNavigationDepth > 0 {
             Panel { HStack(spacing: 12) {
@@ -5275,9 +5599,27 @@ struct SearchPage: View {
             }}
         }
         Panel { VStack(spacing: 14) {
-            HStack { Image(systemName: "magnifyingglass").foregroundStyle(archiveMuted); TextField("例如：夜间户外戴眼镜的人物", text: $model.query).textFieldStyle(.plain).font(.title3).onSubmit { model.search() }; Button(model.searching ? "搜索中…" : "搜索") { model.search() }.buttonStyle(PrimaryButtonStyle()).disabled(model.searching || model.snapshot?.searchRuntime.ready != true) }
+            HStack(spacing: 10) {
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(archiveMuted)
+                    TextField("例如：夜间户外戴眼镜的人物", text: $model.query)
+                        .textFieldStyle(.plain).font(.title3).focused($queryFieldFocused)
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .onSubmit { model.search() }
+                }
+                .padding(.horizontal, 12).frame(minHeight: 44).contentShape(Rectangle())
+                .background(Color.black.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(queryFieldFocused ? archiveBlue.opacity(0.7) : Color.black.opacity(0.09)))
+                .onTapGesture { queryFieldFocused = true }
+                Button(model.searching ? "搜索中…" : "搜索") { model.search() }
+                    .buttonStyle(PrimaryButtonStyle()).disabled(model.searching || model.snapshot?.searchRuntime.ready != true)
+            }
             Divider(); HStack {
-                Picker("素材类型", selection: $model.mediaType) { ForEach(["全部", "视频", "图片", "音频（人声转写）"], id: \.self) { Text($0) } }.frame(width: 220)
+                Picker("素材类型", selection: $model.mediaType) {
+                    ForEach(["全部", "视频", "图片", "音频（人声转写）"], id: \.self) { value in
+                        Text(value == "全部" ? "全部画面（图片＋视频）" : value)
+                    }
+                }.frame(width: 250)
                 Picker("预览区间", selection: $model.previewWindow) { ForEach(["5 秒", "10 秒"], id: \.self) { Text($0) } }.frame(width: 180)
                 Spacer()
             }
@@ -5302,6 +5644,8 @@ struct SearchPage: View {
             }
             EditorialDisclosure("当前素材库的搜索历史与保存查询") {
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("点击最近搜索会优先恢复上次画面，再在后台刷新；首次搜索或缓存已清理时才需要完整等待。")
+                        .font(.caption).foregroundStyle(archiveMuted)
                     HStack {
                         TextField("保存名称", text: $model.savedSearchName)
                             .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
@@ -5320,9 +5664,9 @@ struct SearchPage: View {
                     }
                     if !model.searchHistory.isEmpty {
                         Text("最近搜索").font(.caption.bold()).foregroundStyle(archiveMuted)
-                        ForEach(model.searchHistory.prefix(8)) { item in
+                        ForEach(model.searchHistory.prefix(10)) { item in
                             Button("\(item.queryText) · \(item.resultCount) 条 · \(String(format: "%.1f", item.elapsedSeconds)) 秒") {
-                                model.applySearchMetadata(item.queryText, filters: item.filters)
+                                model.openSearchHistory(item)
                             }.buttonStyle(.plain).foregroundStyle(.primary)
                         }
                     }
@@ -5331,69 +5675,72 @@ struct SearchPage: View {
                     }
                 }.padding(.top, 8)
             }
-            Divider()
-            HStack(spacing: 12) {
-                Image(systemName: "person.2.fill").foregroundStyle(archiveBlue)
-                if model.personClusterLoading {
-                    ProgressView("读取同一人物分组…")
-                } else if model.personClusterCatalog.isEmpty {
-                    Text("当前没有可确认的多人脸分组").font(.subheadline).foregroundStyle(archiveMuted)
-                    Spacer()
-                    Button("重新读取") { model.loadPersonClusters() }
-                } else {
-                    Picker("同一人物", selection: $model.selectedPersonClusterId) {
-                        Text("请选择匿名人物").tag("")
-                        ForEach(model.personClusterCatalog) { person in
-                            Text("\(person.displayName) · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
-                                .tag(person.personClusterId)
-                        }
-                    }.frame(maxWidth: 430).onChange(of: model.selectedPersonClusterId) { _ in
-                        model.preparePersonEditor()
-                    }
-                    Button("查看同一人物") {
-                        model.searchPersonCluster(model.selectedPersonClusterId)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.selectedPersonClusterId.isEmpty || model.searching)
-                    Button("查看侧脸/背影候选") {
-                        model.searchPersonTrackSuggestions(model.selectedPersonClusterId)
-                    }
-                    .buttonStyle(.bordered)
-                    .help("只读取同一视频中的现有人脸和人体框；结果需人工确认，不会自动合并人物")
-                    .disabled(model.selectedPersonClusterId.isEmpty || model.searching)
-                    Spacer()
-                }
-            }
-            if !model.selectedPersonClusterId.isEmpty {
-                Divider()
-                EditorialDisclosure("本地人物名称、标签与人工合并") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("这些修改只保存在本机，不改写机器识别记录；把多个机器组归到同一人物后仍可取消合并。")
-                            .font(.caption).foregroundStyle(archiveMuted)
-                        HStack {
-                            TextField("人物名称，例如：张老师", text: $model.personDisplayName)
-                                .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
-                            TextField("标签，用逗号分隔", text: $model.personTags)
-                                .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
-                            Button("保存名称和标签") { model.savePersonName() }
-                        }
-                        HStack {
-                            Picker("归入", selection: $model.personMergeTargetId) {
-                                Text("请选择另一个人物").tag("")
-                                ForEach(model.personClusterCatalog.filter { $0.personClusterId != model.selectedPersonClusterId }) { person in
-                                    Text(person.displayName).tag(person.personClusterId)
+            EditorialDisclosure("人物搜索与本地人物管理（按需展开）") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.2.fill").foregroundStyle(archiveBlue)
+                        if model.personClusterLoading {
+                            ProgressView("读取同一人物分组…")
+                        } else if model.personClusterCatalog.isEmpty {
+                            Text("尚未读取人物分组，或当前素材库没有可确认分组。普通画面搜索不需要读取它。")
+                                .font(.subheadline).foregroundStyle(archiveMuted)
+                            Spacer()
+                            Button("读取人物分组") { model.loadPersonClusters() }
+                        } else {
+                            Picker("同一人物", selection: $model.selectedPersonClusterId) {
+                                Text("请选择匿名人物").tag("")
+                                ForEach(model.personClusterCatalog) { person in
+                                    Text("\(person.displayName) · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
+                                        .tag(person.personClusterId)
                                 }
-                            }.frame(maxWidth: 330)
-                            Button("确认属于同一人物") { model.mergeSelectedPerson() }
-                                .disabled(model.personMergeTargetId.isEmpty)
-                            Button("取消该人物的人工合并") { model.detachSelectedPerson() }
+                            }.frame(maxWidth: 430).onChange(of: model.selectedPersonClusterId) { _ in
+                                model.preparePersonEditor()
+                            }
+                            Button("查看同一人物") {
+                                model.searchPersonCluster(model.selectedPersonClusterId)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.selectedPersonClusterId.isEmpty || model.searching)
+                            Button("查看侧脸/背影候选") {
+                                model.searchPersonTrackSuggestions(model.selectedPersonClusterId)
+                            }
+                            .buttonStyle(.bordered)
+                            .help("只读取同一视频中的现有人脸和人体框；结果需人工确认，不会自动合并人物")
+                            .disabled(model.selectedPersonClusterId.isEmpty || model.searching)
                             Spacer()
                         }
-                        if !model.personEditStatus.isEmpty {
-                            Text(model.personEditStatus).font(.caption).foregroundStyle(archiveBlue)
+                    }
+                    if !model.selectedPersonClusterId.isEmpty {
+                        EditorialDisclosure("本地人物名称、标签与人工合并") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("这些修改只保存在本机，不改写机器识别记录；把多个机器组归到同一人物后仍可取消合并。")
+                                    .font(.caption).foregroundStyle(archiveMuted)
+                                HStack {
+                                    TextField("人物名称，例如：张老师", text: $model.personDisplayName)
+                                        .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                                    TextField("标签，用逗号分隔", text: $model.personTags)
+                                        .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
+                                    Button("保存名称和标签") { model.savePersonName() }
+                                }
+                                HStack {
+                                    Picker("归入", selection: $model.personMergeTargetId) {
+                                        Text("请选择另一个人物").tag("")
+                                        ForEach(model.personClusterCatalog.filter { $0.personClusterId != model.selectedPersonClusterId }) { person in
+                                            Text(person.displayName).tag(person.personClusterId)
+                                        }
+                                    }.frame(maxWidth: 330)
+                                    Button("确认属于同一人物") { model.mergeSelectedPerson() }
+                                        .disabled(model.personMergeTargetId.isEmpty)
+                                    Button("取消该人物的人工合并") { model.detachSelectedPerson() }
+                                    Spacer()
+                                }
+                                if !model.personEditStatus.isEmpty {
+                                    Text(model.personEditStatus).font(.caption).foregroundStyle(archiveBlue)
+                                }
+                            }.padding(.top, 8)
                         }
-                    }.padding(.top, 8)
-                }
+                    }
+                }.padding(.top, 8)
             }
         } }
         Text(model.snapshot?.searchRuntime.ready == true ? "全量视觉搜索已启用；搜索结果只读，查询向量不持久化；搜索历史和保存查询仅写入当前素材库的本地用户元数据。" : (model.snapshot?.searchRuntime.databasePreflight?.databaseError.flatMap { $0.isEmpty ? nil : "搜索数据库不可用：\($0)" } ?? "首次素材整理完成后，搜索会在这里自动开放。"))
@@ -5405,7 +5752,7 @@ struct SearchPage: View {
                  ? "本次只打开补选入口；点击搜索才开始查询。" : model.searchPrewarmStatus)
                 .font(.caption).foregroundStyle(archiveMuted)
         }
-        Text("搜索会扫描全量画面向量，并融合 AI 描述、OCR 文字和物体标签。宽泛词与具体描述会重新排序；同一素材的不同时间点仍是独立画面。")
+        Text("搜索会扫描全量画面向量，并融合 AI 描述、OCR 文字和物体标签。画面搜索会把同一视频的相关时间点合并为一条素材结果；可点“浏览全部画面”查看该视频内的其他命中。")
             .font(.caption).foregroundStyle(archiveMuted)
         if !model.personCapabilityNote.isEmpty {
             Label(model.personCapabilityNote, systemImage: "person.crop.circle.badge.questionmark")
@@ -5486,6 +5833,9 @@ struct SearchPage: View {
        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 28))
         ForEach(model.searchResults) { result in
             SearchResultSummaryRow(result: result) { panel in
+                if panel == .person && model.personClusterCatalog.isEmpty {
+                    model.loadPersonClusters()
+                }
                 detailRequest = SearchDetailRequest(result: result, panel: panel)
             }
                 .listRowInsets(EdgeInsets(top: 7, leading: 28, bottom: 7, trailing: 28))
@@ -5506,7 +5856,6 @@ struct SearchPage: View {
             }
         }.padding(18).frame(width: 960, height: 620).environmentObject(model)
     }.onAppear {
-        if model.personClusterCatalog.isEmpty { model.loadPersonClusters() }
         // Opening this manual fallback must not launch inference/prewarming.
         if model.editorialSearchTarget == nil { model.prewarmSearch() }
     } }
@@ -5821,6 +6170,8 @@ struct SettingsPage: View {
                 Text("已就绪 \(items.filter(\.ready).count) / \(items.count) 项")
                     .font(.subheadline.bold())
                     .foregroundStyle(state.runtimeContract.ready ? archiveGreen : archiveOrange)
+                Text("选择模型总目录并点击“检查并保存”；全部项目显示“已找到”后，请退出并重新打开应用。")
+                    .font(.caption).foregroundStyle(archiveBlue)
                 ForEach(items) { item in
                     Label(
                         "\(item.key)：\(item.ready ? "已找到" : "缺失")",

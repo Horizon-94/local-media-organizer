@@ -299,14 +299,19 @@ class SearchJobManager:
             "--temporal-dedup-ms", str(temporal), "--preview-window-ms", str(preview),
             "--timecode-precision", "millisecond", "--device", str(request.get("device", "auto")),
             "--confirm-real-local-query", "--native-app-result-contract",
+            "--native-readiness-verified",
         ]
         media_type = str(request.get("media_type", "all"))
         if media_type in {"image", "video"}:
             command.extend(["--media-type", media_type])
+            command.append("--disable-audio-evidence")
         elif media_type == "audio":
             # Speech evidence is retained as text attached to its source video,
             # not as a standalone audio asset.
             command.extend(["--media-type", "video", "--audio-evidence-only"])
+        else:
+            # "all" is all visible media, not every internal evidence channel.
+            command.append("--disable-audio-evidence")
         prefix = " ".join(str(request.get("path_prefix", "")).split())
         if prefix:
             command.extend(["--source-relative-path-prefix", prefix])

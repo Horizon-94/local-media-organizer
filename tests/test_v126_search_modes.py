@@ -1,9 +1,23 @@
 """Ordinary library search must not implicitly become screenplay selection."""
 from pathlib import Path
 import subprocess
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'apps/media_archive_image_video_ui_v125_candidate/native_frontend.swift'
+
+
+def test_native_bridge_streams_first_result_immediately_and_batches_are_parseable(capsys):
+    from apps.media_archive_image_video_ui_v125_candidate.native_bridge import (
+        SEARCH_RESULT_STREAM_PREFIX, _emit_search_result_stream,
+    )
+    _emit_search_result_stream([{"result_id": "one", "media_type": "video"}], 1, 20)
+    line = capsys.readouterr().err.strip()
+    assert line.startswith(SEARCH_RESULT_STREAM_PREFIX)
+    payload = json.loads(line[len(SEARCH_RESULT_STREAM_PREFIX):])
+    assert payload["contract"] == "media_archive_search_result_stream_v1"
+    assert payload["result_count_so_far"] == 1
+    assert payload["items"][0]["result_id"] == "one"
 
 
 def test_search_does_not_bind_a_loaded_project_on_appearance():
@@ -61,6 +75,7 @@ final class Harness {
     var page: ArchivePage = .editorial
     var query = "用户关键词", searchPathPrefix = "位置", searchDateFrom = "", searchDateTo = ""
     var searchRequireOCR = true, searchRequirePerson = true, mediaType = "视频"
+    var searchScope = "全部素材库"
     var activePersonClusterId = "", activePersonSourceId = "", activeSourceContentId = "", selectedPersonClusterId = ""
     var searchResults = ["frame-A"], bufferedSearchResults = ["frame-B"], searchCoverage: String? = "all"
     var searchTotalCount = 2, nextSearchOffset: Int? = 1, serverNextSearchOffset: Int? = 1, lastSearchSignature = "search"

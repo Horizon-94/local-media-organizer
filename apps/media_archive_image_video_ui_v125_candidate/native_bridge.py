@@ -75,6 +75,31 @@ APP_VERSION = "1.2.5-development"
 _RESOURCE_CACHE: tuple[float, int | None, dict[str, Any]] = (0.0, None, {})
 
 
+def bundled_search_runtime(
+    config: Mapping[str, Any], *, module_file: Path | None = None,
+) -> tuple[Path, Path] | None:
+    """Return the App-owned search entry and config when they are packaged.
+
+    Models, virtual environments and the selected library remain external
+    read-only resources.  The executable search policy itself must not depend
+    on a developer checkout being present beside the App.
+    """
+    configured = str(config.get("search_runtime_path") or "").strip()
+    if configured:
+        root = Path(configured).expanduser().absolute()
+    else:
+        source = Path(module_file or __file__).resolve()
+        root = source.parents[1] / "SearchRuntime"
+    script = (
+        root / "scripts/04_media_archive_app/"
+        "stop03_5e_hybrid_search_app_adapter_v1.py"
+    )
+    search_config = root / "configs/stop03_5e_hybrid_visual_text_search_v2.json"
+    if script.is_file() and search_config.is_file():
+        return script, search_config
+    return None
+
+
 def live_resource_snapshot(current_task: Mapping[str, Any] | None) -> dict[str, Any]:
     """Small, read-only process sample for the run page (never scans source)."""
     global _RESOURCE_CACHE
@@ -193,7 +218,7 @@ def save_model_root(path: Path) -> dict[str, Any]:
     })
     return {
         "status": "PASS",
-        "message": "模型位置已保存；模型仍由用户自行下载和管理",
+        "message": "模型位置已保存；全部模型检查通过后，请退出并重新打开应用",
         "path": str(selected),
         "model_directory_write": False,
     }
@@ -365,6 +390,7 @@ def task_detail(task_path: Path) -> dict[str, Any]:
     # detail request.  existing_libraries() is refreshed with the main UI and
     # must never walk a large index directory on every refresh.
     storage = audit_task_storage(resolved_task, largest_limit=1)
+    maintenance_runs = historical_maintenance_runs(resolved_task)
     return {
         "status": "PASS",
         "task_id": str(task.get("task_id") or resolved_task.parent.name),
@@ -383,11 +409,81 @@ def task_detail(task_path: Path) -> dict[str, Any]:
             "status": str(storage["status"]),
             "source_root_scanned": bool(storage["source_root_scanned"]),
         },
+        "maintenance_runs": maintenance_runs,
         "pipeline": task_pipeline(state, acceptance_errors, metrics),
         "error": str(state.get("error") or task.get("error") or ""),
         "database_write": False,
         "original_media_read": False,
     }
+
+
+def historical_maintenance_runs(library_task_path: Path) -> list[dict[str, Any]]:
+    """Read separately recorded maintenance runs owned by one library.
+
+    Older libraries keep their original stage list immutable.  Audio search,
+    repairs and rebuilds therefore live below ``maintenance_runs`` and must be
+    surfaced separately instead of pretending that the historical pipeline
+    originally contained those stages.
+    """
+    root = library_task_path.expanduser().resolve().parent / "maintenance_runs"
+    if not root.is_dir():
+        return []
+    mode_names = {
+        "incremental": "增量整理",
+        "repair": "修复缺失内容",
+        "repair_images": "补充缺失图片描述",
+        "rebuild_search": "重建搜索入口",
+        "audio_enrichment": "补充音频搜索",
+    }
+    rows: list[dict[str, Any]] = []
+    for task_file in sorted(root.glob("*/task.json")):
+        try:
+            task = load_json(task_file)
+            owner = str(task.get("library_task_path") or "").strip()
+            if owner and Path(owner).expanduser().resolve() != library_task_path.resolve():
+                continue
+            state_text = str(task.get("state_path") or "").strip()
+            state_path = (
+                Path(state_text).expanduser()
+                if state_text else task_file.parent / "pipeline_state.json"
+            )
+            state = load_json(state_path) if state_path.is_file() else {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        status = str(state.get("status") or task.get("status") or "unknown")
+        stages = []
+        for stage in state.get("stages", []):
+            elapsed = stage.get("elapsed_seconds")
+            stage_status = str(stage.get("status") or "unknown")
+            if stage_status == "running" and status in {"cancelled", "failed"}:
+                stage_status = status
+            stages.append({
+                "key": str(stage.get("key") or "stage"),
+                "name": str(stage.get("name") or "维护阶段"),
+                "status": stage_status,
+                "elapsed_seconds": float(elapsed) if elapsed is not None else None,
+                "elapsed_human": human_duration(elapsed) if elapsed is not None else None,
+            })
+        elapsed_seconds = _state_elapsed_seconds(state)
+        rows.append({
+            "task_id": str(task.get("task_id") or task_file.parent.name),
+            "mode": str(task.get("mode") or "maintenance"),
+            "display_name": mode_names.get(
+                str(task.get("mode") or ""), str(task.get("name") or "维护任务")
+            ),
+            "status": status,
+            "created_at": str(task.get("created_at") or ""),
+            "started_at": epoch_timecode(state.get("started_at_epoch")),
+            "finished_at": epoch_timecode(state.get("finished_at_epoch")),
+            "elapsed_seconds": elapsed_seconds,
+            "elapsed_human": human_duration(elapsed_seconds),
+            "timing_complete": status == "success" and any(
+                stage.get("elapsed_seconds") is not None for stage in state.get("stages", [])
+            ),
+            "stages": stages,
+        })
+    rows.sort(key=lambda row: (row["created_at"], row["task_id"]))
+    return rows
 
 
 def register_library(task_path: Path) -> None:
@@ -477,21 +573,85 @@ def load_runtime(
         validate_runtime_contract(Path(contract_text), model_root=model_root)
         if contract_text else {"ready": False}
     )
-    if contract_text and not contract_report["ready"]:
-        return config, repository, None
     contract = (
         load_runtime_contract(Path(contract_text), model_root=model_root)
         if contract_report["ready"] else None
     )
+    packaged = bundled_search_runtime(config)
+    search_script = (
+        packaged[0] if packaged else
+        Path(contract["scripts"]["search_adapter"] if contract else config.get("search_script") or "")
+    )
+    search_config = (
+        packaged[1] if packaged else
+        Path(contract["configs"]["hybrid_search"] if contract else config.get("search_config") or "")
+    )
+    python_config = contract.get("python", {}) if contract else {}
+    embedding_python = str(
+        python_config.get("embedding") or config.get("embedding_python") or ""
+    ).strip()
+    openclip_python = str(
+        python_config.get("visual") or config.get("openclip_python") or ""
+    ).strip()
+    if not embedding_python or not openclip_python:
+        return config, repository, None
     manager = SearchJobManager(
         db_path=Path(database_text),
         output_root=runtime_output_root(config),
-        search_script=Path(contract["scripts"]["search_adapter"] if contract else config["search_script"]),
-        search_config=Path(contract["configs"]["hybrid_search"] if contract else config["search_config"]),
-        embedding_python=Path(contract["python"]["embedding"] if contract else config["embedding_python"]),
-        openclip_python=Path(contract["python"]["visual"] if contract else config["openclip_python"]),
+        search_script=search_script,
+        search_config=search_config,
+        embedding_python=Path(embedding_python),
+        openclip_python=Path(openclip_python),
     )
     return config, repository, manager
+
+
+def repository_for_request(
+    config: Mapping[str, Any],
+    active_repository: ReadonlyMediaRepository | None,
+    requested_database: Path | None,
+) -> ReadonlyMediaRepository | None:
+    """Resolve an optional database only from the registered library list."""
+    if requested_database is None:
+        return active_repository
+    selected = requested_database.expanduser().resolve(strict=True)
+    allowed = {
+        Path(str(row.get("database") or "")).expanduser().resolve()
+        for row in existing_libraries(dict(config))
+        if str(row.get("database") or "").strip()
+    }
+    if selected not in allowed:
+        raise RuntimeError("所选结果不属于已登记素材库")
+    return ReadonlyMediaRepository(selected)
+
+
+def attach_library_context(
+    report: dict[str, Any], config: Mapping[str, Any], database: Path,
+) -> dict[str, Any]:
+    """Keep drill-down results bound to the database that produced them."""
+    resolved = database.expanduser().resolve()
+    library = next((
+        row for row in existing_libraries(dict(config))
+        if Path(str(row.get("database") or "")).expanduser().resolve() == resolved
+    ), None)
+    if library is None:
+        return report
+    task_id = str(library.get("task_id") or "library")
+    items = []
+    for raw in report.get("result_items", []):
+        item = dict(raw)
+        original_id = str(
+            item.get("result_id")
+            or f"{item.get('source_content_id', '')}|{item.get('visual_unit_id', '')}"
+        )
+        item.update({
+            "result_id": f"{task_id}|{original_id}",
+            "library_task_id": task_id,
+            "library_task_name": str(library.get("task_name") or "未命名素材库"),
+            "library_database": str(resolved),
+        })
+        items.append(item)
+    return {**report, "result_items": items, "result_count": len(items)}
 
 
 def task_state(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -1245,7 +1405,7 @@ def start_existing_task(
         "repair": "缺失内容修复已启动；已有成功结果不会重跑",
         "repair_images": "图片描述专项修复已启动；已有成功结果不会重跑",
         "rebuild_search": "搜索入口重建已启动；只复用已有数据库，不读取素材、不运行识别模型",
-        "audio_enrichment": "音频搜索补充已启动；只处理视频人声并写入当前索引，前19阶段不会重跑，临时音频会在转写落账后删除",
+        "audio_enrichment": "音频搜索补充已启动；只处理视频人声并写入当前索引，不会重跑其他整理阶段，临时音频会在转写落账后删除",
     }
     return {
         "status": "PASS", "message": messages[args.task_mode],
@@ -1427,6 +1587,29 @@ SEARCH_RESULT_CONTRACT_VERSION = "media_archive_search_result_v1"
 SEARCH_LOG_MAX_BYTES = 32 * 1024
 SEARCH_RESULT_MAX_BYTES = 2 * 1024 * 1024
 SEARCH_PROGRESS_PREFIX = "SEARCH_PROGRESS_JSON="
+SEARCH_RESULT_STREAM_PREFIX = "SEARCH_RESULT_STREAM_JSON="
+
+
+def _emit_search_result_stream(items: list[dict[str, Any]], count: int, total: int) -> None:
+    """Forward small, already ranked result batches to the native UI.
+
+    This stream is presentation-only. The final stdout search contract remains
+    authoritative and replaces these provisional rows when complete.
+    """
+    if not items:
+        return
+    payload = {
+        "contract": "media_archive_search_result_stream_v1",
+        "items": items,
+        "result_count_so_far": int(count),
+        "total_hint": int(total),
+    }
+    print(
+        SEARCH_RESULT_STREAM_PREFIX
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _atomic_search_json(path: Path, payload: Any) -> None:
@@ -2406,6 +2589,12 @@ def run_search(
     source_mtime_max: int | None = None,
     has_ocr: bool = False,
     has_person: bool = False,
+    *,
+    cache_namespace: str = "current",
+    emit_stream: bool = True,
+    record_history: bool = True,
+    search_scope: str = "current",
+    library_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_query = " ".join(query.split())
     if not (1 <= len(clean_query) <= 512):
@@ -2428,7 +2617,11 @@ def run_search(
     # not inside the user-selected index/library directory.
     shared_cache_root = search_runtime_cache_root(config)
     shared_cache_root.mkdir(parents=True, exist_ok=True)
-    current_root = shared_cache_root / "current"
+    safe_namespace = "/".join(
+        part for part in str(cache_namespace or "current").split("/")
+        if part and part not in {".", ".."}
+    ) or "current"
+    current_root = shared_cache_root / safe_namespace
     current_root.mkdir(parents=True, exist_ok=True)
     stable_result_path = current_root / "search_results.json"
     stable_summary_path = current_root / "search_summary.json"
@@ -2549,10 +2742,23 @@ def run_search(
         ),
     )
     public_results = []
+    stream_batch: list[dict[str, Any]] = []
     for row in result_rows:
         derived_path = repository.derived_path(str(row.get("derived_id") or ""))
         source = repository.source_media(str(row.get("source_content_id") or ""))
         item = dict(row)
+        if library_context:
+            library_id = str(library_context.get("task_id") or "library")
+            original_result_id = str(
+                item.get("result_id")
+                or f"{item.get('source_content_id', '')}|{item.get('visual_unit_id', '')}"
+            )
+            item.update({
+                "result_id": f"{library_id}|{original_result_id}",
+                "library_task_id": library_id,
+                "library_task_name": str(library_context.get("task_name") or "未命名素材库"),
+                "library_database": str(library_context.get("database") or repository.db_path),
+            })
         item.update({
             "preview_path": str(derived_path) if derived_path else "",
             "source_path": str(source.get("resolved_path")) if source and source.get("available") else "",
@@ -2563,9 +2769,19 @@ def run_search(
             ),
         })
         public_results.append(item)
+        stream_batch.append(item)
+        # The first result appears immediately. Thereafter batch five rows to
+        # avoid hundreds of main-thread publications during a large search.
+        if emit_stream and (len(public_results) == 1 or len(stream_batch) >= 5):
+            _emit_search_result_stream(
+                stream_batch, len(public_results), len(result_rows)
+            )
+            stream_batch = []
+    if emit_stream and stream_batch:
+        _emit_search_result_stream(stream_batch, len(public_results), len(result_rows))
     annotations: dict[str, dict[str, Any]] = {}
     database_path = getattr(repository, "db_path", None)
-    if database_path:
+    if record_history and database_path:
         try:
             annotation_task_id = task_id_for_database(Path(database_path))
             annotations = asset_annotations(
@@ -2619,6 +2835,7 @@ def run_search(
                     "source_mtime_min": source_mtime_min,
                     "source_mtime_max": source_mtime_max,
                     "has_ocr": bool(has_ocr), "has_person": bool(has_person),
+                    "search_scope": search_scope,
                 },
                 result_count=int(payload.get("result_total_count") or len(public_results)),
                 elapsed_seconds=elapsed_seconds,
@@ -2660,6 +2877,187 @@ def run_search(
         "search_history_recorded": history_recorded,
         "network_used": False,
         "original_media_read": False,
+        "search_scope": search_scope,
+    }
+
+
+def _manager_for_library(manager: SearchJobManager, database: Path) -> SearchJobManager:
+    """Clone the packaged search contract for another registered database."""
+    return SearchJobManager(
+        db_path=database,
+        output_root=manager.output_root,
+        search_script=manager.search_script,
+        search_config=manager.search_config,
+        embedding_python=manager.embedding_python,
+        openclip_python=manager.openclip_python,
+    )
+
+
+def _cross_library_result_key(item: Mapping[str, Any]) -> str:
+    """Collapse the same source indexed by multiple libraries."""
+    source_path = str(item.get("source_path") or "").strip()
+    if source_path:
+        try:
+            return "path:" + str(Path(source_path).expanduser().resolve())
+        except OSError:
+            return "path:" + source_path
+    return "db:" + "|".join((
+        str(item.get("library_database") or ""),
+        str(item.get("source_content_id") or ""),
+    ))
+
+
+def run_search_all_libraries(
+    config: dict[str, Any],
+    active_repository: ReadonlyMediaRepository,
+    manager: SearchJobManager,
+    query: str,
+    media_type: str,
+    preview_window_ms: int,
+    result_offset: int = 0,
+    result_limit: int = 30,
+    path_prefix: str = "",
+    source_mtime_min: int | None = None,
+    source_mtime_max: int | None = None,
+    has_ocr: bool = False,
+    has_person: bool = False,
+) -> dict[str, Any]:
+    """Search every registered readable library, then rank and deduplicate.
+
+    Each database remains an independent read source.  The only database write
+    is the existing search-history record in the currently active library.
+    """
+    clean_query = " ".join(query.split())
+    if not (1 <= len(clean_query) <= 512):
+        raise ValueError("搜索文字长度必须在 1 到 512 个字符之间")
+    libraries = existing_libraries(config)
+    if not libraries:
+        raise RuntimeError("没有已登记且可读取的素材库")
+
+    started = time.monotonic()
+    combined: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    coverage = {
+        "eligible_visual_unit_count": 0,
+        "scanned_visual_vector_count": 0,
+        "scanned_text_vector_count": 0,
+    }
+    media_counts: dict[str, int] = {}
+    total_before_cross_library_dedup = 0
+    successful_names: list[str] = []
+    for index, library in enumerate(libraries):
+        database = Path(str(library.get("database") or "")).expanduser()
+        name = str(library.get("task_name") or database.parent.name or "未命名素材库")
+        if not database.is_file():
+            skipped.append({"library": name, "reason": "数据库不存在或当前未连接"})
+            continue
+        try:
+            repository = ReadonlyMediaRepository(database)
+            library_manager = _manager_for_library(manager, database)
+            report = run_search(
+                config, repository, library_manager, clean_query, media_type,
+                preview_window_ms, 0, 200, path_prefix, source_mtime_min,
+                source_mtime_max, has_ocr, has_person,
+                cache_namespace=f"all_current/library_{index + 1}",
+                emit_stream=True, record_history=False, search_scope="all",
+                library_context={
+                    "task_id": str(library.get("task_id") or f"library_{index + 1}"),
+                    "task_name": name,
+                    "database": str(database.resolve()),
+                },
+            )
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            skipped.append({"library": name, "reason": str(exc)[:500]})
+            continue
+        if report.get("status") != "PASS":
+            skipped.append({
+                "library": name,
+                "reason": str(report.get("error_reason") or report.get("error") or "搜索失败")[:500],
+            })
+            continue
+        successful_names.append(name)
+        combined.extend(dict(item) for item in report.get("result_items", []))
+        total_before_cross_library_dedup += int(
+            report.get("result_total_count") or len(report.get("result_items", []))
+        )
+        for key in coverage:
+            coverage[key] += int(dict(report.get("coverage") or {}).get(key) or 0)
+        for key, value in dict(report.get("result_count_by_media") or {}).items():
+            media_counts[str(key)] = media_counts.get(str(key), 0) + int(value or 0)
+
+    if not successful_names:
+        reason = "；".join(
+            f"{row['library']}：{row['reason']}" for row in skipped
+        ) or "没有素材库通过搜索预检"
+        raise RuntimeError("全部素材库均无法搜索：" + reason)
+
+    combined.sort(key=lambda item: (
+        -float(item.get("score") or 0.0),
+        str(item.get("library_task_name") or ""),
+        str(item.get("result_id") or ""),
+    ))
+    deduplicated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in combined:
+        key = _cross_library_result_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(item)
+
+    safe_offset = max(0, int(result_offset))
+    safe_limit = max(1, min(int(result_limit), 200))
+    page = deduplicated[safe_offset:safe_offset + safe_limit]
+    elapsed_seconds = round(time.monotonic() - started, 3)
+    history_recorded = False
+    try:
+        history_task_id = task_id_for_database(active_repository.db_path)
+        record_search_history(
+            active_repository.db_path,
+            task_id=history_task_id,
+            query_text=clean_query,
+            filters={
+                "media_type": media_type,
+                "preview_window_ms": preview_window_ms,
+                "path_prefix": path_prefix.strip(),
+                "source_mtime_min": source_mtime_min,
+                "source_mtime_max": source_mtime_max,
+                "has_ocr": bool(has_ocr),
+                "has_person": bool(has_person),
+                "search_scope": "all",
+            },
+            result_count=total_before_cross_library_dedup,
+            elapsed_seconds=elapsed_seconds,
+        )
+        history_recorded = True
+    except (OSError, RuntimeError, sqlite3.Error):
+        pass
+
+    return {
+        "status": "PASS",
+        "query": clean_query,
+        "elapsed_seconds": elapsed_seconds,
+        "coverage": coverage,
+        "result_count": len(page),
+        "result_items": page,
+        "result_total_count": total_before_cross_library_dedup,
+        "result_offset": safe_offset,
+        "result_limit": safe_limit,
+        # Every library contributes its own top 200.  Do not pretend a later
+        # page is globally complete without rerunning a larger bounded query.
+        "next_result_offset": None,
+        "result_count_by_media": media_counts,
+        "database_write": history_recorded,
+        "search_results_read_only": True,
+        "search_history_recorded": history_recorded,
+        "network_used": False,
+        "original_media_read": False,
+        "search_scope": "all",
+        "library_count": len(successful_names),
+        "library_names": successful_names,
+        "skipped_libraries": skipped,
+        "result_cap_reached": len(deduplicated) > safe_limit or total_before_cross_library_dedup > len(deduplicated),
+        "cross_library_duplicate_count": max(0, len(combined) - len(deduplicated)),
     }
 
 
@@ -2741,6 +3139,7 @@ def save_search_metadata(
     source_mtime_max: int | None = None,
     has_ocr: bool = False,
     has_person: bool = False,
+    search_scope: str = "current",
 ) -> dict[str, Any]:
     task_id = task_id_for_database(repository.db_path)
     saved_search_id = save_central_search(
@@ -2754,6 +3153,7 @@ def save_search_metadata(
             "source_mtime_min": source_mtime_min,
             "source_mtime_max": source_mtime_max,
             "has_ocr": bool(has_ocr), "has_person": bool(has_person),
+            "search_scope": search_scope,
         },
     )
     return {
@@ -2845,6 +3245,7 @@ def build_parser() -> argparse.ArgumentParser:
     saved_search.add_argument("--source-mtime-max", type=int)
     saved_search.add_argument("--has-ocr", action="store_true")
     saved_search.add_argument("--has-person", action="store_true")
+    saved_search.add_argument("--search-scope", choices=("current", "all"), default="current")
     annotation = subparsers.add_parser("annotate-source")
     annotation.add_argument("--source-content-id", required=True)
     annotation.add_argument("--tags", default="")
@@ -2852,6 +3253,7 @@ def build_parser() -> argparse.ArgumentParser:
     annotation.add_argument("--favorite", choices=("true", "false"), default="false")
     annotation.add_argument("--rating", type=int, choices=range(0, 6), default=0)
     annotation.add_argument("--ignored", choices=("true", "false"), default="false")
+    annotation.add_argument("--database", type=Path)
     history = subparsers.add_parser("task-detail")
     history.add_argument("--task", type=Path, required=True)
     storage = subparsers.add_parser("storage-audit")
@@ -2878,6 +3280,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--source-mtime-max", type=int)
     search.add_argument("--has-ocr", action="store_true")
     search.add_argument("--has-person", action="store_true")
+    search.add_argument("--search-scope", choices=("current", "all"), default="current")
     favorites = subparsers.add_parser("favorites")
     favorites.add_argument("--result-offset", type=int, default=0)
     favorites.add_argument("--result-limit", type=int, choices=range(1, 501), default=200)
@@ -2886,6 +3289,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_frames.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
     source_frames.add_argument("--result-offset", type=int, default=0)
     source_frames.add_argument("--result-limit", type=int, choices=range(1, 201), default=60)
+    source_frames.add_argument("--database", type=Path)
     person = subparsers.add_parser("person-cluster")
     person.add_argument("--cluster-id", required=True)
     person.add_argument("--media-type", choices=("all", "image", "video"), default="all")
@@ -3025,12 +3429,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 source_mtime_max=args.source_mtime_max,
                 has_ocr=args.has_ocr,
                 has_person=args.has_person,
+                search_scope=args.search_scope,
             )
         elif args.command == "annotate-source":
-            if repository is None:
+            selected_repository = repository_for_request(
+                config, repository, args.database,
+            )
+            if selected_repository is None:
                 raise RuntimeError("请先新建或连接一个素材库")
             report = save_asset_annotation(
-                repository,
+                selected_repository,
                 source_content_id=args.source_content_id,
                 tags=args.tags,
                 note=args.note,
@@ -3061,10 +3469,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command == "search":
             if repository is None or manager is None:
                 raise RuntimeError("请先新建或连接一个素材库")
-            report = run_search(
-                config, repository, manager, args.query, args.media_type, args.preview_window_ms,
-                args.result_offset, args.result_limit, args.path_prefix,
-                args.source_mtime_min, args.source_mtime_max,
+            search_function = (
+                run_search_all_libraries if args.search_scope == "all" else run_search
+            )
+            report = search_function(
+                config, repository, manager, args.query, args.media_type,
+                args.preview_window_ms, args.result_offset, args.result_limit,
+                args.path_prefix, args.source_mtime_min, args.source_mtime_max,
                 args.has_ocr, args.has_person,
             )
         elif args.command == "favorites":
@@ -3074,12 +3485,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 repository, args.result_offset, args.result_limit,
             )
         elif args.command == "source-frames":
-            if repository is None:
+            selected_repository = repository_for_request(
+                config, repository, args.database,
+            )
+            if selected_repository is None:
                 raise RuntimeError("请先新建或连接一个素材库")
             report = run_source_frame_search(
-                repository, args.source_content_id, args.preview_window_ms,
+                selected_repository, args.source_content_id, args.preview_window_ms,
                 args.result_offset, args.result_limit,
             )
+            if args.database is not None:
+                report = attach_library_context(
+                    report, config, selected_repository.db_path,
+                )
         elif args.command == "person-cluster":
             if repository is None:
                 raise RuntimeError("请先新建或连接一个素材库")

@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "version": "1.2.7",
+  "tag": "v1.2.7",
+  "date": "2026-08-31",
+  "distribution_scope": "general_source_and_apple_silicon_portable_dmg",
+  "general_implementation": true,
+  "project_specific_rules_included": false,
+  "user_data_included": false,
+  "models_included": false,
+  "database_included": false,
+  "original_media_included": false,
+  "portable_python_runtimes_in_dmg": true,
+  "release_asset": {
+    "filename": "本地数据库 1.2.7-1.2.7.dmg",
+    "bytes": 1965388061,
+    "sha256": "33f2f76ddb4c1a87a10f806e63e7328b178e6902a297c8b2ddab3d67c2a03b0e",
+    "git_history_included": false
+  },
+  "changed_source_files_sha256": {
+    ".github/workflows/ci.yml": "a196fbbcbe52fe29c7ad894418a40fb416b4ce5badcafeac2956a19524b8c3d2",
+    "CHANGELOG.md": "15ed94063dbda985634d115143ef7f780cc129f7e1cb31cbe25cf4f3c188d3e7",
+    "README.md": "e37b9c906a8e707b07f0017dc70248d091568cfa4f00197c3acc82c2709052d8",
+    "apps/media_archive_image_video_ui_v125_candidate/native_bridge.py": "ea3f917193c2f847a88fb09fa76c0fcfda327abff72ec574cb7b233bdb46e36a",
+    "apps/media_archive_image_video_ui_v125_candidate/native_frontend.swift": "b19d85bdf3dd08215b84b8adb0af86edb21d6c9fdcd1acb24e6d9595a7eee3d5",
+    "apps/media_archive_image_video_ui_v125_candidate/pipeline_orchestrator.py": "e5b9d9554b2721922fbbbea2c44c2879a8c46b6eb14c1288d72c6f285e9f4d85",
+    "apps/media_archive_image_video_ui_v125_candidate/search_jobs.py": "2954de362a2d6f7ae392544a7276f859cc742f5d7ba9c6dcd581b1d94eb39726",
+    "scripts/03_stop03_visual_analysis/stop03_5e_hybrid_visual_text_search_v2.py": "45a2d11f1c15e5a5ec7273888ea45407497b9877faaa0fbd3848113f632aa0c4",
+    "scripts/04_media_archive_app/build_native_image_video_app_v124_candidate.py": "5d22085638dc585fa8664a839fad2e704addabac308ff4f2c0b38212fbf0b47a",
+    "scripts/04_media_archive_app/build_native_image_video_app_v127.py": "814ef21cc512ce581beb28488ea039de11df164047cac83efd18509c5b43e2ce",
+    "tests/test_v125_editorial_session.py": "22518e62ee976d297ef38b5fa7a731e5dcb72c01312a1b5b38dec036589ddb0b",
+    "tests/test_v126_search_modes.py": "c7e3e2500e8895c3c33812cef6e17590597efffdf7dc2619e22d96e3a247ff17",
+    "tests/test_v126_search_ui_performance.py": "7a1d3364a3b0b9800ddd31866318f1c6b04ae804f4c45b20f02092f098e49b37",
+    "tests/test_v126_search_visual_policy.py": "7ddcd975d8766396467b064ca1c43768c4981470e5f2b43456dba4cfe93a7614",
+    "tests/test_v127_cross_library_search.py": "d7281895aa2087871a2fc031bc9d5c98135ecdd1da467df738fafc389a3445fa",
+    "tests/test_v127_portable_packaging.py": "d04244edbe37799d7e3390b5b95bae28ac0b386a4adeb6f4d5cf98db11cf8a59"
+  }
+}

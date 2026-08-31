@@ -221,12 +221,21 @@ def select_complete_openclip_run(
     raise RuntimeError("stop03_5e_v2_complete_openclip_run_missing")
 
 
-def parse_vector_key(value: str) -> tuple[Path, str]:
+def parse_vector_key(
+    value: str, path_availability: Optional[dict[Path, bool]] = None,
+) -> tuple[Path, str]:
     if not value.startswith("jsonl:") or "#" not in value:
         raise RuntimeError(f"stop03_5e_v2_vector_key_invalid:{value}")
     path_text, embedding_id = value[6:].rsplit("#", 1)
     path = Path(path_text).expanduser()
-    if path.suffix.lower() != ".jsonl" or not path.is_file() or not embedding_id:
+    if path_availability is None:
+        path_exists = path.is_file()
+    elif path in path_availability:
+        path_exists = path_availability[path]
+    else:
+        path_exists = path.is_file()
+        path_availability[path] = path_exists
+    if path.suffix.lower() != ".jsonl" or not path_exists or not embedding_id:
         raise RuntimeError(f"stop03_5e_v2_vector_payload_missing:{path}")
     return path, embedding_id
 
@@ -321,8 +330,13 @@ def load_openclip_vectors(
     )]
     expected: dict[str, dict[str, Any]] = {}
     paths: set[Path] = set()
+    path_availability: dict[Path, bool] = {}
     for row in db_rows:
-        path, key_id = parse_vector_key(str(row["vector_key"]))
+        # A complete run commonly stores tens of thousands of vectors in one
+        # JSONL payload.  Stat each distinct payload once, not once per vector.
+        path, key_id = parse_vector_key(
+            str(row["vector_key"]), path_availability
+        )
         if key_id != str(row["embedding_id"]):
             raise RuntimeError("stop03_5e_v2_vector_key_id_mismatch")
         expected[key_id] = row
@@ -542,8 +556,19 @@ def build_preflight(
         yoloe_visual_count = int(con.execute(
             "SELECT COUNT(DISTINCT visual_unit_id) FROM visual_labels"
         ).fetchone()[0])
-        integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
-        foreign_keys = len(con.execute("PRAGMA foreign_key_check").fetchall())
+        native_readiness_verified = bool(
+            getattr(args, "native_readiness_verified", False)
+        )
+        if native_readiness_verified:
+            # The native bridge has already opened this exact database in
+            # query-only mode and verified schema/vector/source coverage.
+            # Re-reading every page of a large database for every query made
+            # cold searches spend tens of seconds before ranking began.
+            integrity = "delegated_to_native_readiness"
+            foreign_keys = 0
+        else:
+            integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
+            foreign_keys = len(con.execute("PRAGMA foreign_key_check").fetchall())
     eligible_ids = set(all_visuals)
     vector_ids = set(vectors)
     missing_filtered = sorted(eligible_ids - vector_ids)
@@ -555,7 +580,7 @@ def build_preflight(
         "openclip_payload_vectors_valid": (
             vector_stats["validated_payload_vector_count"] == visual_count
         ),
-        "database_integrity_ok": integrity == "ok",
+        "database_integrity_ok": integrity in {"ok", "delegated_to_native_readiness"},
         "foreign_keys_ok": foreign_keys == 0,
         "central_db_unchanged": db_before == readonly_database_identity(db),
     }
@@ -580,6 +605,10 @@ def build_preflight(
             "has_ocr": bool(args.has_ocr),
             "has_person": bool(args.has_person),
             "audio_evidence_only": bool(getattr(args, "audio_evidence_only", False)),
+            "disable_audio_evidence": bool(getattr(args, "disable_audio_evidence", False)),
+            "native_readiness_verified": bool(
+                getattr(args, "native_readiness_verified", False)
+            ),
         },
         "pagination": {"result_offset": args.result_offset, "result_limit": args.result_limit},
         "temporal_dedup_ms": args.temporal_dedup_ms,
@@ -614,6 +643,12 @@ def build_preflight(
         "checks": checks,
         "database_integrity_check": integrity,
         "foreign_key_error_count": foreign_keys,
+        "query_preflight_scope": (
+            "readonly_schema_vector_coverage"
+            if native_readiness_verified
+            else "full_integrity_and_foreign_keys"
+        ),
+        "full_database_integrity_checked": not native_readiness_verified,
         "query_text_persisted": False,
         "query_vector_persisted": False,
         "database_write": False,
@@ -834,6 +869,13 @@ def score_audio_evidence(
     return scores, evidence, scanned
 
 
+def should_scan_audio_evidence(args: argparse.Namespace) -> bool:
+    """Keep speech search behind its explicit interface in the native app."""
+    return bool(getattr(args, "audio_evidence_only", False)) or not bool(
+        getattr(args, "disable_audio_evidence", False)
+    )
+
+
 def merge_audio_text_evidence(
     text_scores: dict[str, float], text_evidence: dict[str, dict[str, Any]],
     audio_scores: Mapping[str, float], audio_evidence: Mapping[str, Mapping[str, Any]],
@@ -858,45 +900,101 @@ def merge_audio_text_evidence(
 
 
 def load_yoloe_evidence(
-    db: Path, query: str, eligible_ids: set[str]
+    db: Path, query: str, eligible_ids: set[str], minimum_confidence: float = 0.0,
 ) -> tuple[dict[str, float], dict[str, list[dict[str, Any]]]]:
     folded = text_search.normalize_query(query).casefold()
     matched: dict[str, float] = {}
     labels: dict[str, list[dict[str, Any]]] = defaultdict(list)
     with connect_ro(db) as con:
+        definitions: dict[str, dict[str, Any]] = {}
+        for row in con.execute(
+            """SELECT label,label_zh,category_zh
+               FROM visual_label_terms ORDER BY label"""
+        ):
+            # A detector label only proves its canonical object class.  Free-form
+            # aliases may be narrower attributes (for example age, identity or
+            # state) that the detector did not observe, so they must not become
+            # authoritative exact-object evidence.
+            terms = [str(row["label"]), str(row["label_zh"] or "")]
+            normalized_terms = {
+                text_search.normalize_query(term).casefold()
+                for term in terms if text_search.normalize_query(term)
+            }
+            if folded in normalized_terms:
+                definitions[str(row["label"])] = dict(row)
+        if not definitions:
+            return {}, {}
+        placeholders = ",".join("?" for _ in definitions)
         rows = con.execute(
-            """SELECT l.visual_unit_id,l.label,l.confidence,
-                      t.label_zh,t.category_zh,t.search_terms_json,t.embedding_text
-               FROM visual_labels l LEFT JOIN visual_label_terms t ON t.label=l.label
-               ORDER BY l.visual_unit_id,l.confidence DESC,l.label"""
+            f"""SELECT visual_unit_id,label,confidence FROM visual_labels
+                 WHERE label IN ({placeholders}) AND confidence>=?
+                 ORDER BY visual_unit_id,confidence DESC,label""",
+            [*definitions, float(minimum_confidence)],
         ).fetchall()
     for row in rows:
         visual_id = str(row["visual_unit_id"])
         if visual_id not in eligible_ids:
             continue
-        terms = [str(row["label"]), str(row["label_zh"] or "")]
-        try:
-            terms.extend(str(value) for value in json.loads(row["search_terms_json"] or "[]"))
-        except (TypeError, json.JSONDecodeError):
-            pass
-        terms.extend(str(row["embedding_text"] or "").split())
-        normalized_terms = {
-            text_search.normalize_query(term).casefold()
-            for term in terms if text_search.normalize_query(term)
-        }
-        # A broad child label such as "car/车" must not make every car match a
-        # compound request such as "农用车". YOLO evidence is authoritative only
-        # when the normalized query equals a registered label/search term.
-        is_match = folded in normalized_terms
+        definition = definitions[str(row["label"])]
         item = {
-            "label": row["label"], "label_zh": row["label_zh"],
-            "category_zh": row["category_zh"], "confidence": float(row["confidence"]),
-            "query_match": is_match,
+            "label": row["label"], "label_zh": definition["label_zh"],
+            "category_zh": definition["category_zh"],
+            "confidence": float(row["confidence"]), "query_match": True,
         }
         labels[visual_id].append(item)
-        if is_match:
-            matched[visual_id] = max(matched.get(visual_id, 0.0), float(row["confidence"]))
+        matched[visual_id] = max(matched.get(visual_id, 0.0), float(row["confidence"]))
     return matched, dict(labels)
+
+
+def group_visual_results_by_source(
+    rows: Sequence[dict[str, Any]], args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], int]:
+    """Use one representative frame per video in visual-only result pages.
+
+    A source video can contribute dozens of sampled frames to one query. The
+    main visual search shows its best representative; the existing browse-all
+    action exposes the timeline. Speech search keeps separate transcript times.
+    """
+    enabled = bool(getattr(args, "disable_audio_evidence", False)) and not bool(
+        getattr(args, "audio_evidence_only", False)
+    )
+    if not enabled:
+        return list(rows), 0
+    grouped: list[dict[str, Any]] = []
+    representative_by_source: dict[str, dict[str, Any]] = {}
+    merged = 0
+    for original in rows:
+        row = dict(original)
+        if row.get("media_type") != "video":
+            row["source_match_count"] = 1
+            grouped.append(row)
+            continue
+        source_id = str(row.get("source_content_id") or row.get("visual_unit_id") or "")
+        point = int(row.get("time_position_ms") or 0)
+        representative = representative_by_source.get(source_id)
+        if representative is None:
+            row["source_match_count"] = 1
+            row["source_match_time_positions_ms"] = [point]
+            row["source_match_time_span_start_ms"] = point
+            row["source_match_time_span_end_ms"] = point
+            representative_by_source[source_id] = row
+            grouped.append(row)
+            continue
+        representative["source_match_count"] = int(
+            representative.get("source_match_count") or 1
+        ) + 1
+        positions = list(representative.get("source_match_time_positions_ms") or [])
+        if len(positions) < 24:
+            positions.append(point)
+            representative["source_match_time_positions_ms"] = sorted(set(positions))
+        representative["source_match_time_span_start_ms"] = min(
+            int(representative.get("source_match_time_span_start_ms") or point), point,
+        )
+        representative["source_match_time_span_end_ms"] = max(
+            int(representative.get("source_match_time_span_end_ms") or point), point,
+        )
+        merged += 1
+    return grouped, merged
 
 
 def fuse_results(
@@ -1064,7 +1162,11 @@ def fuse_results(
     deduped_by_media: dict[str, int] = defaultdict(int)
     for row in deduped:
         deduped_by_media[str(row["media_type"])] += 1
-    page = deduped[args.result_offset:args.result_offset + args.result_limit]
+    source_grouped, source_grouped_count = group_visual_results_by_source(deduped, args)
+    source_grouped_by_media: dict[str, int] = defaultdict(int)
+    for row in source_grouped:
+        source_grouped_by_media[str(row["media_type"])] += 1
+    page = source_grouped[args.result_offset:args.result_offset + args.result_limit]
     return page, {
         "scanned_visual_vector_count": len(visual_scores),
         "text_scored_visual_unit_count": len(text_scores),
@@ -1076,12 +1178,19 @@ def fuse_results(
         "pre_temporal_dedup_result_count": len(relevant),
         "post_temporal_dedup_result_count": len(deduped),
         "post_temporal_dedup_count_by_media": dict(sorted(deduped_by_media.items())),
+        "source_grouping_enabled": bool(
+            getattr(args, "disable_audio_evidence", False)
+            and not getattr(args, "audio_evidence_only", False)
+        ),
+        "source_grouped_frame_count": source_grouped_count,
+        "post_source_group_result_count": len(source_grouped),
+        "post_source_group_count_by_media": dict(sorted(source_grouped_by_media.items())),
         "result_offset": args.result_offset,
         "result_limit": args.result_limit,
         "returned_result_count": len(page),
         "next_result_offset": (
             args.result_offset + args.result_limit
-            if len(deduped) > args.result_offset + args.result_limit else None
+            if len(source_grouped) > args.result_offset + args.result_limit else None
         ),
     }
 
@@ -1250,6 +1359,14 @@ def build_native_result_contract(
             "environment_user_confirmation_required": row.get(
                 "environment_user_confirmation_required"
             ),
+            "source_match_count": int(row.get("source_match_count") or 1),
+            "source_match_time_positions_ms": row.get("source_match_time_positions_ms") or [],
+            "source_match_timecodes": [
+                text_search.format_timecode(int(value), response["timecode_precision"])
+                for value in row.get("source_match_time_positions_ms") or []
+            ],
+            "source_match_time_span_start_ms": row.get("source_match_time_span_start_ms"),
+            "source_match_time_span_end_ms": row.get("source_match_time_span_end_ms"),
             "yoloe_labels": row.get("yoloe_labels") or [],
         })
     ranking = response.get("ranking") or {}
@@ -1259,14 +1376,18 @@ def build_native_result_contract(
         "query": query,
         "result_count": len(items),
         "result_total_count": int(
-            ranking.get("post_temporal_dedup_result_count")
-            if ranking.get("post_temporal_dedup_result_count") is not None
+            ranking.get("post_source_group_result_count")
+            if ranking.get("post_source_group_result_count") is not None
             else len(items)
         ),
         "result_offset": int(ranking.get("result_offset") or 0),
         "result_limit": int(ranking.get("result_limit") or len(items)),
         "next_result_offset": ranking.get("next_result_offset"),
-        "result_count_by_media": ranking.get("post_temporal_dedup_count_by_media") or {},
+        "result_count_by_media": (
+            ranking.get("post_source_group_count_by_media")
+            or ranking.get("post_temporal_dedup_count_by_media")
+            or {}
+        ),
         "result_items": items,
     }
 
@@ -1900,15 +2021,22 @@ def execute_query(
     text_scores, text_evidence, text_vectors_scanned = score_text_evidence(
         db, runtime["text_run"], query, text_query, eligible_ids
     )
-    audio_scores, audio_evidence, audio_vectors_scanned = score_audio_evidence(
-        db, query, text_query, runtime["visual_rows"]
-    )
+    if should_scan_audio_evidence(args):
+        audio_scores, audio_evidence, audio_vectors_scanned = score_audio_evidence(
+            db, query, text_query, runtime["visual_rows"]
+        )
+    else:
+        audio_scores, audio_evidence, audio_vectors_scanned = {}, {}, 0
     merge_audio_text_evidence(text_scores, text_evidence, audio_scores, audio_evidence)
     text_vectors_scanned += audio_vectors_scanned
     emit_search_progress(
         "text_scan", 4, 7, "文本证据比对完成",
         completed=text_vectors_scanned, total=text_vectors_scanned,
-        detail=f"已扫描 {text_vectors_scanned} 个唯一文本向量",
+        detail=(
+            f"已扫描 {text_vectors_scanned} 个画面描述/OCR文本向量；人声转写仅在音频筛选中搜索"
+            if not should_scan_audio_evidence(args)
+            else f"已扫描 {text_vectors_scanned} 个文本向量"
+        ),
         started=progress_started,
     )
     emit_search_progress(
@@ -1916,7 +2044,10 @@ def execute_query(
         detail="核对中文标签、别名和置信度",
         started=progress_started,
     )
-    yoloe_matches, yoloe_labels = load_yoloe_evidence(db, query, eligible_ids)
+    yoloe_matches, yoloe_labels = load_yoloe_evidence(
+        db, query, eligible_ids,
+        minimum_confidence=float(config["minimum_object_label_confidence"]),
+    )
     emit_search_progress(
         "object_labels", 5, 7, "物体标签匹配完成",
         completed=len(yoloe_matches), total=len(eligible_ids),
@@ -1937,7 +2068,10 @@ def execute_query(
         "ranking", 6, 7, "全量画面排序完成",
         completed=int(ranking["scanned_visual_vector_count"]),
         total=len(runtime["visual_vectors"]),
-        detail=f"形成 {int(ranking['post_temporal_dedup_result_count'])} 条可靠结果",
+        detail=(
+            f"形成 {int(ranking['post_source_group_result_count'])} 个素材结果；"
+            f"合并 {int(ranking['source_grouped_frame_count'])} 个同源抽帧"
+        ),
         started=progress_started,
     )
     emit_search_progress(
@@ -1954,6 +2088,11 @@ def execute_query(
         "scanned_visual_vector_count": ranking["scanned_visual_vector_count"],
         "scanned_text_vector_count": text_vectors_scanned,
         "scanned_audio_text_vector_count": audio_vectors_scanned,
+        "audio_evidence_policy": (
+            "explicit_audio_filter_only"
+            if not should_scan_audio_evidence(args)
+            else "included_for_audio_filter"
+        ),
         "ranking": ranking, "results": results,
         "runtime": {**visual_runtime, **text_runtime, "total_query_seconds": time.monotonic() - started},
         "technical_checks": {
@@ -2034,6 +2173,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--has-ocr", action="store_true")
     parser.add_argument("--has-person", action="store_true")
     parser.add_argument("--audio-evidence-only", action="store_true")
+    parser.add_argument("--disable-audio-evidence", action="store_true")
+    parser.add_argument("--native-readiness-verified", action="store_true")
     parser.add_argument("--confirm-real-local-query", action="store_true")
     parser.add_argument("--native-app-result-contract", action="store_true")
     return parser

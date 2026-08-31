@@ -6,6 +6,8 @@ from apps.media_archive_image_video_ui_v125_candidate.editorial_session import m
 from apps.media_archive_image_video_ui_v125_candidate.editorial_candidate.core import build_board
 from apps.media_archive_image_video_ui_v125_candidate.native_bridge import build_parser
 
+SOURCE = Path(__file__).resolve().parents[1] / "apps/media_archive_image_video_ui_v125_candidate/native_frontend.swift"
+
 
 def manifest():
     return {"contract_version":"editorial_manifest_v125_v1", "track":"documentary", "frame_rate":"30000/1001", "include_backups":True,
@@ -83,3 +85,13 @@ def test_embedded_guidance_remains_bound_to_exact_script(tmp_path):
     assert board["beats"][0]["editorial_guide"]["primary_shot"]=="4月2日现场"
     with pytest.raises(ValueError,match="句序"):
         build_board("换了一个新文稿。",project,"documentary",bound_guidance=saved)
+
+
+def test_frequent_editorial_actions_coalesce_autosaves_but_exit_is_immediate():
+    code = SOURCE.read_text()
+    autosave = code.split('func autosaveEditorialSession(immediate: Bool = false)', 1)[1].split('func finishEditorialSaves', 1)[0]
+    assert 'editorialAutosaveWorkItem?.cancel()' in autosave
+    assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 0.55' in autosave
+    finish = code.split('func finishEditorialSaves', 1)[1].split('func saveEditorialProjectCopy', 1)[0]
+    assert 'autosaveEditorialSession(immediate: true)' in finish
+    assert 'editorialWriter.finish(completion)' in finish
