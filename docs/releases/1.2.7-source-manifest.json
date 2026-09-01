@@ -20,7 +20,7 @@
   "changed_source_files_sha256": {
     ".github/workflows/ci.yml": "a196fbbcbe52fe29c7ad894418a40fb416b4ce5badcafeac2956a19524b8c3d2",
     "CHANGELOG.md": "15ed94063dbda985634d115143ef7f780cc129f7e1cb31cbe25cf4f3c188d3e7",
-    "README.md": "c5a282b37c5fb37daaa8a9912e9b75809e5a6e9e56ddc12f542f1a1334cec7f0",
+    "README.md": "07dabdacc46d345da1668a967409ef087c2fac87e7a5ac1f001bef7500dc328b",
     "apps/media_archive_image_video_ui_v125_candidate/native_bridge.py": "ea3f917193c2f847a88fb09fa76c0fcfda327abff72ec574cb7b233bdb46e36a",
     "apps/media_archive_image_video_ui_v125_candidate/native_frontend.swift": "b19d85bdf3dd08215b84b8adb0af86edb21d6c9fdcd1acb24e6d9595a7eee3d5",
     "apps/media_archive_image_video_ui_v125_candidate/pipeline_orchestrator.py": "e5b9d9554b2721922fbbbea2c44c2879a8c46b6eb14c1288d72c6f285e9f4d85",
@@ -28,7 +28,7 @@
     "docs/images/v1.2.7-editing-reference.png": "36a925849589c45ed96ac8cc899b741f62f0cf80688a8f976bfd15049abb96a6",
     "docs/images/v1.2.7-new-task.png": "dd48741c76f0ce12beda2fbdb33f8f52eddfb5802c12359f4936fca3c5d89100",
     "docs/images/v1.2.7-script-selection.png": "17768c2f7e3344491d15e7826ee29e9df32d7b4efbb1255fe315824fe55f6974",
-    "docs/releases/1.2.7.md": "9314619d3f0ec440b0ac786285b8af6e9c51ac5360d4858ab2bbeb04b7c7cf47",
+    "docs/releases/1.2.7.md": "c58801c8595781cc0bad2bd6575263058fb72f4cfa3040e3ff116f8fd8ac0eb7",
     "scripts/03_stop03_visual_analysis/stop03_5e_hybrid_visual_text_search_v2.py": "45a2d11f1c15e5a5ec7273888ea45407497b9877faaa0fbd3848113f632aa0c4",
     "scripts/04_media_archive_app/build_native_image_video_app_v124_candidate.py": "5d22085638dc585fa8664a839fad2e704addabac308ff4f2c0b38212fbf0b47a",
     "scripts/04_media_archive_app/build_native_image_video_app_v127.py": "814ef21cc512ce581beb28488ea039de11df164047cac83efd18509c5b43e2ce",
