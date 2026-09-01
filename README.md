@@ -14,6 +14,18 @@
 版权所有：**Copyright (C) 2026 [Horizon-94](https://github.com/Horizon-94)**
 官方源码：<https://github.com/Horizon-94/local-media-organizer>
 
+## 软件界面
+
+### 新建素材整理任务
+
+![本地数据库 1.2.7 新建素材整理任务](docs/images/v1.2.7-new-task.png)
+
+### 文稿选片实验入口
+
+支持 PDF、TXT、直接输入和逐句 Excel 指导；系统提供候选，最终由用户选择主选、备选或保留人物口播。
+
+![本地数据库 1.2.7 文稿选片实验](docs/images/v1.2.7-script-selection.png)
+
 ## 1.2.3 的重点
 
 - 保留逐视频原子断点、worker 恢复、中央数据库、强指纹、多历史索引切换、音频转写搜索和只读搜索。
