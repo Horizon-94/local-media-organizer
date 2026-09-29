@@ -204,7 +204,15 @@ def run_qwen(row: dict[str, object], run_root: Path) -> dict[str, object]:
     status = "PASS" if completed.returncode == 0 else "MODEL_FAIL"
     if completed.returncode != 0 and row.get("mode") == "resident":
         status = "NOT_SUPPORTED_YET"
-    return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(fixture), "workers": row["workers"], "note": "resident mode requires a true multi-batch idle harness; 1.2.8 formal entry currently exposes only one batch."}
+    metrics = {}
+    for candidate in (output / "qwen-x1" / "summary.json", output / "summary.json"):
+        if candidate.is_file():
+            try:
+                metrics = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                metrics = {}
+            break
+    return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(fixture), "workers": row["workers"], "metrics": metrics, "note": "resident mode requires a true multi-batch idle harness; 1.2.8 formal entry currently exposes only one batch."}
 
 
 def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, object]:
