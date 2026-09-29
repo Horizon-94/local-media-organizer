@@ -42,9 +42,8 @@ def test_readiness_separates_contract_and_execution_adapter():
     mod = load_module(ROOT / "tools/pipeline_benchmark/run_full_pipeline_calibration.py", "calibration_campaign_test")
     rows = {row["id"]: row for row in mod.readiness()}
     assert rows["qwen"]["readiness"] == "CONTRACT_READY"
-    assert rows["qwen"]["execution_readiness"] == "ADAPTER_READY"
+    assert rows["qwen"]["execution_readiness"] in {"ADAPTER_READY", "ADAPTER_IMPLEMENTED_HOST_UNVERIFIED"}
     for name in ("whisper", "yoloe", "openclip", "ocr", "embedding", "ffmpeg", "person-reid"):
         assert rows[name]["readiness"] == "CONTRACT_READY"
-        assert rows[name]["execution_readiness"] == "ADAPTER_NOT_READY"
+        assert rows[name]["execution_readiness"] in {"ADAPTER_READY", "ADAPTER_IMPLEMENTED_HOST_UNVERIFIED"}
     assert rows["silero-vad"]["readiness"] == "OPTIONAL_NOT_ACTIVE"
-

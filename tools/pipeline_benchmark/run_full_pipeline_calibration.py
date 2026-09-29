@@ -17,6 +17,12 @@ import time
 import shutil as which_module
 from datetime import datetime, timezone
 from pathlib import Path
+try:
+    from formal_adapters import AdapterSpec, adapter_contract_complete
+except ModuleNotFoundError:  # loaded by a test/importlib from repository root
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from formal_adapters import AdapterSpec, adapter_contract_complete
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -55,14 +61,14 @@ def campaign_plan() -> list[dict[str, object]]:
 def workload_registry() -> list[dict[str, object]]:
     pipeline = APP / "Contents/Resources/Pipeline"
     return [
-        {"id": "qwen", "status": "ACTIVE", "runtime": "PipelinePython/qwen", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py", "model": MODEL_ROOT / "Qwen3-VL-4B-Instruct-4bit", "fixture_builder": REPO / "tools/pipeline_benchmark/prepare_qwen_host_fixture.py", "execution_adapter": True, "adapter": "run_host_benchmark.sh + exact formal Qwen stage"},
-        {"id": "whisper", "status": "ACTIVE", "runtime": "PipelinePython/whisper", "entrypoint": pipeline / "scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py", "model": MODEL_ROOT / "whisper-large-v3-turbo", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal host audio adapter not implemented"},
-        {"id": "yoloe", "status": "ACTIVE", "runtime": "PipelinePython/yolo", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_yoloe_full_from_db_safe_v6_20260709_170200.py", "model": MODEL_ROOT / "yoloe26-l-seg", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal host YOLOE adapter not implemented"},
-        {"id": "openclip", "status": "ACTIVE", "runtime": "PipelinePython/visual", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_1b_openclip_visual_embedding_db_safe_v4_20260709_161500.py", "model": MODEL_ROOT / "openclip-vit-b-32-laion2b-s34b-b79k", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal host OpenCLIP adapter not implemented"},
-        {"id": "ocr", "status": "ACTIVE", "runtime": "PipelinePython/ocr", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_4_ocr_db_orchestrator_v1.py", "model": MODEL_ROOT / "ocr/PP-OCRv6_medium_det", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal host OCR adapter not implemented"},
-        {"id": "embedding", "status": "ACTIVE", "runtime": "PipelinePython/embedding", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py", "model": MODEL_ROOT / "Qwen3-Embedding-0.6B", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal host embedding adapter not implemented"},
-        {"id": "ffmpeg", "status": "ACTIVE", "runtime": "host ffmpeg/VideoToolbox", "entrypoint": pipeline / "scripts/04_media_archive_app/step02_video_frame_generic_interval_v1.py", "model": Path(which_module.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"), "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal Stage03 host adapter not implemented"},
-        {"id": "person-reid", "status": "ACTIVE", "runtime": "PipelinePython/person_reid", "entrypoint": pipeline / "scripts/04_media_archive_app/stop03_1c_person_reid_db_orchestrator_v1.py", "model": MODEL_ROOT / "insightface/buffalo_l", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "execution_adapter": False, "adapter_reason": "formal host Person/ReID adapter not implemented"},
+        {"id": "qwen", "status": "ACTIVE", "runtime": "PipelinePython/qwen", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py", "model": MODEL_ROOT / "Qwen3-VL-4B-Instruct-4bit", "fixture_builder": REPO / "tools/pipeline_benchmark/prepare_qwen_host_fixture.py", "adapter_impl": True, "adapter": "run_host_benchmark.sh + exact formal Qwen stage"},
+        {"id": "whisper", "status": "ACTIVE", "runtime": "PipelinePython/whisper", "entrypoint": pipeline / "scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py", "model": MODEL_ROOT / "whisper-large-v3-turbo", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal host audio adapter implemented; smoke required"},
+        {"id": "yoloe", "status": "ACTIVE", "runtime": "PipelinePython/yolo", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_yoloe_full_from_db_safe_v6_20260709_170200.py", "model": MODEL_ROOT / "yoloe26-l-seg", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal host YOLOE adapter implemented; smoke required"},
+        {"id": "openclip", "status": "ACTIVE", "runtime": "PipelinePython/visual", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_1b_openclip_visual_embedding_db_safe_v4_20260709_161500.py", "model": MODEL_ROOT / "openclip-vit-b-32-laion2b-s34b-b79k", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal host OpenCLIP adapter implemented; smoke required"},
+        {"id": "ocr", "status": "ACTIVE", "runtime": "PipelinePython/ocr", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_4_ocr_db_orchestrator_v1.py", "model": MODEL_ROOT / "ocr/PP-OCRv6_medium_det", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal host OCR adapter implemented; smoke required"},
+        {"id": "embedding", "status": "ACTIVE", "runtime": "PipelinePython/embedding", "entrypoint": pipeline / "scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py", "model": MODEL_ROOT / "Qwen3-Embedding-0.6B", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal host embedding adapter implemented; smoke required"},
+        {"id": "ffmpeg", "status": "ACTIVE", "runtime": "host ffmpeg/VideoToolbox", "entrypoint": pipeline / "scripts/04_media_archive_app/step02_video_frame_generic_interval_v1.py", "model": Path(which_module.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"), "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal Stage03 host adapter implemented; smoke required"},
+        {"id": "person-reid", "status": "ACTIVE", "runtime": "PipelinePython/person_reid", "entrypoint": pipeline / "scripts/04_media_archive_app/stop03_1c_person_reid_db_orchestrator_v1.py", "model": MODEL_ROOT / "insightface/buffalo_l", "fixture_builder": REPO / "tools/pipeline_benchmark/build_media_fixture.py", "adapter_impl": True, "adapter_reason": "formal host Person/ReID adapter implemented; smoke required"},
         {"id": "silero-vad", "status": "OPTIONAL_NOT_ACTIVE", "runtime": "audio enrichment optional", "entrypoint": pipeline / "scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py", "model": MODEL_ROOT / "silero-vad", "fixture_builder": None, "reason": "not part of the current visual 19-stage default path"},
         {"id": "deepfilternet3", "status": "OPTIONAL_NOT_ACTIVE", "runtime": "audio enrichment optional", "entrypoint": pipeline / "scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py", "model": MODEL_ROOT / "DeepFilterNet3_onnx.tar.gz", "fixture_builder": None, "reason": "not part of the current visual 19-stage default path"},
     ]
@@ -82,10 +88,19 @@ def readiness() -> list[dict[str, object]]:
         if item.get("fixture_builder") and not Path(item["fixture_builder"]).is_file():
             missing.append("fixture_builder")
         contract_ready = not missing
-        adapter_ready = bool(item.get("execution_adapter")) and contract_ready
+        smoke = TEST_ROOT / "calibration-adapter-smoke" / str(item["id"]) / "smoke.json"
+        adapter_implemented = bool(item.get("adapter_impl")) and contract_ready
+        smoke_pass = False
+        if smoke.is_file():
+            try:
+                smoke_pass = json.loads(smoke.read_text(encoding="utf-8")).get("status") == "PASS"
+            except (OSError, ValueError, TypeError):
+                smoke_pass = False
+        adapter_ready = adapter_implemented and smoke_pass
         result.append({**item, "contract_ready": contract_ready, "execution_adapter_ready": adapter_ready,
                        "readiness": "CONTRACT_READY" if contract_ready else "CONTRACT_NOT_READY",
-                       "execution_readiness": "ADAPTER_READY" if adapter_ready else "ADAPTER_NOT_READY",
+                       "execution_readiness": "ADAPTER_READY" if adapter_ready else ("ADAPTER_IMPLEMENTED_HOST_UNVERIFIED" if adapter_implemented else "ADAPTER_NOT_READY"),
+                       "smoke_result": str(smoke) if smoke.is_file() else None,
                        "missing": missing})
     return result
 
@@ -101,7 +116,7 @@ def print_readiness(execution: bool = False) -> int:
     plan = campaign_plan()
     print(f"TOTAL TEST CASES = {len(plan)}")
     active_missing = [row["id"] for row in rows if row["readiness"] == "CONTRACT_NOT_READY"]
-    adapter_missing = [row["id"] for row in rows if row.get("execution_readiness") == "ADAPTER_NOT_READY"]
+    adapter_missing = [row["id"] for row in rows if row.get("execution_readiness") != "ADAPTER_READY" and row["readiness"] != "OPTIONAL_NOT_ACTIVE"]
     print(f"ACTIVE_CONTRACT_NOT_READY = {len(active_missing)}")
     print(f"ACTIVE_ADAPTER_NOT_READY = {len(adapter_missing)}")
     if active_missing:
@@ -186,7 +201,7 @@ def main() -> int:
     if args.check or args.check_execution:
         return print_readiness(execution=args.check_execution)
     missing = [row["id"] for row in readiness() if row["readiness"] == "CONTRACT_NOT_READY"]
-    adapter_missing = [row["id"] for row in readiness() if row.get("execution_readiness") == "ADAPTER_NOT_READY"]
+    adapter_missing = [row["id"] for row in readiness() if row.get("execution_readiness") != "ADAPTER_READY" and row["readiness"] != "OPTIONAL_NOT_ACTIVE"]
     if (missing or adapter_missing) and not args.allow_partial:
         print("FULL CAMPAIGN REFUSED: execution readiness incomplete: " + ", ".join(missing + adapter_missing))
         print("Run --check-execution for details, or explicitly use --allow-partial.")
