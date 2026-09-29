@@ -150,10 +150,12 @@ def main() -> int:
         )
         pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
         samples: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = [{"event": "BENCHMARK_START", "timestamp_epoch": started, "source": "exact"}]
         with processes_path.open("w", encoding="utf-8") as process_handle:
             while True:
                 process_rows, process_totals = process_table(process.pid)
                 row = {
+                    "phase": "active",
                     "timestamp_epoch": round(time.time(), 3),
                     "elapsed_seconds": round(time.time() - started, 3),
                     **vm_snapshot(),
@@ -163,10 +165,12 @@ def main() -> int:
                 samples.append(row)
                 process_handle.write(json.dumps({
                     "timestamp_epoch": row["timestamp_epoch"],
+                    "phase": row["phase"],
                     "processes": process_rows,
                 }, ensure_ascii=False) + "\n")
                 process_handle.flush()
                 if process.poll() is not None:
+                    events.append({"event": "PROCESS_EXIT", "timestamp_epoch": time.time(), "source": "exact"})
                     break
                 if time.time() - started > args.timeout:
                     timed_out = True
@@ -178,6 +182,32 @@ def main() -> int:
                         process.wait()
                     break
                 time.sleep(max(0.25, args.interval))
+            # Keep the process tree scoped to the original root PID, while
+            # continuing system-level observation after exit.  This makes
+            # release behavior measurable without attributing unrelated
+            # system processes to the workload.
+            for offset in (10, 30):
+                # The process has just exited; use a monotonic delay from now
+                # for deterministic post-exit windows even if teardown took a
+                # fraction of a second.
+                time.sleep(10 if offset == 10 else 20)
+                process_rows, process_totals = process_table(process.pid)
+                row = {
+                    "phase": f"post_exit_{offset}s",
+                    "timestamp_epoch": round(time.time(), 3),
+                    "elapsed_seconds": round(time.time() - started, 3),
+                    **vm_snapshot(),
+                    **disk_snapshot(),
+                    **process_totals,
+                }
+                samples.append(row)
+                process_handle.write(json.dumps({
+                    "timestamp_epoch": row["timestamp_epoch"],
+                    "phase": row["phase"],
+                    "processes": process_rows,
+                }, ensure_ascii=False) + "\n")
+                process_handle.flush()
+                events.append({"event": f"POST_EXIT_{offset}S", "timestamp_epoch": row["timestamp_epoch"], "source": "exact"})
     exit_code = process.returncode if process.returncode is not None else 124
     exit_path.write_text(f"{exit_code}\n", encoding="utf-8")
     fields = list(samples[0]) if samples else []
@@ -186,8 +216,9 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(samples)
     after = vm_snapshot()
-    peak_rss = max((int(row["process_rss_kib"]) for row in samples), default=0)
-    peak_cpu = max((float(row["process_cpu_percent"]) for row in samples), default=0.0)
+    active_samples = [row for row in samples if row.get("phase") == "active"]
+    peak_rss = max((int(row["process_rss_kib"]) for row in active_samples), default=0)
+    peak_cpu = max((float(row["process_cpu_percent"]) for row in active_samples), default=0.0)
     compressed = [int(row["memory_compressed_bytes"]) for row in samples if row.get("memory_compressed_bytes") is not None]
     disk = [int(row["disk_cumulative_mib"]) for row in samples if row.get("disk_cumulative_mib") is not None]
     summary = {
@@ -199,6 +230,8 @@ def main() -> int:
         "timed_out": timed_out,
         "elapsed_seconds": round(time.time() - started, 3),
         "sample_count": len(samples),
+        "active_sample_count": len(active_samples),
+        "events": events,
         "peak_process_tree_rss_bytes": peak_rss * 1024,
         "peak_process_tree_cpu_percent": peak_cpu,
         "peak_compressed_memory_bytes": max(compressed, default=0),
@@ -210,6 +243,20 @@ def main() -> int:
             else None
         ),
         "system_disk_delta_mib": max(disk) - min(disk) if disk else None,
+        "post_exit_observations": {
+            row["phase"]: {
+                "process_tree_rss_bytes": int(row.get("process_rss_kib", 0)) * 1024,
+                "system_memory_used_bytes": (
+                    int(row["physical_memory_bytes"]) - int(row["memory_available_approx_bytes"])
+                    if row.get("physical_memory_bytes") is not None and row.get("memory_available_approx_bytes") is not None
+                    else None
+                ),
+                "compressed_memory_bytes": row.get("memory_compressed_bytes"),
+                "swap_used_bytes": row.get("swap_used_bytes"),
+                "memory_pressure_free_percent": row.get("memory_pressure_free_percent"),
+            }
+            for row in samples if str(row.get("phase", "")).startswith("post_exit_")
+        },
         "gpu_memory_metric": None,
         "gpu_memory_note": "No reliable separate GPU-memory counter is exposed on Apple Silicon; unified memory, swap and Metal errors are the safety signals.",
         "process_rss_note": "N/A - process tree visibility was unavailable" if peak_rss == 0 else "process tree RSS sampled with ps",

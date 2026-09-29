@@ -22,14 +22,17 @@ from typing import Any
 
 
 WORKLOAD_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
-    ("QWEN", ("qwen", "qwenvl", "mlx_vlm", "qwen3-vl")),
-    ("WHISPER", ("whisper", "mlx_whisper", "large-v3-turbo")),
-    ("YOLOE", ("yoloe", "yolo", "ultralytics")),
-    ("OPENCLIP", ("openclip", "clip", "open_clip")),
-    ("OCR", ("ocr", "paddleocr", "pp-ocr")),
-    ("EMBEDDING", ("embedding", "embed", "sentence-transformer")),
-    ("FFMPEG", ("ffmpeg", "videotoolbox")),
-    ("SQLITE", ("sqlite", "sqlite3")),
+    # These are deliberately high-confidence tokens.  The monitor is scoped
+    # to a benchmark root PID; broad system-wide substring matching caused
+    # Apple services and unrelated applications to be mislabelled before.
+    ("QWEN", ("/qwen", "qwenvl", "mlx_vlm", "qwen3-vl")),
+    ("WHISPER", ("/whisper", "mlx_whisper", "large-v3-turbo")),
+    ("YOLOE", ("/yoloe", "ultralytics")),
+    ("OPENCLIP", ("openclip", "open_clip")),
+    ("OCR", ("paddleocr", "pp-ocr", "/ocr/")),
+    ("EMBEDDING", ("/embedding/", "sentence-transformer")),
+    ("FFMPEG", ("/ffmpeg",)),
+    ("SQLITE", ("/sqlite", "sqlite3")),
 ]
 
 
@@ -46,8 +49,8 @@ def classify(command: str) -> str:
     for kind, needles in WORKLOAD_PATTERNS:
         if any(needle in lower for needle in needles):
             return kind
-    if "pipeline" in lower or "orchestrator" in lower or "worker" in lower:
-        return "PIPELINE_ORCHESTRATOR"
+    # A generic Python worker/orchestrator is not enough evidence to assign a
+    # workload.  It remains part of the PID tree but is labelled UNKNOWN.
     return "UNKNOWN"
 
 
@@ -71,18 +74,18 @@ def ps_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def process_tree(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    relevant = {r["pid"] for r in rows if r["type"] != "UNKNOWN"}
-    changed = True
+def process_tree(rows: list[dict[str, Any]], root_pid: int | None) -> list[dict[str, Any]]:
+    if root_pid is None:
+        return []
     by_pid = {r["pid"]: r for r in rows}
+    if root_pid not in by_pid:
+        return []
+    relevant = {root_pid}
+    changed = True
     while changed:
         changed = False
         for row in rows:
-            if row["pid"] in relevant:
-                if row["ppid"] in by_pid and row["ppid"] not in relevant:
-                    relevant.add(row["ppid"])
-                    changed = True
-            elif row["ppid"] in relevant and row["pid"] not in relevant:
+            if row["ppid"] in relevant and row["pid"] not in relevant:
                 relevant.add(row["pid"])
                 changed = True
     return [r for r in rows if r["pid"] in relevant]
@@ -168,6 +171,8 @@ def main() -> int:
     ap.add_argument("--duration", type=float, default=0.0, help="0 means until Ctrl-C")
     ap.add_argument("--mark", action="append", default=[], help="write an inferred/manual event marker immediately")
     ap.add_argument("--marker-file", type=Path, help="tail newline-delimited event names while running")
+    ap.add_argument("--root-pid", type=int, help="benchmark root PID; only this PID and descendants are workload scope")
+    ap.add_argument("--pid-file", type=Path, help="read benchmark root PID from this file")
     ap.add_argument("--powermetrics", action="store_true", help="optional; requires sudo and is sampled separately")
     args = ap.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -184,6 +189,16 @@ def main() -> int:
     start = time.monotonic()
     previous_swap: int | None = None
     marker_offset = 0
+    root_pid = args.root_pid
+    if args.pid_file:
+        try:
+            root_pid = int(args.pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            root_pid = None
+    if root_pid is None:
+        print("WARNING: no --root-pid/--pid-file; workload scope is empty (system metrics only)", flush=True)
+    else:
+        print(f"WORKLOAD_SCOPE_ROOT_PID={root_pid}", flush=True)
     seen_pids: set[int] = set()
     stop = False
 
@@ -210,7 +225,7 @@ def main() -> int:
             previous_swap = swap
             cpu = cpu_snapshot()
             disk = disk_snapshot()
-            rows = process_tree(ps_rows())
+            rows = process_tree(ps_rows(), root_pid)
             current_pids = {int(r["pid"]) for r in rows}
             for pid in sorted(current_pids - seen_pids):
                 event = {"timestamp": now, "event": "PROCESS_START", "pid": pid, "source": "inferred"}

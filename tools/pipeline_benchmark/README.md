@@ -14,3 +14,17 @@ captured by the workload wrapper that owns the benchmark run.
 model-load checks.  `build_media_fixture.py` instead creates a DB that points
 at the complete selected sample (10 videos + 20 images) without copying or
 modifying media; use that fixture for sustained runs and Legacy/V2 parity.
+# Host monitor scope
+
+Run the monitor from a normal macOS Terminal with an explicit benchmark root
+PID (or a PID file).  Only the root and its descendants count as workload
+RSS/CPU; system memory, swap, pressure, and disk remain separate machine-wide
+metrics:
+
+```bash
+tools/pipeline_benchmark/run_host_monitor.sh /path/to/monitor-output \
+  --pid-file /path/to/workload.pid
+```
+
+Without `--pid-file`/`--root-pid`, the monitor deliberately records system
+metrics only and does not guess a workload from process names.
