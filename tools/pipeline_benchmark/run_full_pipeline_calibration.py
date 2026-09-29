@@ -145,7 +145,14 @@ def pristine_template() -> Path:
                 value = json.loads(report.read_text(encoding="utf-8"))
                 scrub = value.get("history_scrub", {}).get("after", {})
                 if value.get("status") == "PASS" and all(int(v) == 0 for v in scrub.values()):
-                    return candidate
+                    # The report is not sufficient evidence: older builders
+                    # could leave queue rows behind while claiming the run
+                    # history was scrubbed.  Verify the exact table used by
+                    # the formal Qwen execution contract before reusing it.
+                    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as con:
+                        count = con.execute("SELECT COUNT(*) FROM stop03_3_qwenvl_run_items").fetchone()[0]
+                    if int(count) == 0:
+                        return candidate
             except (OSError, ValueError, TypeError):
                 pass
     suffix = len(candidates) + 1
