@@ -69,3 +69,8 @@ entry point is `tools/pipeline_benchmark/run_host_benchmark.sh`; it probes both
 installed MLX runtimes for Metal and only starts the isolated Qwen fixture when
 `RUN_HEAVY=1` is explicitly set from an ordinary macOS Terminal. It never
 writes the source media or model directory.
+
+The current shell can report `Device(gpu, 0)` and `metal=True` at import time,
+but the first real MLX array/model allocation fails with
+`metal::load_device: No Metal device available`; this is why an import-only
+probe is not treated as a host Metal success.
