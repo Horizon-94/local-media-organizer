@@ -24,6 +24,14 @@ model loaded and processed five items, but the isolated synthetic candidate
 fixture failed its foreign-key acceptance audit.  The result is retained as a
 fixture-contract failure, not as a claim about OCR stability or throughput.
 
+Qwen3-VL formal entry was preflight-valid, but the actual worker could not
+initialize in this Codex execution environment: MLX reported
+`metal::load_device: No Metal device available` and the worker retired after
+bounded retries.  This is an environment/GPU-access limitation, not a safe
+Qwen concurrency result.  Qwen, Whisper, and cross-model Metal combinations
+therefore remain N/A until the same commands can run in a host session with
+Metal access.
+
 ## Safety interpretation
 
 The formal Stage 03 correctness run produced all 168 expected outputs and exit
