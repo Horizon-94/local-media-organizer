@@ -34,6 +34,68 @@ def backup_db(source: Path, target: Path) -> None:
         dst.close(); src.close()
 
 
+QWEN_HISTORY_TABLES = (
+    "stop03_3_qwenvl_results",
+    "stop03_3_qwenvl_run_items",
+    "stop03_3_qwenvl_runs",
+)
+
+
+def scrub_qwen_history(con: sqlite3.Connection) -> dict[str, int]:
+    """Remove prior execution history from a *benchmark copy* only.
+
+    The production runner intentionally refuses to reuse an execution key.  A
+    fixture made by copying a previously successful benchmark is therefore not
+    fresh, even when its candidate queue is unchanged.  Keep this operation
+    narrowly scoped to the Qwen run/history tables and report before/after
+    counts so contamination cannot be silently hidden.
+    """
+    before: dict[str, int] = {}
+    after: dict[str, int] = {}
+    for table in QWEN_HISTORY_TABLES:
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if not exists:
+            continue
+        before[table] = int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    # Child rows first; this remains safe whether or not foreign keys are
+    # enabled in the source snapshot.
+    for table in QWEN_HISTORY_TABLES:
+        if table in before:
+            con.execute(f"DELETE FROM {table}")
+    con.commit()
+    for table in QWEN_HISTORY_TABLES:
+        if table in before:
+            after[table] = int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    return {"before": before, "after": after}
+
+
+def assert_no_existing_execution_keys(con: sqlite3.Connection, candidate_ids: list[str]) -> dict[str, object]:
+    """Fail closed if any planned candidate still has run history.
+
+    The formal stage computes its execution key from the queue row and runtime
+    contract.  At fixture-build time the strongest safe assertion is that no
+    row for the planned candidate set exists at all; this catches stale keys
+    before a model process is started and avoids duplicating the production
+    algorithm in the harness.
+    """
+    table = "stop03_3_qwenvl_run_items"
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if not exists:
+        return {"existing_count": 0, "candidate_ids": candidate_ids}
+    placeholders = ",".join("?" for _ in candidate_ids)
+    rows = con.execute(
+        f"SELECT candidate_id,execution_key,status FROM {table} WHERE candidate_id IN ({placeholders})",
+        tuple(candidate_ids),
+    ).fetchall()
+    if rows:
+        raise RuntimeError("HARNESS_FIXTURE_CONTAMINATED: existing Qwen execution history for planned candidates")
+    return {"existing_count": 0, "candidate_ids": candidate_ids}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source-db", type=Path, required=True)
@@ -61,6 +123,8 @@ def main() -> int:
     hashes = [sha256(path) for path in copied]
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
+    history = {}
+    key_audit = {}
     try:
         # The production snapshot is intentionally immutable. This is a fresh
         # benchmark copy, so temporarily remove only the copied guard triggers,
@@ -80,6 +144,10 @@ def main() -> int:
                 "UPDATE stop03_2_candidate_queue_frozen_v25 SET runtime_visual_file=?, runtime_visual_file_sha256=?, size_bytes=?, mtime_ns=? WHERE candidate_id=?",
                 (str(path.resolve()), digest, path.stat().st_size, path.stat().st_mtime_ns, str(row["candidate_id"])),
             )
+        # This is a benchmark copy; never mutate the source DB.  Scrub stale
+        # Qwen run/history rows before auditing the planned queue.
+        history = scrub_qwen_history(con)
+        key_audit = assert_no_existing_execution_keys(con, [str(row["candidate_id"]) for row in rows])
         for _, trigger_sql in trigger_rows:
             con.execute(trigger_sql)
         con.commit()
@@ -90,11 +158,13 @@ def main() -> int:
     finally:
         con.close()
     report = {
-        "status": "PASS" if integrity == "ok" and not foreign and len(queue) == 5 else "FAIL",
+        "status": "PASS" if integrity == "ok" and not foreign and len(queue) == 5 and key_audit.get("existing_count") == 0 else "FAIL",
         "database": str(db), "config": str(config_target),
         "derived_files": [{"path": str(p), "sha256": h, "exists": p.is_file()} for p, h in zip(copied, hashes)],
         "integrity_check": integrity, "foreign_key_check": foreign,
         "queue": queue, "candidate_count": len(queue), "model_run": False,
+        "history_scrub": history, "execution_key_audit": key_audit,
+        "runtime_sha_complete": all(bool(row["runtime_visual_file_sha256"]) for row in queue),
     }
     (args.target_root / "fixture-preparation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
