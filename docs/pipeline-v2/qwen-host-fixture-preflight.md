@@ -40,10 +40,33 @@ All five candidate files exist and their SHA-256 values match the database.
 SQLite integrity and foreign-key checks also pass. The persisted report is
 `/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/preflight-report.json`.
 
+The exact command-path preflight was also run through
+`run_host_benchmark.sh` with `PREFLIGHT_ONLY=1`, using the same database,
+config, prompt, model, worker count, token count, `--out`, and common
+`--allowed-output-root` that the final run now uses. It passed and is recorded
+under:
+
+`/Users/horizon/Documents/AI-Local/test-output/qwen-x1-cold-3-exact-preflight/qwen-x1/`
+
+The earlier apparent contradiction was parameter drift: the standalone
+preflight used `/Users/horizon/Documents/AI-Local/test-output`, while the first
+`run_host_benchmark.sh` version passed the narrower `qwen-x1-cold-3` folder as
+`--allowed-output-root`. The runner patched that narrow path into
+`TEST_OUTPUT_ROOT`, so the sibling `qwen-host-fixture-v2` derived frames were
+rejected. The script now constructs one command and only changes `--mode`.
+
 ## Single next host command
 
-Only after the above preflight should the real Metal inference be started from
-an ordinary macOS Terminal:
+You can repeat the exact preflight yourself without loading the model:
+
+```bash
+cd /private/tmp/local-media-organizer-v128-baseline
+PREFLIGHT_ONLY=1 tools/pipeline_benchmark/run_host_benchmark.sh \
+  /Users/horizon/Documents/AI-Local/test-output/qwen-x1-cold-3-preflight
+```
+
+Only after that preflight passes should the real Metal inference be started
+from an ordinary macOS Terminal:
 
 ```bash
 cd /private/tmp/local-media-organizer-v128-baseline

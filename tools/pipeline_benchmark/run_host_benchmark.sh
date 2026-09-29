@@ -8,11 +8,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-$ROOT/host-metal-benchmark-$(date +%Y%m%d-%H%M%S)}"
 RUN_HEAVY="${RUN_HEAVY:-0}"
+PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-0}"
 APP="/Applications/本地数据库 1.2.8.app"
 PY_QWEN="$APP/Contents/Helpers/PipelinePython/qwen"
 PY_WHISPER="$APP/Contents/Helpers/PipelinePython/whisper"
 FIXTURE="${QWEN_DB:-/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/qwen_fixture.sqlite}"
 QWEN_CONFIG="${QWEN_CONFIG:-/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/qwen-config.json}"
+QWEN_ALLOWED_ROOT="${QWEN_ALLOWED_OUTPUT_ROOT:-/Users/horizon/Documents/AI-Local/test-output}"
 
 mkdir -p "$OUT" "$OUT/logs"
 exec > >(tee "$OUT/logs/host-benchmark.log") 2>&1
@@ -20,6 +22,11 @@ exec > >(tee "$OUT/logs/host-benchmark.log") 2>&1
 echo "HOST TERMINAL REQUIRED: $(date -Iseconds)"
 echo "output=$OUT"
 echo "root=$ROOT"
+echo "allowed_output_root=$QWEN_ALLOWED_ROOT"
+echo "fixture=$FIXTURE"
+echo "resolved_fixture=$(cd "$(dirname "$FIXTURE")" && pwd)/$(basename "$FIXTURE")"
+echo "resolved_output=$(cd "$OUT" && printf '%s/qwen-stage' "$(pwd)")"
+echo "resolved_derived_root=/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/derived"
 uname -a || true
 sysctl -n hw.memsize hw.ncpu || true
 echo "-- memory pressure --"
@@ -30,7 +37,7 @@ echo "-- Metal / MLX runtime probes --"
 "$PY_QWEN" -c 'import mlx.core as mx; print("qwen_default_device", mx.default_device())'
 "$PY_WHISPER" -c 'import mlx.core as mx; print("whisper_default_device", mx.default_device())'
 
-if [[ "$RUN_HEAVY" != "1" ]]; then
+if [[ "$RUN_HEAVY" != "1" && "$PREFLIGHT_ONLY" != "1" ]]; then
   cat <<'EOF'
 Preflight complete. No heavy inference was started.
 To run the isolated Qwen x1 fixture benchmark after Metal probes pass:
@@ -48,20 +55,41 @@ fi
 
 BENCH_OUT="$OUT/qwen-x1"
 mkdir -p "$BENCH_OUT"
+MODE="run"
+if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
+  MODE="preflight"
+fi
+QWEN_COMMAND=(
+  "$PY_QWEN"
+  "$APP/Contents/Resources/Pipeline/scripts/04_media_archive_app/run_generic_pipeline_stage.py"
+  --script "$APP/Contents/Resources/Pipeline/scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py"
+  --allowed-output-root "$QWEN_ALLOWED_ROOT"
+  --
+  --mode "$MODE"
+  --db "$FIXTURE"
+  --config "$QWEN_CONFIG"
+  --prompt "$APP/Contents/Resources/Pipeline/configs/qwenvl_prompt_v2_384.txt"
+  --model "/Users/horizon/Documents/model/Qwen3-VL-4B-Instruct-4bit"
+  --qwen-python "$PY_QWEN"
+  --out "$OUT/qwen-stage"
+  --workers 1
+  --max-tokens 384
+  --max-attempts 1
+  --confirm-central-db-write
+)
+printf 'QWEN_COMMAND:'
+printf ' %q' "${QWEN_COMMAND[@]}"
+printf '\n'
 "$PY_QWEN" "$ROOT/tools/pipeline_benchmark/run_benchmark.py" \
-  --name qwen-vl-x1-host-fixture \
+  --name "qwen-vl-x1-host-fixture-$MODE" \
   --output "$BENCH_OUT" \
   --interval 1 \
   --timeout 3600 \
-  -- \
-  "$PY_QWEN" \
-  "$APP/Contents/Resources/Pipeline/scripts/04_media_archive_app/run_generic_pipeline_stage.py" \
-  --script "$APP/Contents/Resources/Pipeline/scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py" \
-  --allowed-output-root "$OUT" -- \
-  --mode run --db "$FIXTURE" --config "$QWEN_CONFIG" \
-  --prompt "$APP/Contents/Resources/Pipeline/configs/qwenvl_prompt_v2_384.txt" \
-  --model "/Users/horizon/Documents/model/Qwen3-VL-4B-Instruct-4bit" \
-  --qwen-python "$PY_QWEN" --out "$OUT/qwen-stage" --workers 1 \
-  --max-tokens 384 --max-attempts 1 --confirm-central-db-write
+  -- "${QWEN_COMMAND[@]}"
 
-echo "Qwen host x1 completed; Whisper remains a separate workload and must use its formal audio fixture/entry."
+if [[ "$MODE" == "preflight" ]]; then
+  echo "Qwen host exact-run preflight completed; model was not loaded."
+else
+  echo "Qwen host x1 command completed; inspect the benchmark summary for model-run status."
+fi
+echo "Whisper remains a separate workload and must use its formal audio fixture/entry."
