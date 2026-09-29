@@ -103,7 +103,8 @@
     "embedding_contract": "$PROJECT_ROOT/configs/stop03_5d_text_embedding_db_contract_v1.json",
     "embedding_runtime": "$PROJECT_ROOT/configs/stop03_5d_text_embedding_db_orchestrator_v1.json",
     "hybrid_search": "$PROJECT_ROOT/configs/stop03_5e_hybrid_visual_text_search_v2.json",
-    "yoloe_registry": "$PROJECT_ROOT/configs/yoloe_keyword_registry_default_v1.json"
+    "yoloe_registry": "$PROJECT_ROOT/configs/yoloe_keyword_registry_default_v1.json",
+    "static_shot": "$PROJECT_ROOT/configs/static_shot_representative_policy_v1.json"
   },
   "migrations": {
     "person_reid": "$PROJECT_ROOT/migrations/20260726_stop03_1c_person_reid_db_v1.sql",

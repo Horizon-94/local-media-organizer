@@ -61,6 +61,23 @@ def atomic_json(path: Path, payload: Any) -> None:
     os.replace(temporary, path)
 
 
+def progress_diagnostic_kind(line: str, progress: dict[str, Any]) -> str | None:
+    """Classify real item diagnostics without treating aggregate counters as errors."""
+    event = str(progress.get("event") or "").strip().lower()
+    if event in {"stage_item_skipped", "item_skipped"}:
+        return "skipped"
+    if event in {"stage_item_failed", "stage_failed", "item_failed"}:
+        return "failure"
+    if event in {"progress", "stage_progress"}:
+        return None
+    lowered = line.lower()
+    if "skip" in lowered:
+        return "skipped"
+    if "failed" in lowered or "error=" in lowered:
+        return "failure"
+    return None
+
+
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -394,7 +411,7 @@ def validate_stage_acceptance(task: dict[str, Any], stage_key: str) -> str:
             ):
                 return "PERSON_REID_RESULT_TABLES_MISSING"
             latest = con.execute(
-                """SELECT run_id,status,visual_unit_count
+                """SELECT run_id,status,visual_unit_count,face_count
                    FROM stop03_1c_person_reid_runs
                    ORDER BY created_at DESC,run_id DESC LIMIT 1"""
             ).fetchone()
@@ -409,6 +426,24 @@ def validate_stage_acceptance(task: dict[str, Any], stage_key: str) -> str:
             expected = int(latest[2] or 0)
             if terminal != expected:
                 return f"PERSON_REID_COVERAGE_MISMATCH_{terminal}_OF_{expected}"
+            if int(latest[3] or 0) == 0 and table("visual_labels"):
+                visual_label_columns = {
+                    str(row[1]) for row in con.execute("PRAGMA table_info(visual_labels)")
+                }
+                if {"visual_unit_id", "label"}.issubset(visual_label_columns):
+                    labelled_faces = count(
+                        """SELECT COUNT(DISTINCT vl.visual_unit_id)
+                           FROM visual_labels AS vl
+                           JOIN stop03_1c_person_reid_run_items AS i
+                             ON i.visual_unit_id=vl.visual_unit_id
+                           WHERE i.run_id=(
+                               SELECT run_id FROM stop03_1c_person_reid_runs
+                               ORDER BY created_at DESC,run_id DESC LIMIT 1
+                           )
+                             AND LOWER(TRIM(vl.label))='face'"""
+                    )
+                    if labelled_faces >= 3 and labelled_faces / max(1, expected) >= 0.005:
+                        return "PERSON_REID_IMPLAUSIBLE_ZERO_FACES"
     return ""
 
 
@@ -540,6 +575,7 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
     scripts.update(task["runtime"].get("scripts") or {})
     configs = {
         "candidate": str(project / "configs/stop03_2_high_value_policy_v25.json"),
+        "static_shot": str(project / "configs/static_shot_representative_policy_v1.json"),
         "person_reid": str(project / "configs/stop03_1c_person_reid_db_v1.json"),
         "qwen": str(project / "configs/stop03_3_qwenvl_db_v1.json"),
         "qwen_prompt": str(project / "configs/qwenvl_prompt_v2_384.txt"),
@@ -814,7 +850,8 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
                workspace, source,
                ["--db", str(db), "--output-root", str(stages / "07_dedup"),
                 "--mode", "commit", "--max-workers", str(max(1, frame_workers)),
-                "--decode-backend", "pillow", "--force-commit-review"]),
+                "--decode-backend", "pillow", "--force-commit-review",
+                "--static-policy", str(configs["static_shot"])], requires_source=True),
         _stage(
             "person_reid_optional_v1", "归并可见人脸为待确认人物组（InsightFace）",
             runtimes.get("person_reid", runtimes["yolo"]), entry,
@@ -1048,12 +1085,30 @@ def execute_pipeline(
         state["stages"] = [by_key[row["key"]] for row in plan]
         state["stage_count"] = len(plan)
         invalid_from: int | None = None
+        isolated_invalid_keys: set[str] = set()
         for index, row in enumerate(plan):
             if by_key[row["key"]].get("status") != "success":
                 continue
-            if validate_stage_acceptance(task, row["key"]):
+            acceptance_error = validate_stage_acceptance(task, row["key"])
+            if not acceptance_error:
+                continue
+            if (
+                row["key"] == "person_reid_optional_v1"
+                and acceptance_error == "PERSON_REID_IMPLAUSIBLE_ZERO_FACES"
+            ):
+                isolated_invalid_keys.add(row["key"])
+                continue
+            if acceptance_error:
                 invalid_from = index
                 break
+        for key in isolated_invalid_keys:
+            by_key[key].update({
+                "status": "pending", "exit_code": None,
+                "reason_code": "PERSON_REID_IMPLAUSIBLE_ZERO_FACES",
+                "started_at_epoch": None, "finished_at_epoch": None,
+                "elapsed_seconds": None, "error_summary": "",
+                "error_details": "",
+            })
         if invalid_from is not None:
             for row in state["stages"][invalid_from:]:
                 row.update({
@@ -1288,12 +1343,13 @@ def execute_pipeline(
                             state["updated_at_epoch"] = time.time()
                             atomic_json(state_path, state)
                             last_progress_write = now
-                    if "skip" in line.lower():
+                    diagnostic_kind = progress_diagnostic_kind(line, progress)
+                    if diagnostic_kind == "skipped":
                         skipped_rows.append({
                             "item": str(progress.get("current_item") or ""),
                             "reason": line.strip()[:2000],
                         })
-                    if "failed" in line.lower() or "error=" in line.lower():
+                    if diagnostic_kind == "failure":
                         failure_rows.append({
                             "item": str(progress.get("current_item") or ""),
                             "reason": line.strip()[:2000],

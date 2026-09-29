@@ -598,6 +598,37 @@ struct PersonClusterSummary: Decodable, Identifiable {
 struct PersonClusterCatalogResponse: Decodable {
     let status: String; let total: Int; let items: [PersonClusterSummary]
     let capabilityNote: String?; let error: String?
+    let personReidHealth: PersonReidHealth?
+}
+struct PersonReidHealth: Decodable {
+    let state: String
+    let faceCount: Int?
+    let clusterCount: Int?
+    let independentFaceVisualUnitCount: Int?
+}
+struct InterviewExcerpt: Decodable, Identifiable {
+    let startTimeMs: Int; let endTimeMs: Int; let text: String
+    var id: String { "\(startTimeMs)|\(endTimeMs)|\(text)" }
+}
+struct InterviewQuestionAnswer: Decodable, Identifiable {
+    let questionTimeMs: Int; let question: String
+    let answerStartTimeMs: Int; let answerEndTimeMs: Int; let answer: String
+    var id: String { "\(questionTimeMs)|\(question)" }
+}
+struct InterviewContentItem: Decodable, Identifiable {
+    let sourceContentId: String; let fileName: String; let relativePath: String
+    let sourcePath: String; let sourceOnline: Bool; let segmentCount: Int
+    let firstSpeechTimeMs: Int; let lastSpeechTimeMs: Int
+    let summary: String; let questionSummary: String; let answerSummary: String
+    let contentKind: String; let contentLabel: String
+    let classificationReason: String; let interviewScore: Double
+    let excerpts: [InterviewExcerpt]
+    let minuteTimeline: [InterviewExcerpt]; let questionAnswers: [InterviewQuestionAnswer]
+    var id: String { sourceContentId }
+}
+struct InterviewContentResponse: Decodable {
+    let status: String; let total: Int; let items: [InterviewContentItem]
+    let scope: String; let scopeNote: String; let error: String?
 }
 struct SearchResult: Codable, Identifiable {
     struct ObjectLabelHit: Codable {
@@ -866,6 +897,21 @@ struct EditorialGuideSummary: Codable {
     let guideRowCount: Int?
     let matchedBeatCount: Int?
     let unmatchedBeatCount: Int?
+}
+
+struct EditorialGuidePreviewResponse: Decodable {
+    let status: String
+    let script: String
+    let rowCount: Int
+    let sheetName: String
+    let sourceFile: String
+}
+
+struct EditorialProgressEvent: Decodable {
+    let completed: Int
+    let total: Int
+    let database: String
+    let beat: EditorialBeat
 }
 
 struct EditorialBeat: Codable, Identifiable {
@@ -1198,12 +1244,17 @@ final class ArchiveModel: ObservableObject {
     @Published var searchNavigationTitle = ""
     @Published var selectedPersonClusterId = ""
     @Published var personClusterCatalog: [PersonClusterSummary] = []
+    @Published var personReidHealthState = ""
     @Published var personClusterLoading = false
     @Published var personCapabilityNote = ""
     @Published var personDisplayName = ""
     @Published var personTags = ""
     @Published var personMergeTargetId = ""
     @Published var personEditStatus = ""
+    @Published var interviewContents: [InterviewContentItem] = []
+    @Published var interviewContentLoading = false
+    @Published var interviewContentStatus = ""
+    @Published var expandedInterviewSourceIds: Set<String> = []
     @Published var sourceFolder = ""
     @Published var libraryFolder = ""
     @Published var taskName: String = {
@@ -1241,6 +1292,7 @@ final class ArchiveModel: ObservableObject {
     @Published var taskComparison: TaskComparisonResponse?
     @Published var editorialScript = ""
     @Published var editorialTrack = "documentary"
+    @Published var editorialDatabase = ""
     @Published var editorialBoard: EditorialBoardResponse? { didSet { invalidateEditorialViewCache() } }
     @Published var editorialActiveBeat = 0 { didSet { if oldValue != editorialActiveBeat { autosaveEditorialSession() } } }
     @Published var editorialReviewReturnBeatId: String?
@@ -1370,6 +1422,69 @@ final class ArchiveModel: ObservableObject {
                 )
                 DispatchQueue.main.async { completion(data, message) }
             } catch { DispatchQueue.main.async { completion(nil, error.localizedDescription) } }
+        }
+    }
+
+    private func runEditorialHelper(
+        _ arguments: [String],
+        progress: @escaping (EditorialProgressEvent) -> Void,
+        completion: @escaping (Data?, String?) -> Void
+    ) {
+        let helper = helperURL; let config = configURL
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process(); let output = Pipe(); let errors = Pipe()
+            process.executableURL = helper
+            process.arguments = ["--config", config.path] + arguments
+            process.standardOutput = output; process.standardError = errors
+            do {
+                try process.run()
+                let readGroup = DispatchGroup()
+                let lock = NSLock()
+                var outputData = Data()
+                var errorData = Data()
+                readGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let data = output.fileHandleForReading.readDataToEndOfFile()
+                    lock.lock(); outputData = data; lock.unlock()
+                    readGroup.leave()
+                }
+                readGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var pending = Data()
+                    while true {
+                        let chunk = errors.fileHandleForReading.availableData
+                        if chunk.isEmpty { break }
+                        pending.append(chunk)
+                        lock.lock()
+                        errorData.append(chunk)
+                        if errorData.count > 32 * 1024 { errorData = errorData.suffix(32 * 1024) }
+                        lock.unlock()
+                        while let newline = pending.firstIndex(of: 10) {
+                            let lineData = pending.prefix(upTo: newline)
+                            pending.removeSubrange(...newline)
+                            guard let line = String(data: lineData, encoding: .utf8),
+                                  line.hasPrefix("EDITORIAL_PROGRESS_JSON=") else { continue }
+                            let payload = String(line.dropFirst("EDITORIAL_PROGRESS_JSON=".count))
+                            if let data = payload.data(using: .utf8),
+                               let event = try? self.decoder().decode(EditorialProgressEvent.self, from: data) {
+                                DispatchQueue.main.async { progress(event) }
+                            }
+                        }
+                    }
+                    readGroup.leave()
+                }
+                process.waitUntilExit(); readGroup.wait()
+                lock.lock(); let finalOutput = outputData; let finalErrors = errorData; lock.unlock()
+                let decodedError = try? self.decoder().decode(ErrorResponse.self, from: finalOutput)
+                let message = process.terminationStatus == 0 ? nil : (
+                    decodedError?.displayMessage
+                    ?? String(data: finalErrors, encoding: .utf8)
+                    ?? "选片辅助程序执行失败"
+                )
+                DispatchQueue.main.async { completion(finalOutput, message) }
+            } catch {
+                DispatchQueue.main.async { completion(nil, error.localizedDescription) }
+            }
         }
     }
 
@@ -1556,6 +1671,12 @@ final class ArchiveModel: ObservableObject {
                     self.yoloeDefaultBExtendedText = state.yoloeDefaultKeywordProfile.bExtended.map(\.editableLine).joined(separator: "\n")
                     self.yoloeDefaultEnableBExtended = state.yoloeDefaultKeywordProfile.enableBExtended
                     self.selectedExistingTaskPath = state.existingLibraries.first?.taskPath ?? ""
+                    if self.editorialDatabase.isEmpty {
+                        self.editorialDatabase = (
+                            state.existingLibraries.first(where: { $0.isActive && $0.status == "success" })
+                            ?? state.existingLibraries.first(where: { $0.status == "success" })
+                        )?.database ?? ""
+                    }
                     if state.searchRuntime.ready { self.loadSearchMetadata() }
                 }
                 let pipelineJustCompleted = (
@@ -2394,10 +2515,106 @@ final class ArchiveModel: ObservableObject {
                 let response = try self.decoder().decode(PersonClusterCatalogResponse.self, from: data)
                 self.personClusterCatalog = response.items
                 self.personCapabilityNote = response.capabilityNote ?? ""
+                self.personReidHealthState = response.personReidHealth?.state ?? ""
             } catch {
                 self.personCapabilityNote = "同一人物分组解析失败：\(error.localizedDescription)"
             }
         }
+    }
+
+    func loadInterviewContents(personOnly: Bool = false, contentKind: String = "all") {
+        guard !interviewContentLoading else { return }
+        if personOnly && selectedPersonClusterId.isEmpty {
+            interviewContentStatus = "请先选择一个人物"
+            return
+        }
+        interviewContentLoading = true
+        interviewContentStatus = contentKind == "likely_interview"
+            ? "正在识别疑似采访…"
+            : (contentKind == "long_spoken_content" ? "正在整理长口播与长对话…" : "正在整理已有语音转写…")
+        var arguments = ["interview-content", "--result-offset", "0", "--result-limit", "100"]
+        if personOnly { arguments += ["--person-id", selectedPersonClusterId] }
+        if contentKind != "all" { arguments += ["--content-kind", contentKind] }
+        runHelper(arguments) { data, error in
+            self.interviewContentLoading = false
+            guard let data else {
+                self.interviewContentStatus = error ?? "无法读取采访内容"
+                return
+            }
+            do {
+                let response = try self.decoder().decode(InterviewContentResponse.self, from: data)
+                self.interviewContents = response.items
+                self.interviewContentStatus = response.items.isEmpty
+                    ? "当前范围没有符合条件的语音转写；可改用“查看全部有转写视频”。"
+                    : "已整理 \(response.total) 个视频。\(response.scopeNote)"
+            } catch {
+                self.interviewContentStatus = "采访内容解析失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func interviewTimecode(_ milliseconds: Int) -> String {
+        let total = max(0, milliseconds / 1000)
+        return String(format: "%02d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
+    }
+
+    func toggleInterviewSource(_ sourceContentId: String) {
+        if expandedInterviewSourceIds.contains(sourceContentId) {
+            expandedInterviewSourceIds.remove(sourceContentId)
+        } else {
+            expandedInterviewSourceIds.insert(sourceContentId)
+        }
+    }
+
+    func openInterviewExcerpt(_ item: InterviewContentItem, _ excerpt: InterviewExcerpt) {
+        openInterviewAt(item, milliseconds: excerpt.startTimeMs)
+    }
+
+    func openInterviewAt(_ item: InterviewContentItem, milliseconds: Int) {
+        guard item.sourceOnline else {
+            interviewContentStatus = "原素材盘未连接，暂时只能阅读转写和时间点。"
+            return
+        }
+        let url = URL(fileURLWithPath: item.sourcePath)
+        videoPreviewControllers.removeAll { !($0.window?.isVisible ?? false) }
+        let playerItem = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: playerItem)
+        let playerView = AVPlayerView(frame: NSRect(x: 0, y: 0, width: 960, height: 600))
+        playerView.player = player; playerView.controlsStyle = .floating
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false
+        )
+        window.title = "\(item.fileName) · \(interviewTimecode(milliseconds))"
+        window.contentView = playerView; window.center()
+        let controller = VideoPreviewWindowController(window: window)
+        controller.player = player; videoPreviewControllers.append(controller)
+        controller.onClosed = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            self.videoPreviewControllers.removeAll { $0 === controller }
+        }
+        controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+        let target = CMTime(seconds: Double(milliseconds) / 1000.0, preferredTimescale: 1000)
+        controller.readinessObservation = playerItem.observe(\.status, options: [.initial, .new]) {
+            [weak controller, weak player] observedItem, _ in
+            guard observedItem.status == .readyToPlay else { return }
+            controller?.readinessObservation?.invalidate(); controller?.readinessObservation = nil
+            observedItem.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                guard finished else { return }
+                DispatchQueue.main.async { player?.play() }
+            }
+        }
+    }
+
+    func copyInterviewExcerpt(_ excerpt: InterviewExcerpt) {
+        copyInterviewText(excerpt.text, timeMs: excerpt.startTimeMs)
+    }
+
+    func copyInterviewText(_ text: String, timeMs: Int) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        interviewContentStatus = "已复制 \(interviewTimecode(timeMs)) 的原话"
     }
 
     func preparePersonEditor() {
@@ -3109,9 +3326,12 @@ final class ArchiveModel: ObservableObject {
 
     private func applyEditorialSession(_ session: EditorialSession, continuing: Bool = false) throws {
         try session.validate()
-        if let current = snapshot?.searchRuntime.databasePreflight?.databasePath,
-           URL(fileURLWithPath: current).standardizedFileURL != URL(fileURLWithPath: session.board.database).standardizedFileURL {
-            throw NSError(domain: "EditorialSession", code: 3, userInfo: [NSLocalizedDescriptionKey:"工程属于另一素材库，请先在任务历史连接对应素材库。原选择未覆盖。"])
+        let registered = snapshot?.existingLibraries.contains {
+            URL(fileURLWithPath: $0.database).standardizedFileURL
+                == URL(fileURLWithPath: session.board.database).standardizedFileURL
+        } ?? false
+        if !registered {
+            throw NSError(domain: "EditorialSession", code: 3, userInfo: [NSLocalizedDescriptionKey:"工程对应的素材库当前未登记；原选择未覆盖。"])
         }
         if let current = captureEditorialSession() {
             try editorialWriter.flush()
@@ -3122,6 +3342,7 @@ final class ArchiveModel: ObservableObject {
         editorialGeneration = UUID()
         editorialSessionId = continuing ? session.sessionId : UUID().uuidString
         editorialBoard = session.board
+        editorialDatabase = session.board.database
         editorialScript = session.script; editorialGeneratedScript = session.generatedScript
         editorialTrack = session.board.track; editorialGeneratedTrack = session.board.track
         editorialGuideFiles = session.guideFiles; editorialGeneratedGuides = session.generatedGuides
@@ -3246,7 +3467,8 @@ final class ArchiveModel: ObservableObject {
         }
         editorialRefreshStatus = "正在从当前素材库复查第 \(index + 1) 句，结合全文上下文并排除其他句已占用画面……"
         var arguments = ["editorial-board", "--script-file", script.path, "--track", editorialGeneratedTrack,
-                         "--beat-id", beatId, "--reserved-file", selection.path, "--saved-beats-file", savedBeats.path]
+                         "--database", board.database, "--beat-id", beatId,
+                         "--reserved-file", selection.path, "--saved-beats-file", savedBeats.path]
         for guide in editorialGeneratedGuides where FileManager.default.fileExists(atPath: guide) { arguments += ["--guide-file", guide] }
         runHelper(arguments) { data, error in
             try? FileManager.default.removeItem(at: script)
@@ -3416,7 +3638,18 @@ final class ArchiveModel: ObservableObject {
                 editorialGuideFile = url.path
                 if !editorialGuideFiles.contains(url.path) { editorialGuideFiles.append(url.path) }
                 editorialGuideLabel = "已载入 \(editorialGuideFiles.count) 份指导：" + editorialGuideFiles.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: "、")
-                editorialStatus = "Excel 已载入。它只辅助匹配当前项目，不会替换 PDF、TXT 或输入框中的真实口播文稿。"
+                editorialStatus = "正在读取 Excel 中的剪辑段落……"
+                runHelper(["editorial-guide-preview", "--guide-file", url.path]) { data, error in
+                    if let error { self.editorialStatus = "Excel 载入失败：\(error)"; return }
+                    guard let data else { self.editorialStatus = "Excel 载入失败：没有返回数据。"; return }
+                    do {
+                        let preview = try self.decoder().decode(EditorialGuidePreviewResponse.self, from: data)
+                        self.editorialScript = preview.script
+                        self.editorialSelectedFile = url.path
+                        self.editorialSourceLabel = "已载入 Excel 主表：\(url.lastPathComponent)"
+                        self.editorialStatus = "已按“\(preview.sheetName)”识别 \(preview.rowCount) 个剪辑段；每一行固定为一个段落，不再按句号拆散。"
+                    } catch { self.editorialStatus = "Excel 载入失败：\(error.localizedDescription)" }
+                }
                 return
             }
             let text: String
@@ -3453,7 +3686,7 @@ final class ArchiveModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.pdf, .plainText]
+        panel.allowedContentTypes = [.pdf, .plainText] + (UTType(filenameExtension: "xlsx").map { [$0] } ?? [])
         if panel.runModal() == .OK, let url = panel.url { loadEditorialURL(url) }
     }
 
@@ -3488,37 +3721,72 @@ final class ArchiveModel: ObservableObject {
             editorialScript = text
         }
         guard !text.isEmpty else { editorialStatus = "请先输入或载入文稿。"; return }
+        guard !editorialDatabase.isEmpty else { editorialStatus = "请先选择本次文稿要使用的素材库。"; return }
         editorialLoading = true
         editorialGeneration = UUID()
+        let generation = editorialGeneration
         let generatedGuides = editorialGuideFiles.isEmpty ? (editorialGuideFile.isEmpty ? [] : [editorialGuideFile]) : editorialGuideFiles
         let generatedTrack = editorialTrack
         editorialRefreshStatus = ""
-        editorialStatus = "正在只读检索当前素材库……"
+        editorialStatus = "正在只读检索当前素材库；首段完成后会立即显示……"
+        editorialSessionRestoring = true
+        editorialSessionId = UUID().uuidString
+        editorialGeneratedScript = text
+        editorialGeneratedGuides = generatedGuides
+        editorialGeneratedTrack = generatedTrack
+        editorialBoard = EditorialBoardResponse(
+            status: "IN_PROGRESS", track: generatedTrack, database: "",
+            databaseReadOnly: true, databaseWrite: false, modelRun: false,
+            candidateCount: 0, ignoredChapterCards: stripped.1,
+            editorialGuideSummary: nil, uiLabels: nil, beats: []
+        )
+        editorialReviewReturnBeatId = nil
+        editorialActiveBeat = 0
+        editorialDecisions = [:]
+        editorialCutOverrides = [:]
+        editorialLockedCuts = []
+        editorialSkippedVisuals = [:]
+        editorialSessionRestoring = false
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("editorial-script-\(UUID().uuidString).txt")
         do { try text.write(to: temp, atomically: true, encoding: .utf8) }
         catch { editorialLoading = false; editorialStatus = "无法准备文稿：\(error.localizedDescription)"; return }
-        var arguments = ["editorial-board", "--script-file", temp.path, "--track", editorialTrack]
+        var arguments = ["editorial-board", "--script-file", temp.path, "--track", editorialTrack,
+                         "--database", editorialDatabase]
         for guide in generatedGuides { arguments += ["--guide-file", guide] }
-        runHelper(arguments) { data, error in
+        runEditorialHelper(arguments, progress: { event in
+            guard generation == self.editorialGeneration else { return }
+            var board = self.editorialBoard ?? EditorialBoardResponse(
+                status: "IN_PROGRESS", track: generatedTrack, database: event.database,
+                databaseReadOnly: true, databaseWrite: false, modelRun: false,
+                candidateCount: 0, ignoredChapterCards: stripped.1,
+                editorialGuideSummary: nil, uiLabels: nil, beats: []
+            )
+            if let index = board.beats.firstIndex(where: { $0.beatId == event.beat.beatId }) {
+                board.beats[index] = event.beat
+            } else {
+                board.beats.append(event.beat)
+                board.beats.sort { $0.order < $1.order }
+            }
+            self.editorialBoard = EditorialBoardResponse(
+                status: board.status, track: board.track, database: event.database,
+                databaseReadOnly: board.databaseReadOnly, databaseWrite: board.databaseWrite,
+                modelRun: board.modelRun, candidateCount: board.candidateCount,
+                ignoredChapterCards: board.ignoredChapterCards,
+                editorialGuideSummary: board.editorialGuideSummary,
+                uiLabels: board.uiLabels, beats: board.beats
+            )
+            self.editorialStatus = "已完成第 \(event.completed)/\(event.total) 段；已出现的候选可以先查看和选择。"
+        }) { data, error in
             try? FileManager.default.removeItem(at: temp)
+            guard generation == self.editorialGeneration else { return }
             self.editorialLoading = false
             if let error { self.editorialStatus = "生成失败：\(error)"; return }
             guard let data else { self.editorialStatus = "生成失败：没有返回数据。"; return }
             do {
                 let board = try self.decoder().decode(EditorialBoardResponse.self, from: data)
                 self.editorialSessionRestoring = true
-                self.editorialSessionId = UUID().uuidString
-                self.editorialGeneratedScript = text
-                self.editorialGeneratedGuides = generatedGuides
-                self.editorialGeneratedTrack = generatedTrack
                 self.editorialBoard = board
-                self.editorialReviewReturnBeatId = nil
-                self.editorialActiveBeat = 0
-                self.editorialDecisions = [:]
-                self.editorialCutOverrides = [:]
-                self.editorialLockedCuts = []
-                self.editorialSkippedVisuals = [:]
                 self.editorialSessionRestoring = false
                 self.autosaveEditorialSession()
                 self.editorialDecisionStatus = "生成已完整结束。入选与备选都会显示在候选箱，点击同一按钮可取消。"
@@ -4301,7 +4569,7 @@ struct EditorialPage: View {
                  .fixedSize(horizontal: false, vertical: true)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      }.padding(18).disabled(model.editorialLoading)
+      }.padding(18)
         .sheet(isPresented: $inputPresented) {
             VStack(spacing: 12) {
                 HStack {
@@ -4353,12 +4621,21 @@ struct EditorialPage: View {
                     .disabled(model.editorialBoard == nil || model.editorialLoading)
                 Text(model.editorialSessionStatus).font(.caption)
                     .foregroundStyle(model.editorialSessionStatus.contains("未保存") || model.editorialSessionStatus.contains("失败") ? .red : archiveBlue)
+                Picker("选片素材库", selection: $model.editorialDatabase) {
+                    Text("请选择素材库").tag("")
+                    ForEach((model.snapshot?.existingLibraries ?? []).filter { $0.status == "success" }) { library in
+                        Text("\(library.taskName)｜视频 \(library.videoCount)｜图片 \(library.imageCount)")
+                            .tag(library.database)
+                    }
+                }
+                Text("只影响本次文稿选片；不会切换普通搜索库，也不会修改所选数据库。")
+                    .font(.caption2).foregroundStyle(archiveMuted)
                 Picker("项目类型", selection: $model.editorialTrack) {
                     Text("纪录片").tag("documentary")
                     Text("网感视频").tag("short_video")
                 }.pickerStyle(.segmented)
                 HStack {
-                    Button("选择 PDF / TXT") { model.chooseEditorialFile() }
+                    Button("选择 PDF / TXT / 剪辑表 Excel") { model.chooseEditorialFile() }
                     Button("添加逐句 Excel（可多选）") { model.chooseEditorialGuide() }
                 }
                 Button("选择包含文稿与 Excel 的文件夹") { model.chooseEditorialFolder() }
@@ -4383,7 +4660,7 @@ struct EditorialPage: View {
                 TextEditor(text: $model.editorialScript).font(.body)
                     .frame(minHeight: 300).padding(6)
                     .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.gray.opacity(0.3)))
-                Text("PDF、TXT 或输入框决定真实口播句子；Excel 只是当前项目的逐句剪辑指导。也可拖入文件或文件夹。长句会按语意与标点拆成可剪辑句段。")
+                Text("PDF、TXT 或输入框会按语意与标点拆段；剪辑表 Excel 会直接采用主表中的段号，一行就是一个剪辑段，不再按句号二次拆散。也可拖入文件或文件夹。")
                     .font(.caption).foregroundStyle(archiveMuted)
                 Button(model.editorialLoading ? "正在生成……" : "生成逐句候选") { model.generateEditorialBoard() }
                     .buttonStyle(PrimaryButtonStyle()).disabled(model.editorialLoading)
@@ -4738,6 +5015,7 @@ struct EditorialReferencePage: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack { Text(topic.name).font(.system(size: 25, weight: .bold)); Spacer(); Text(topic.category).font(.caption.bold()).foregroundStyle(archiveBlue).padding(.horizontal, 9).padding(.vertical, 4).background(Color.blue.opacity(0.1)).clipShape(Capsule()) }
                 Text(topic.summary).font(.title3).foregroundStyle(archiveBlue).fixedSize(horizontal: false, vertical: true)
+                EditorialReferenceVisual(topic: topic)
                 referenceSection("眼前会看到什么", "eye", topic.looksLike, archiveBlue)
                 referenceSection("放进剪辑里能做什么", "scissors", topic.editingValue, archiveGreen)
                 HStack(alignment: .top, spacing: 12) {
@@ -4771,6 +5049,136 @@ struct EditorialReferencePage: View {
             Text(detail).font(.callout).fixedSize(horizontal: false, vertical: true)
         }.padding(13).frame(maxWidth: .infinity, alignment: .topLeading)
             .background(Color.gray.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+private struct EditorialReferenceVisual: View {
+    let topic: EditorialReferenceTopic
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var assetName: String? {
+        switch topic.category {
+        case "景别": return "shot_sizes_16x9"
+        case "构图": return "composition_16x9"
+        case "角度": return "camera_angles_16x9"
+        case "运镜": return "camera_motion_16x9"
+        default: return nil
+        }
+    }
+
+    private var labels: [String] {
+        switch topic.category {
+        case "景别": return ["远景 / 全景", "中景", "近景", "特写"]
+        case "构图": return ["三分与视线空间", "居中与对称", "前景与纵深", "负空间"]
+        case "角度": return ["平视", "俯拍", "仰拍", "顶视 / 空间关系"]
+        case "运镜": return ["固定", "跟拍", "推近 / 拉远", "摇移 / 揭示"]
+        default: return []
+        }
+    }
+
+    private var activeIndexes: Set<Int> {
+        let name = topic.name
+        if name.contains("全景") { return [0] }
+        if name.contains("中景") { return [1] }
+        if name.contains("近景与特写") { return [2, 3] }
+        if name.contains("三分") { return [0] }
+        if name.contains("居中") { return [1] }
+        if name.contains("前景") { return [2] }
+        if name.contains("负空间") { return [3] }
+        if name.contains("平视") { return [0] }
+        if name.contains("俯拍与仰拍") { return [1, 2] }
+        if name.contains("固定镜头") { return [0] }
+        if name.contains("跟拍") { return [1] }
+        if name.contains("推、拉、摇、移") { return [2, 3] }
+        return []
+    }
+
+    private var image: NSImage? {
+        guard let assetName,
+              let path = Bundle.main.path(
+                forResource: assetName,
+                ofType: "png",
+                inDirectory: "media_archive_image_video_ui/assets/editorial_reference"
+              ) else { return nil }
+        return NSImage(contentsOfFile: path)
+    }
+
+    var body: some View {
+        if let image {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack(alignment: .topLeading) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                    if topic.category == "运镜" {
+                        motionOverlay
+                    }
+                    gridHighlight
+                    Text(topic.category == "运镜" ? "16:9 动态示意 · 每格均为横版" : "16:9 画面对照 · 每格均为横版")
+                        .font(.caption2.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(.black.opacity(0.62)).clipShape(Capsule())
+                        .padding(10)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.10)))
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                    ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                        Text(label).font(.caption2.bold()).lineLimit(1).minimumScaleFactor(0.75)
+                            .foregroundStyle(activeIndexes.contains(index) ? Color.white : Color.primary)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                            .frame(maxWidth: .infinity)
+                            .background(activeIndexes.contains(index) ? archiveBlue : Color.gray.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+                Text("蓝色标签是当前条目。对照图只帮助理解画面差异，真实运镜、动作和声音仍需播放原片确认。")
+                    .font(.caption2).foregroundStyle(archiveMuted)
+            }
+        }
+    }
+
+    private var gridHighlight: some View {
+        GeometryReader { proxy in
+            ForEach(activeIndexes.sorted(), id: \.self) { index in
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(archiveBlue, lineWidth: 4)
+                    .frame(width: proxy.size.width / 2, height: proxy.size.height / 2)
+                    .offset(
+                        x: index.isMultiple(of: 2) ? 0 : proxy.size.width / 2,
+                        y: index < 2 ? 0 : proxy.size.height / 2
+                    )
+            }
+        }.allowsHitTesting(false)
+    }
+
+    @ViewBuilder private var motionOverlay: some View {
+        if reduceMotion {
+            motionMarker(progress: 0.55)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                let progress = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 2.4) / 2.4
+                motionMarker(progress: progress)
+            }
+        }
+    }
+
+    private func motionMarker(progress: Double) -> some View {
+        GeometryReader { proxy in
+            let usable = max(0, proxy.size.width - 58)
+            HStack(spacing: 4) {
+                Image(systemName: "video.fill")
+                Image(systemName: "arrow.right")
+            }
+            .font(.caption.bold()).foregroundStyle(.white)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(archiveBlue.opacity(0.88)).clipShape(Capsule())
+            .offset(x: 8 + usable * progress, y: max(8, proxy.size.height - 40))
+        }.allowsHitTesting(false)
     }
 }
 
@@ -4975,7 +5383,10 @@ struct RunningPage: View {
                                     .textSelection(.enabled)
                                 if stage.status == "running" {
                                     if let item = stage.currentItem, !item.isEmpty {
-                                        Text("当前：\(item)").font(.caption2).foregroundStyle(archiveBlue).lineLimit(2)
+                                        Text((stage.actualWorkers ?? 0) > 1
+                                             ? "并行处理中；最近完成/更新：\(item)"
+                                             : "最近完成/更新：\(item)")
+                                            .font(.caption2).foregroundStyle(archiveBlue).lineLimit(2)
                                     }
                                     HStack(spacing: 12) {
                                         Text("成功 \(stage.successCount ?? 0)")
@@ -5682,15 +6093,19 @@ struct SearchPage: View {
                         if model.personClusterLoading {
                             ProgressView("读取同一人物分组…")
                         } else if model.personClusterCatalog.isEmpty {
-                            Text("尚未读取人物分组，或当前素材库没有可确认分组。普通画面搜索不需要读取它。")
+                            Text("尚未读取人物分组。点击后会检查当前素材库的人物阶段结果。")
                                 .font(.subheadline).foregroundStyle(archiveMuted)
                             Spacer()
+                            if model.personReidHealthState == "implausible_zero_faces" || model.personReidHealthState == "failed" {
+                                Button("重新识别人脸") { model.resumeTask() }
+                                    .buttonStyle(.borderedProminent)
+                            }
                             Button("读取人物分组") { model.loadPersonClusters() }
                         } else {
                             Picker("同一人物", selection: $model.selectedPersonClusterId) {
                                 Text("请选择匿名人物").tag("")
                                 ForEach(model.personClusterCatalog) { person in
-                                    Text("\(person.displayName) · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
+                                    Text("\(person.displayName)\(person.clusterConfidence == "review" ? "（待确认）" : "") · \(person.memberCount) 个画面 / \(person.distinctSourceCount) 个素材")
                                         .tag(person.personClusterId)
                                 }
                             }.frame(maxWidth: 430).onChange(of: model.selectedPersonClusterId) { _ in
@@ -5739,6 +6154,121 @@ struct SearchPage: View {
                                 }
                             }.padding(.top, 8)
                         }
+                    }
+                }.padding(.top, 8)
+            }
+            EditorialDisclosure("采访与长内容：每个视频说了什么") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("根据已有语音转写自动区分疑似采访、长口播和零散语音。不会重新分析视频；判断只是整理提示，随时可查看全部有转写视频。")
+                        .font(.caption).foregroundStyle(archiveMuted)
+                    HStack {
+                        Button(model.interviewContentLoading ? "正在整理…" : "自动识别采访") {
+                            model.loadInterviewContents(contentKind: "likely_interview")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.interviewContentLoading)
+                        Button("长口播 / 长对话") {
+                            model.loadInterviewContents(contentKind: "long_spoken_content")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.interviewContentLoading)
+                        Button("查看全部有转写视频") {
+                            model.loadInterviewContents()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.interviewContentLoading)
+                        Button("只看当前人物出现的视频") {
+                            model.loadInterviewContents(personOnly: true)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.interviewContentLoading || model.selectedPersonClusterId.isEmpty)
+                        Spacer()
+                    }
+                    if !model.interviewContentStatus.isEmpty {
+                        Text(model.interviewContentStatus)
+                            .font(.caption).foregroundStyle(archiveBlue)
+                    }
+                    ForEach(model.interviewContents) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(item.fileName).font(.subheadline.bold()).textSelection(.enabled)
+                                Text(item.contentLabel)
+                                    .font(.caption2.bold()).foregroundStyle(archiveBlue)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.08)).clipShape(Capsule())
+                                Spacer()
+                                Text("\(item.segmentCount) 个转写片段（已合并整理） · 到 \(model.interviewTimecode(item.lastSpeechTimeMs))")
+                                    .font(.caption2).foregroundStyle(archiveMuted)
+                            }
+                            Text("判断依据：\(item.classificationReason)")
+                                .font(.caption2).foregroundStyle(archiveMuted).textSelection(.enabled)
+                            Text(item.summary.isEmpty ? "已有转写，但暂时没有足够完整的句子可生成内容概览。" : "内容概览：\(item.summary)")
+                                .font(.caption).textSelection(.enabled)
+                            if !item.questionSummary.isEmpty {
+                                Text("主要提问：\(item.questionSummary)")
+                                    .font(.caption).textSelection(.enabled)
+                            }
+                            if !item.answerSummary.isEmpty {
+                                Text("回答涉及：\(item.answerSummary)")
+                                    .font(.caption).textSelection(.enabled)
+                            }
+                            Button {
+                                model.toggleInterviewSource(item.sourceContentId)
+                            } label: {
+                                HStack {
+                                    Image(systemName: model.expandedInterviewSourceIds.contains(item.sourceContentId) ? "chevron.down.circle.fill" : "chevron.right.circle")
+                                    Text(model.expandedInterviewSourceIds.contains(item.sourceContentId) ? "收起完整采访内容" : "展开问答与逐分钟原话")
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                            }
+                            .buttonStyle(.plain).foregroundStyle(archiveBlue)
+                            if model.expandedInterviewSourceIds.contains(item.sourceContentId) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("问答整理（根据提问词和时间连续性自动配对，请人工核对）")
+                                        .font(.caption.bold()).foregroundStyle(archiveMuted)
+                                    if item.questionAnswers.isEmpty {
+                                        Text("没有识别出足够明确的问答边界，可直接查看下面的逐分钟原话。")
+                                            .font(.caption).foregroundStyle(archiveMuted)
+                                    } else {
+                                        ForEach(item.questionAnswers) { pair in
+                                            VStack(alignment: .leading, spacing: 5) {
+                                                HStack(alignment: .top) {
+                                                    Text(model.interviewTimecode(pair.questionTimeMs)).font(.caption.monospacedDigit()).foregroundStyle(archiveBlue)
+                                                    Text("提问：\(pair.question)").font(.caption.bold()).textSelection(.enabled)
+                                                }
+                                                HStack(alignment: .top) {
+                                                    Text(model.interviewTimecode(pair.answerStartTimeMs)).font(.caption.monospacedDigit()).foregroundStyle(archiveGreen)
+                                                    Text("回答：\(pair.answer)").font(.caption).textSelection(.enabled)
+                                                    Spacer(minLength: 8)
+                                                    Button("播放回答") { model.openInterviewAt(item, milliseconds: pair.answerStartTimeMs) }
+                                                        .disabled(!item.sourceOnline)
+                                                    Button("复制") { model.copyInterviewText(pair.answer, timeMs: pair.answerStartTimeMs) }
+                                                }
+                                            }.padding(8).background(Color.blue.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 7))
+                                        }
+                                    }
+                                    Divider()
+                                    Text("逐分钟原话（已把同一分钟内的短转写片段合并）")
+                                        .font(.caption.bold()).foregroundStyle(archiveMuted)
+                                    ForEach(item.minuteTimeline) { minute in
+                                        HStack(alignment: .top, spacing: 10) {
+                                            Text(model.interviewTimecode(minute.startTimeMs))
+                                                .font(.caption.monospacedDigit()).foregroundStyle(archiveBlue)
+                                            Text(minute.text).font(.caption).textSelection(.enabled)
+                                            Spacer(minLength: 8)
+                                            Button("播放") { model.openInterviewExcerpt(item, minute) }
+                                                .disabled(!item.sourceOnline)
+                                            Button("复制") { model.copyInterviewExcerpt(minute) }
+                                        }
+                                    }
+                                }.padding(.top, 8)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color.black.opacity(0.025))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }.padding(.top, 8)
             }

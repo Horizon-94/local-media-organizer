@@ -77,6 +77,14 @@ def test_release_source_identity_changes_when_shipped_pipeline_script_changes() 
             (root / directory).mkdir(parents=True, exist_ok=True)
         shipped = root / "scripts/search.py"
         shipped.write_text("VERSION = 1\n", encoding="utf-8")
+        (root / "configs/media_archive_release_bundle_allowlist_v1.json").write_text(
+            json.dumps({
+                "contract": "media_archive_release_bundle_allowlist_v1",
+                "trees": [],
+                "files": ["scripts/search.py"],
+            }),
+            encoding="utf-8",
+        )
         first = builder._source_identity(root)
         shipped.write_text("VERSION = 2\n", encoding="utf-8")
         second = builder._source_identity(root)

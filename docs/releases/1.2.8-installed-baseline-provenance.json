@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "checkpoint": "v1.2.8-installed-baseline",
+  "checkpoint_date": "2026-09-29",
+  "installed_app": {
+    "bundle_name": "本地数据库 1.2.8.app",
+    "version": "1.2.8",
+    "build_number": "128",
+    "build_date": "2026-09-03T18:30:13+08:00",
+    "architecture": "arm64",
+    "signature": "ad_hoc",
+    "codesign_deep_strict": "PASS"
+  },
+  "recorded_build_identity": {
+    "git_commit": "2dcb83cb01f1755e25c3fa3734301b7a6c1fcee1",
+    "git_dirty": true,
+    "content_sha256": "7e4e281ac09894df820a7242f5842621a5d84dc2783f0dd5deeb0602092081f0",
+    "release_file_count": 139,
+    "selection_source_file_count": 61
+  },
+  "checkpoint_contents": {
+    "public_pipeline_source_files": 138,
+    "installed_application_source_files": 59,
+    "packager_files": 2,
+    "models_included": false,
+    "media_included": false,
+    "database_included": false,
+    "logs_or_test_output_included": false
+  },
+  "excluded_prebuilt_runtime": {
+    "relative_path": "tools/deep-filter/deep-filter",
+    "reason": "third-party prebuilt runtime component, not source",
+    "bytes": 27733136,
+    "sha256": "6987ee09a1f59a7ddb3b655ff87b25d39aa3b731837a897991ccd8a813da9532"
+  },
+  "reproducibility": {
+    "exact_original_dirty_worktree_recoverable": false,
+    "reason": "the app embeds sanitized source copies, while the recorded digest covers pre-sanitization dirty-worktree inputs",
+    "claim": "installed-source checkpoint, not byte-for-byte DMG rebuild"
+  },
+  "post_install_experiments_included": false
+}

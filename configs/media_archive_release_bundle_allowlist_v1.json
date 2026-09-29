@@ -22,6 +22,7 @@
     "configs/stop03_5d_text_embedding_db_orchestrator_v1.json",
     "configs/stop03_5e_hybrid_visual_text_search_v2.json",
     "configs/stop03_5e_text_search_contract_v1.json",
+    "configs/static_shot_representative_policy_v1.json",
     "migrations/20260711_stop03_2_candidate_queue_v25.sql",
     "migrations/20260711_stop03_2_v25_candidate_snapshot_qwenvl_v1.sql",
     "migrations/20260716_stop03_4_ocr_db_v1.sql",

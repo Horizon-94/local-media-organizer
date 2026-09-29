@@ -100,6 +100,10 @@ def _clean(value: object) -> str:
 
 
 def _header_index(headers: list[str], aliases: tuple[str, ...]) -> int | None:
+    for alias in aliases:
+        for index, header in enumerate(headers):
+            if header == alias:
+                return index
     for index, header in enumerate(headers):
         if any(alias in header for alias in aliases):
             return index
@@ -108,6 +112,12 @@ def _header_index(headers: list[str], aliases: tuple[str, ...]) -> int | None:
 
 def _value(row: list[object], index: int | None) -> str:
     return _clean(row[index]) if index is not None and index < len(row) else ""
+
+
+def _multiline_value(row: list[object], index: int | None) -> str:
+    if index is None or index >= len(row):
+        return ""
+    return "\n".join(filter(None, (_clean(line) for line in str(row[index] or "").splitlines())))
 
 
 def _split_primary(value: str) -> tuple[str, str]:
@@ -137,24 +147,34 @@ def load_editorial_guide(path: Path) -> dict[str, Any]:
     for name, rows in sheets:
         for index, row in enumerate(rows[:30]):
             headers = [_clean(value) for value in row]
-            if _header_index(headers, ("旁白", "文稿", "句子", "台词")) is not None and _header_index(
-                headers, ("主用镜头", "主镜头", "画面方向")
+            if _header_index(headers, ("V1.2口播内容", "口播内容", "旁白", "文稿", "句子", "台词")) is not None and _header_index(
+                headers, ("我的画面理解/画面要求", "画面要求", "主搜索词｜直接复制", "主搜索词", "主用镜头", "主镜头", "画面方向")
             ) is not None:
                 selected_name, selected_rows, header_row = name, rows, index
                 break
         if header_row >= 0:
             break
     if header_row < 0:
-        raise ValueError("剪辑指导 Excel 中没有找到“旁白/文稿”和“主用镜头”列")
+        raise ValueError("剪辑指导 Excel 中没有找到“口播内容”和“画面要求/主搜索词”列")
 
     headers = [_clean(value) for value in selected_rows[header_row]]
     columns = {
-        "order": _header_index(headers, ("序号", "编号")),
+        "order": _header_index(headers, ("段号", "序号", "编号")),
         "section": _header_index(headers, ("段落", "章节", "部分")),
-        "narration": _header_index(headers, ("旁白", "文稿", "句子", "台词")),
-        "primary": _header_index(headers, ("主用镜头", "主镜头", "画面方向")),
-        "alternative": _header_index(headers, ("补切", "替换", "备用镜头")),
+        "narration": _header_index(headers, ("V1.2口播内容", "口播内容", "旁白", "文稿", "句子", "台词")),
+        "visual": _header_index(headers, ("我的画面理解/画面要求", "画面要求", "画面方向")),
+        "evidence": _header_index(headers, ("实际已拍画面依据", "已拍画面依据", "已拍表原始描述", "主用镜头", "主镜头")),
+        "main_search": _header_index(headers, ("主搜索词｜直接复制", "主搜索词", "本地素材库直接搜索词", "直接搜索词", "完整搜索词")),
+        "alternative": _header_index(headers, ("备用搜索词", "备用短搜索词", "补切", "替换", "备用镜头")),
         "editing": _header_index(headers, ("剪辑手法", "切法", "剪辑建议")),
+        "shot_size": _header_index(headers, ("景别组合", "景别")),
+        "camera": _header_index(headers, ("镜头方式/构图", "镜头方式", "构图")),
+        "rhythm": _header_index(headers, ("单镜时长/节奏", "节奏")),
+        "audio": _header_index(headers, ("声音",)),
+        "why": _header_index(headers, ("为什么这样用", "使用原因")),
+        "dedupe": _header_index(headers, ("连续去重限制", "去重规则", "去重")),
+        "risk": _header_index(headers, ("素材缺口/风险", "直接证据缺口/限制", "缺口", "风险")),
+        "gate": _header_index(headers, ("闸门", "视听闸门")),
         "notes": _header_index(headers, ("备注", "提醒", "限制")),
     }
     rows: list[dict[str, Any]] = []
@@ -162,12 +182,46 @@ def load_editorial_guide(path: Path) -> dict[str, Any]:
         narration = _value(source, columns["narration"])
         if not narration:
             continue
-        primary, direction = _split_primary(_value(source, columns["primary"]))
-        notes = _value(source, columns["notes"])
-        combined = " ".join((direction, notes))
+        evidence = _multiline_value(source, columns["evidence"])
+        main_search = _multiline_value(source, columns["main_search"])
+        visual = _multiline_value(source, columns["visual"])
+        primary, legacy_direction = _split_primary(evidence)
+        direction = "\n".join(filter(None, (
+            visual,
+            "主搜索词：\n" + main_search if main_search else "",
+            "景别：" + _value(source, columns["shot_size"]) if _value(source, columns["shot_size"]) else "",
+            "镜头方式/构图：" + _value(source, columns["camera"]) if _value(source, columns["camera"]) else "",
+            legacy_direction,
+        )))
+        editing = "\n".join(filter(None, (
+            _multiline_value(source, columns["editing"]),
+            "单镜时长/节奏：" + _value(source, columns["rhythm"]) if _value(source, columns["rhythm"]) else "",
+            "声音：" + _value(source, columns["audio"]) if _value(source, columns["audio"]) else "",
+        )))
+        raw_notes = _multiline_value(source, columns["notes"])
+        risk = _multiline_value(source, columns["risk"])
+        gate = _multiline_value(source, columns["gate"])
+        notes = "\n".join(filter(None, (
+            raw_notes,
+            "为什么这样用：" + _value(source, columns["why"]) if _value(source, columns["why"]) else "",
+            "连续去重限制：" + _value(source, columns["dedupe"]) if _value(source, columns["dedupe"]) else "",
+            "素材缺口/风险：" + risk if risk else "",
+            "闸门：" + gate if gate else "",
+        )))
+        # Column labels are explanatory metadata, not evidence that a gap
+        # exists.  In particular, “无直接证据缺口” must never become a
+        # reshoot request merely because its header contains “素材缺口”.
+        status_text = " ".join((visual, risk, raw_notes, gate))
+        status_text = re.sub(
+            r"(?:无|没有|未见)(?:明显)?(?:直接)?(?:证据)?缺口", "", status_text,
+        )
         status = "RESHOOT_PRIORITY" if any(
-            marker in combined for marker in ("补拍优先", "必须补", "素材缺口", "正式前补")
-        ) else ("SOURCE_REVIEW" if any(marker in combined for marker in ("待核", "未确认", "只做过渡")) else "READY")
+            marker in status_text
+            for marker in ("补拍优先", "必须补", "需要补拍", "素材缺口", "正式前补")
+        ) else ("SOURCE_REVIEW" if any(
+            marker in status_text
+            for marker in ("待核", "未确认", "只做过渡", "需回看", "需二次核验", "未检出")
+        ) else "READY")
         rows.append({
             "guide_row_id": f"row-{len(rows) + 1:03d}",
             "excel_row": excel_row,
@@ -176,9 +230,10 @@ def load_editorial_guide(path: Path) -> dict[str, Any]:
             "narration": narration,
             "primary_shot": primary,
             "visual_direction": direction,
-            "alternative_shot": _value(source, columns["alternative"]),
-            "editing_method": _value(source, columns["editing"]),
+            "alternative_shot": _multiline_value(source, columns["alternative"]),
+            "editing_method": editing,
             "notes": notes,
+            "main_search_terms": main_search,
             "guidance_status": status,
         })
     if not rows:
@@ -189,6 +244,7 @@ def load_editorial_guide(path: Path) -> dict[str, Any]:
         "sheet_name": selected_name,
         "row_count": len(rows),
         "rows": rows,
+        "script_text": "\n\n\u2063\n\n".join(row["narration"] for row in rows),
     }
 
 

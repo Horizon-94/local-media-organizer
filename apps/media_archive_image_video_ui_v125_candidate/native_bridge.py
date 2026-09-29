@@ -71,7 +71,7 @@ from .storage_audit import (
 
 
 APP_NAME = "本地数据库"
-APP_VERSION = "1.2.5-development"
+APP_VERSION = "1.2.8"
 _RESOURCE_CACHE: tuple[float, int | None, dict[str, Any]] = (0.0, None, {})
 
 
@@ -735,10 +735,14 @@ def task_active_run(state: dict[str, Any]) -> dict[str, Any] | None:
         return None
     total = int(state.get("stage_count") or 0)
     completed = int(state.get("completed_stage_count") or 0)
-    elapsed = sum(float(row.get("elapsed_seconds") or 0) for row in state.get("stages", []))
+    task_elapsed = sum(float(row.get("elapsed_seconds") or 0) for row in state.get("stages", []))
     current = next((row for row in state.get("stages", []) if row.get("status") == "running"), None)
+    stage_elapsed = 0.0
     if current and current.get("started_at_epoch"):
-        elapsed += max(0.0, time.time() - float(current["started_at_epoch"]))
+        stage_elapsed = max(0.0, time.time() - float(current["started_at_epoch"]))
+        task_elapsed += stage_elapsed
+    elif current and current.get("elapsed_seconds") is not None:
+        stage_elapsed = max(0.0, float(current.get("elapsed_seconds") or 0))
     remaining = max(0, total - completed)
     return {
         "run_id": state.get("task_id"),
@@ -746,7 +750,10 @@ def task_active_run(state: dict[str, Any]) -> dict[str, Any] | None:
         "total": total,
         "completed": completed,
         "pending": remaining,
-        "elapsed_seconds": round(elapsed, 1),
+        # This card is titled with the current stage, so its primary duration
+        # must be the current-stage duration rather than the whole task age.
+        "elapsed_seconds": round(stage_elapsed, 1),
+        "task_elapsed_seconds": round(task_elapsed, 1),
         "remaining": remaining,
         "percent": round(completed / total * 100.0, 2) if total else 0.0,
         # Stage durations differ by orders of magnitude.  A stage-count average
@@ -1260,6 +1267,61 @@ def _launch_task_worker(config_path: Path, task_path: Path, log_path: Path, *, r
     return process.pid
 
 
+def _adopt_current_runtime_for_resume(
+    config: dict[str, Any], task: dict[str, Any], task_path: Path,
+) -> bool:
+    """Rebind only future/non-success stages to the currently opened App runtime.
+
+    Completed stages remain protected by the pipeline state checkpoint.  The
+    task JSON keeps a compact audit record so an older App bundle path cannot
+    silently continue driving a resumed task.
+    """
+    contract_text = str(config.get("runtime_contract_path") or "").strip()
+    if not contract_text:
+        raise RuntimeError("应用缺少固定运行时合同，不能安全接管旧任务")
+    contract_path = Path(contract_text).expanduser().absolute()
+    model_root = selected_model_root()
+    report = validate_runtime_contract(contract_path, model_root=model_root)
+    if not report["ready"]:
+        raise RuntimeError("本机固定运行组件自检失败：" + "、".join(
+            report["missing"] + report["errors"]
+        ))
+    contract = load_runtime_contract(contract_path, model_root=model_root)
+    profile = dict(task.get("profile") or _load_or_default_profile(config))
+    hardware = detect_hardware()
+    new_runtime = task_runtime_from_contract(
+        contract,
+        ocr_workers=int(hardware["recommendation"]["ocr_workers"]),
+        embedding_workers=int(hardware["recommendation"]["embedding_workers"]),
+        requested_scheduler_mode=str(
+            profile.get("scheduler", {}).get("mode") or "stage_serial"
+        ),
+        effective_config_dir=task_path.parent / "runtime_configs",
+    )
+    _materialise_task_yoloe_registry(
+        config, new_runtime, profile, task_path.parent / "runtime_configs"
+    )
+    old_runtime = dict(task.get("runtime") or {})
+    comparable_keys = ("project_root", "runtime_contract_path", "python", "scripts", "configs")
+    changed = any(old_runtime.get(key) != new_runtime.get(key) for key in comparable_keys)
+    if not changed:
+        return False
+    history = list(task.get("runtime_adoption_history") or [])
+    history.append({
+        "adopted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "from_project_root": str(old_runtime.get("project_root") or ""),
+        "to_project_root": str(new_runtime.get("project_root") or ""),
+        "from_software_version": str(task.get("software_version") or ""),
+        "to_software_version": APP_VERSION,
+        "scope": "non_success_stages_only",
+    })
+    task["runtime_adoption_history"] = history[-10:]
+    task["runtime"] = new_runtime
+    task["software_version"] = APP_VERSION
+    task["resume_runtime_scope"] = "non_success_stages_only"
+    return True
+
+
 def start_task(config: dict[str, Any], config_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     lock_path = application_state_root() / "runtime" / "start_task.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1543,6 +1605,7 @@ def resume_active_task(config: dict[str, Any], config_path: Path) -> dict[str, A
         pid = int(state.get("worker_pid") or 0)
         if process_is_alive(pid):
             raise RuntimeError("任务仍在运行，不需要重复启动")
+    runtime_adopted = _adopt_current_runtime_for_resume(config, task, task_path)
     if state.get("status") == "success":
         records = {
             str(row.get("key") or ""): row
@@ -1568,7 +1631,10 @@ def resume_active_task(config: dict[str, Any], config_path: Path) -> dict[str, A
     (task_path.parent / "pipeline.pid").write_text(f"{pid}\n", encoding="utf-8")
     return {
         "status": "PASS",
-        "message": "已从断点继续；成功阶段不会重跑",
+        "message": (
+            "已从断点继续；成功阶段不会重跑"
+            + ("；尚未完成的阶段已切换到当前热修复运行规则" if runtime_adopted else "")
+        ),
         "path": str(task_path),
         "identifier": task.get("task_id"),
         "central_database_write": True,
@@ -2358,6 +2424,8 @@ def run_person_cluster_catalog(
     """Expose reliable anonymous-person groups as a query-only UI catalog."""
     requested_limit = max(1, min(int(limit), 200))
     page = repository.person_cluster_catalog(0, requested_limit)
+    health_reader = getattr(repository, "person_reid_health", None)
+    person_health = health_reader() if callable(health_reader) else {"state": "unknown"}
     repository_db = getattr(repository, "db_path", None)
     annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
         "contract": "media_archive_local_person_annotations_v1", "identities": {},
@@ -2417,12 +2485,17 @@ def run_person_cluster_catalog(
     items = []
     for index, row in enumerate(page["items"], start=int(page["offset"]) + 1):
         stored_name = str(row.get("display_name") or row.get("anonymous_display_name") or "").strip()
+        confidence = str(row.get("cluster_confidence") or "")
+        fallback_name = (
+            f"人物 {index:02d}" if confidence == "review"
+            else f"匿名人物 {index:02d}"
+        )
         items.append({
             "person_cluster_id": str(row["person_cluster_id"]),
-            "display_name": stored_name or f"匿名人物 {index:02d}",
+            "display_name": stored_name or fallback_name,
             "member_count": int(row.get("member_count") or 0),
             "distinct_source_count": int(row.get("distinct_source_count") or 0),
-            "cluster_confidence": str(row.get("cluster_confidence") or ""),
+            "cluster_confidence": confidence,
             "human_review_status": str(row.get("human_review_status") or ""),
             "preview_path": str(row.get("preview_path") or ""),
             "media_type": str(row.get("media_type") or ""),
@@ -2431,6 +2504,31 @@ def run_person_cluster_catalog(
             "merged_cluster_count": int(row.get("merged_cluster_count") or 1),
             "is_local_identity": bool(row.get("is_local_identity")),
         })
+    health_state = str(person_health.get("state") or "unknown")
+    if items:
+        capability_note = (
+            "人物列表同时显示高置信度分组和素材量较大的待确认分组；“待确认人物”需要人工核对，"
+            "避免把只出现在一个采访视频中的真实人物直接隐藏。"
+        )
+    elif health_state == "implausible_zero_faces":
+        capability_note = (
+            "人物识别阶段结果异常：已有画面分析在 "
+            f"{int(person_health.get('independent_face_visual_unit_count') or 0)} 个画面中发现人脸，"
+            "但人物识别结果为 0。请重新运行人物识别阶段；这不是素材库里没有人物。"
+        )
+    elif health_state == "failed":
+        capability_note = "人物识别阶段未成功完成，请回到任务阶段查看失败原因后重试。"
+    elif health_state == "empty":
+        detected = int(person_health.get("face_count") or 0)
+        capability_note = (
+            f"人物识别已完成并找到 {detected} 张人脸，但尚未形成可确认的人物分组。"
+            if detected else
+            "人物识别已完成，但现有结果没有检测到可用人脸。"
+        )
+    elif health_state == "not_run":
+        capability_note = "当前素材库尚未运行人物识别阶段。普通画面搜索不受影响。"
+    else:
+        capability_note = "当前素材库暂时没有可读取的人物分组。"
     return {
         "status": "PASS",
         "total": int(page["total"]),
@@ -2441,10 +2539,81 @@ def run_person_cluster_catalog(
         "model_run": False,
         "network_used": False,
         "original_media_read": False,
-        "capability_note": (
-            "机器分组只依据可见人脸；你可以把背影、遮挡或漏检画面人工加入自建人物，"
-            "人工结果独立保存且不会改写机器识别。"
+        "person_reid_health": person_health,
+        "capability_note": capability_note,
+    }
+
+
+def run_interview_content_catalog(
+    repository: ReadonlyMediaRepository,
+    person_id: str = "",
+    offset: int = 0,
+    limit: int = 100,
+    content_kind: str = "all",
+) -> dict[str, Any]:
+    """Read per-video interview overviews from existing timestamped ASR only."""
+    clean_person_id = str(person_id or "").strip()
+    source_ids: set[str] = set()
+    if clean_person_id:
+        repository_db = getattr(repository, "db_path", None)
+        annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
+            "contract": "media_archive_local_person_annotations_v1", "identities": {},
+            "cluster_to_identity": {}, "visual_memberships": {},
+        }
+        resolved_cluster_ids = resolve_clusters(annotations, clean_person_id)
+        cluster_selector: str | list[str] = (
+            resolved_cluster_ids[0] if len(resolved_cluster_ids) == 1
+            else (resolved_cluster_ids or [clean_person_id])
+        )
+        identities = dict(annotations.get("identities") or {})
+        cluster_to_identity = dict(annotations.get("cluster_to_identity") or {})
+        identity_id = (
+            clean_person_id if clean_person_id in identities
+            else str(cluster_to_identity.get(clean_person_id) or "")
+        )
+        manual_memberships = list(
+            dict(annotations.get("visual_memberships") or {}).get(identity_id, [])
+        )
+        page = repository.person_cluster_results(
+            cluster_selector, "video", 0, 100, None,
+            [str(value.get("visual_unit_id") or "") for value in manual_memberships],
+            identity_id,
+        )
+        source_ids = {
+            str(row.get("source_content_id") or "") for row in page["items"]
+            if str(row.get("source_content_id") or "")
+        }
+    requested_content_kind = str(content_kind or "").strip()
+    clean_content_kind = (
+        requested_content_kind
+        if requested_content_kind in {"likely_interview", "long_spoken_content", "sparse_speech"}
+        else "all"
+    )
+    page = repository.interview_content_catalog(
+        source_ids, offset, limit, clean_content_kind,
+    )
+    return {
+        "status": "PASS",
+        **page,
+        "person_id": clean_person_id,
+        "scope": "person_sources" if clean_person_id else "all_interview_videos",
+        "scope_note": (
+            "这里只能确认该人物出现在这些视频中；现有转写没有说话人分离，内容可能同时包含采访者。"
+            if clean_person_id else
+            ({
+                "likely_interview": "根据持续语音和问答结构筛出疑似采访；判断只作整理提示，请人工核对。",
+                "long_spoken_content": "筛出持续讲话但问答结构不足的视频，适合浏览长口播、长对话和长时间录制。",
+                "sparse_speech": "筛出只包含少量语音的视频，仍可按时间点查看已有转写。",
+            }.get(
+                clean_content_kind,
+                "按视频汇总全部已有语音转写，不读取原视频，也不重新运行语音模型。",
+            ))
         ),
+        "content_kind_filter": clean_content_kind,
+        "database_write": False,
+        "model_run": False,
+        "network_used": False,
+        "original_media_read": False,
     }
 
 
@@ -3204,6 +3373,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("snapshot")
     editorial = subparsers.add_parser("editorial-board")
     editorial.add_argument("--script-file", type=Path, required=True)
+    editorial.add_argument("--database", type=Path)
     editorial.add_argument("--guide-file", type=Path, action="append")
     editorial.add_argument("--beat-id")
     editorial.add_argument("--reserved-file", type=Path)
@@ -3211,6 +3381,8 @@ def build_parser() -> argparse.ArgumentParser:
     editorial.add_argument(
         "--track", choices=("documentary", "short_video"), default="documentary",
     )
+    editorial_guide_preview = subparsers.add_parser("editorial-guide-preview")
+    editorial_guide_preview.add_argument("--guide-file", type=Path, required=True)
     editorial_timeline = subparsers.add_parser("editorial-timeline")
     editorial_timeline.add_argument("--request-file", type=Path, required=True)
     editorial_timeline.add_argument("--output", type=Path, required=True)
@@ -3306,6 +3478,15 @@ def build_parser() -> argparse.ArgumentParser:
     people = subparsers.add_parser("person-clusters")
     people.add_argument("--result-offset", type=int, default=0)
     people.add_argument("--result-limit", type=int, choices=range(1, 201), default=100)
+    interview_content = subparsers.add_parser("interview-content")
+    interview_content.add_argument("--person-id", default="")
+    interview_content.add_argument(
+        "--content-kind",
+        choices=("all", "likely_interview", "long_spoken_content", "sparse_speech"),
+        default="all",
+    )
+    interview_content.add_argument("--result-offset", type=int, default=0)
+    interview_content.add_argument("--result-limit", type=int, choices=range(1, 201), default=100)
     person_name = subparsers.add_parser("person-name")
     person_name.add_argument("--person-id", required=True)
     person_name.add_argument("--display-name", required=True)
@@ -3366,14 +3547,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         if args.command == "snapshot":
             report = snapshot(config, repository, manager)
+        elif args.command == "editorial-guide-preview":
+            from .editorial_candidate.editorial_guide import load_editorial_guide
+            guide = load_editorial_guide(args.guide_file)
+            report = {
+                "status": "PASS",
+                "script": guide["script_text"],
+                "row_count": guide["row_count"],
+                "sheet_name": guide["sheet_name"],
+                "source_file": guide["source_file"],
+            }
         elif args.command == "editorial-board":
-            if repository is None:
+            editorial_database = repository.db_path if repository is not None else None
+            if args.database is not None:
+                requested = args.database.expanduser().resolve(strict=True)
+                registered = {
+                    Path(str(row.get("database") or "")).expanduser().resolve()
+                    for row in existing_libraries(config)
+                    if str(row.get("database") or "").strip()
+                }
+                if requested not in registered:
+                    raise RuntimeError("所选文稿素材库未登记；请从步骤一的素材库列表重新选择")
+                editorial_database = requested
+            if editorial_database is None:
                 raise RuntimeError("请先新建或连接一个素材库")
+            def editorial_progress(beat: dict[str, Any], completed: int, total: int) -> None:
+                print(
+                    "EDITORIAL_PROGRESS_JSON=" + json.dumps({
+                        "completed": completed,
+                        "total": total,
+                        "database": str(editorial_database),
+                        "beat": beat,
+                    }, ensure_ascii=False, separators=(",", ":")),
+                    file=sys.stderr,
+                    flush=True,
+                )
             report = build_editorial_board(
-                repository.db_path, args.script_file, args.track, args.guide_file,
+                editorial_database, args.script_file, args.track, args.guide_file,
                 target_beat_id=args.beat_id,
                 reserved_visuals=json.loads(args.reserved_file.read_text(encoding="utf-8")) if args.reserved_file else None,
                 bound_guidance=json.loads(args.saved_beats_file.read_text(encoding="utf-8")) if args.saved_beats_file else None,
+                progress_callback=editorial_progress,
             )
         elif args.command == "editorial-favorites":
             if repository is None:
@@ -3518,6 +3732,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise RuntimeError("请先新建或连接一个素材库")
             report = run_person_cluster_catalog(
                 repository, args.result_offset, args.result_limit,
+            )
+        elif args.command == "interview-content":
+            if repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            report = run_interview_content_catalog(
+                repository, args.person_id, args.result_offset, args.result_limit,
+                args.content_kind,
             )
         elif args.command == "person-name":
             if repository is None:

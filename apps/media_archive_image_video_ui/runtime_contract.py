@@ -67,10 +67,30 @@ def load_runtime_contract(
         if contract_path.parent.name == "Resources"
         else contract_path.parent
     )
+    source_project_root = (
+        contract_path.parent.parent
+        if contract_path.parent.name == "configs"
+        else contract_path.parent
+    )
+    project_root = Path(
+        os.environ.get("MEDIA_ARCHIVE_PROJECT_ROOT", str(source_project_root))
+    ).expanduser().absolute()
+    env_root = Path(
+        os.environ.get("MEDIA_ARCHIVE_ENV_ROOT", str(project_root.parent / "envs"))
+    ).expanduser().absolute()
     selected_model_root = (model_root or default_model_root()).expanduser().absolute()
     payload = _replace_placeholders(payload, {
         "$APP_CONTENTS": str(app_contents),
         "$APP_RESOURCES": str(app_contents / "Resources"),
+        "$PROJECT_ROOT": str(project_root),
+        "$ENV_ROOT": str(env_root),
+        "$FFMPEG": os.environ.get("MEDIA_ARCHIVE_FFMPEG", "/opt/homebrew/bin/ffmpeg"),
+        "$FFPROBE": os.environ.get("MEDIA_ARCHIVE_FFPROBE", "/opt/homebrew/bin/ffprobe"),
+        "$SIPS": os.environ.get("MEDIA_ARCHIVE_SIPS", "/usr/bin/sips"),
+        "$DEEP_FILTER": os.environ.get(
+            "MEDIA_ARCHIVE_DEEP_FILTER",
+            str(project_root / "tools/deep-filter/deep-filter"),
+        ),
         "$MODEL_ROOT": str(selected_model_root),
     })
     payload["contract_path"] = str(contract_path)

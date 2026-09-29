@@ -23,9 +23,9 @@ class MediaArchiveRuntimeContractTests(unittest.TestCase):
         contract = load_runtime_contract(
             ROOT / "configs/media_archive_app_runtime_contract_v1.json"
         )
-        self.assertEqual(len(contract["python"]), 7)
-        self.assertEqual(len(contract["tools"]), 3)
-        self.assertEqual(len(contract["models"]), 8)
+        self.assertEqual(len(contract["python"]), 8)
+        self.assertEqual(len(contract["tools"]), 4)
+        self.assertEqual(len(contract["models"]), 11)
         self.assertIn("person_reid", contract["models"])
         self.assertNotIn("$PROJECT_ROOT", contract["project_root"])
         self.assertNotIn("$MODEL_ROOT", contract["models"]["qwen"]["path"])

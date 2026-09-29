@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import shutil
 import sqlite3
 from collections import defaultdict
@@ -1005,12 +1006,15 @@ class ReadonlyMediaRepository:
                 WHERE p.person_cluster_id IN ({placeholders})
                   AND p.member_count > 1
                   AND (
-                    p.distinct_source_count >= 2
-                    OR p.human_review_status='confirmed'
-                  )
-                  AND (
-                    p.cluster_confidence='high'
-                    OR p.human_review_status='confirmed'
+                    p.human_review_status='confirmed'
+                    OR (
+                      p.cluster_confidence='high'
+                      AND p.distinct_source_count >= 2
+                    )
+                    OR (
+                      p.cluster_confidence='review'
+                      AND p.member_count >= 10
+                    )
                   )
                 ORDER BY p.similarity_to_representative DESC,
                          p.time_position_ms,p.visual_unit_id
@@ -1110,8 +1114,9 @@ class ReadonlyMediaRepository:
         """List reliable anonymous-person clusters for an explicit UI picker.
 
         The representative image is an existing derived asset.  This method is
-        query-only and deliberately excludes singleton/review-only clusters so
-        the UI never presents an uncertain grouping as confirmed.
+        Query-only. Singletons stay hidden, while large review clusters are
+        exposed as explicitly unconfirmed people so interview libraries do not
+        silently lose a person who appears in only one source file.
         """
         safe_offset = max(0, int(offset))
         safe_limit = max(1, min(int(limit), 200))
@@ -1146,12 +1151,15 @@ class ReadonlyMediaRepository:
                 WHERE p.face_id=p.representative_face_id
                   AND p.member_count > 1
                   AND (
-                    p.distinct_source_count >= 2
-                    OR p.human_review_status='confirmed'
-                  )
-                  AND (
-                    p.cluster_confidence='high'
-                    OR p.human_review_status='confirmed'
+                    p.human_review_status='confirmed'
+                    OR (
+                      p.cluster_confidence='high'
+                      AND p.distinct_source_count >= 2
+                    )
+                    OR (
+                      p.cluster_confidence='review'
+                      AND p.member_count >= 10
+                    )
                   )
                 ORDER BY p.member_count DESC,p.distinct_source_count DESC,
                          p.person_cluster_id
@@ -1177,6 +1185,403 @@ class ReadonlyMediaRepository:
             "offset": safe_offset,
             "limit": safe_limit,
             "items": items[safe_offset:safe_offset + safe_limit],
+        }
+
+    def person_reid_health(self) -> dict[str, Any]:
+        """Explain whether an empty person catalog is valid or a failed stage."""
+        with self.connect() as con:
+            if not self._table_exists(con, "stop03_1c_person_reid_runs"):
+                return {"state": "not_run"}
+            run = con.execute(
+                """SELECT run_id,status,visual_unit_count,face_count,cluster_count,
+                          error_message
+                   FROM stop03_1c_person_reid_runs
+                   ORDER BY created_at DESC,run_id DESC LIMIT 1"""
+            ).fetchone()
+            if run is None:
+                return {"state": "not_run"}
+            face_label_count = 0
+            if (
+                self._table_exists(con, "visual_labels")
+                and self._column_exists(con, "visual_labels", "visual_unit_id")
+                and self._column_exists(con, "visual_labels", "label")
+                and self._table_exists(con, "stop03_1c_person_reid_run_items")
+            ):
+                face_label_count = _int(con.execute(
+                    """SELECT COUNT(DISTINCT vl.visual_unit_id)
+                       FROM visual_labels AS vl
+                       JOIN stop03_1c_person_reid_run_items AS i
+                         ON i.visual_unit_id=vl.visual_unit_id
+                       WHERE i.run_id=? AND LOWER(TRIM(vl.label))='face'""",
+                    (str(run["run_id"]),),
+                ).fetchone()[0])
+        result = dict(run)
+        error_message = str(result.get("error_message") or "")
+        visual_count = _int(result.get("visual_unit_count"))
+        face_count = _int(result.get("face_count"))
+        cluster_count = _int(result.get("cluster_count"))
+        implausible_zero = (
+            face_count == 0
+            and face_label_count >= 3
+            and face_label_count / max(1, visual_count) >= 0.005
+        )
+        if error_message.startswith("PERSON_REID_IMPLAUSIBLE_ZERO_FACES") or implausible_zero:
+            state = "implausible_zero_faces"
+        elif str(result.get("status") or "") == "failed":
+            state = "failed"
+        elif cluster_count > 0:
+            state = "ready"
+        else:
+            state = "empty"
+        return {
+            "state": state,
+            "run_id": str(result.get("run_id") or ""),
+            "run_status": str(result.get("status") or ""),
+            "visual_unit_count": visual_count,
+            "face_count": face_count,
+            "cluster_count": cluster_count,
+            "independent_face_visual_unit_count": face_label_count,
+            "error_message": error_message,
+        }
+
+    @staticmethod
+    def _interview_excerpt_blocks(rows: Sequence[sqlite3.Row]) -> list[dict[str, Any]]:
+        """Build short, time-addressable excerpts from existing ASR segments."""
+        fillers = {
+            "嗯", "啊", "哦", "好", "好的", "对", "是", "是的", "然后", "就是",
+            "那个", "这个", "可以", "行", "哈哈", "谢谢", "拜拜", "开始", "开始了",
+        }
+        blocks: list[dict[str, Any]] = []
+        current: list[str] = []
+        block_start = 0
+        block_end = 0
+        last_text = ""
+
+        def flush() -> None:
+            nonlocal current, block_start, block_end
+            if not current:
+                return
+            text = "，".join(current).strip("，。！？ ")
+            if text:
+                blocks.append({
+                    "start_time_ms": block_start,
+                    "end_time_ms": block_end,
+                    "text": text[:220],
+                })
+            current = []
+
+        for row in rows:
+            text = re.sub(r"\s+", " ", str(row["transcript_text"] or "")).strip(" ，。！？")
+            if not text or text == last_text or text in fillers:
+                continue
+            start = max(0, _int(row["start_time_ms"]))
+            end = max(start, _int(row["end_time_ms"]))
+            if not current:
+                block_start = start
+            prospective = "，".join(current + [text])
+            if current and (start - block_start > 60_000 or len(prospective) > 180):
+                flush()
+                block_start = start
+            current.append(text)
+            block_end = end
+            last_text = text
+        flush()
+        return blocks
+
+    @staticmethod
+    def _representative_interview_excerpts(
+        blocks: Sequence[dict[str, Any]], limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Select informative excerpts across the full recording, not only its start."""
+        if not blocks:
+            return []
+        common = (
+            "然后", "就是", "这个", "那个", "我们", "你们", "他们", "因为", "所以",
+            "其实", "可能", "觉得", "一个", "什么", "怎么", "还是", "但是", "没有",
+        )
+
+        def score(block: dict[str, Any]) -> float:
+            text = str(block.get("text") or "")
+            content = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text)
+            return min(len(content), 160) + len(set(content)) * 0.35 - sum(
+                text.count(word) * 2.0 for word in common
+            )
+
+        bucket_count = min(max(1, int(limit)), len(blocks))
+        selected: list[dict[str, Any]] = []
+        for bucket in range(bucket_count):
+            start = bucket * len(blocks) // bucket_count
+            end = (bucket + 1) * len(blocks) // bucket_count
+            candidates = blocks[start:max(start + 1, end)]
+            selected.append(max(candidates, key=score))
+        return sorted(selected, key=lambda row: _int(row.get("start_time_ms")))
+
+    @staticmethod
+    def _interview_minute_timeline(rows: Sequence[sqlite3.Row]) -> list[dict[str, Any]]:
+        """Merge Whisper fragments into chronological one-minute reading blocks."""
+        grouped: dict[int, list[str]] = defaultdict(list)
+        minute_end: dict[int, int] = {}
+        previous = ""
+        for row in rows:
+            text = re.sub(r"\s+", " ", str(row["transcript_text"] or "")).strip(" ，。！？")
+            if not text or text == previous:
+                continue
+            minute = max(0, _int(row["start_time_ms"])) // 60_000
+            grouped[minute].append(text)
+            minute_end[minute] = max(minute_end.get(minute, 0), _int(row["end_time_ms"]))
+            previous = text
+        return [
+            {
+                "start_time_ms": minute * 60_000,
+                "end_time_ms": minute_end[minute],
+                "text": "，".join(grouped[minute]),
+            }
+            for minute in sorted(grouped)
+        ]
+
+    @staticmethod
+    def _interview_question_answer_clues(
+        rows: Sequence[sqlite3.Row], limit: int = 24,
+    ) -> list[dict[str, Any]]:
+        """Find conservative Q/A clues without claiming speaker identity."""
+        cleaned: list[dict[str, Any]] = []
+        previous = ""
+        for row in rows:
+            text = re.sub(r"\s+", " ", str(row["transcript_text"] or "")).strip(" ，。！")
+            if not text or text == previous:
+                continue
+            cleaned.append({
+                "start": max(0, _int(row["start_time_ms"])),
+                "end": max(0, _int(row["end_time_ms"])),
+                "text": text,
+            })
+            previous = text
+        question_pattern = re.compile(
+            r"[？?]|你(?:认为|觉得|想|会|是|在|对|更|能|希望)|"
+            r"(?:有没有|为什么|为何|什么是|是什么|怎么|怎样|如何|哪一|哪个|多久|是否|能否|想知道)"
+        )
+        question_indexes = [
+            index for index, row in enumerate(cleaned)
+            if question_pattern.search(str(row["text"]))
+        ]
+        question_groups: list[list[int]] = []
+        for index in question_indexes:
+            if (
+                question_groups
+                and int(cleaned[index]["start"]) - int(cleaned[question_groups[-1][-1]]["end"]) < 12_000
+            ):
+                question_groups[-1].append(index)
+            else:
+                question_groups.append([index])
+        question_start_indexes: list[int] = []
+        for group in question_groups:
+            first_index = group[0]
+            last_index = group[-1]
+            first_row = cleaned[first_index]
+            start_index = first_index
+            while start_index > 0:
+                prior = cleaned[start_index - 1]
+                if int(first_row["start"]) - int(prior["end"]) > 8_000:
+                    break
+                candidate = "，".join(
+                    str(value["text"]) for value in cleaned[start_index - 1:last_index + 1]
+                )
+                if len(candidate) > 150:
+                    break
+                start_index -= 1
+            question_start_indexes.append(start_index)
+        clues: list[dict[str, Any]] = []
+        for position, group in enumerate(question_groups):
+            first_question_index = group[0]
+            last_question_index = group[-1]
+            start_index = question_start_indexes[position]
+            end_index = last_question_index
+            question_rows = cleaned[start_index:end_index + 1]
+            question = "，".join(str(value["text"]) for value in question_rows)
+            question_start = int(question_rows[0]["start"])
+            question_end = int(question_rows[-1]["end"])
+            next_question_start = (
+                int(cleaned[question_start_indexes[position + 1]]["start"])
+                if position + 1 < len(question_groups) else question_end + 90_000
+            )
+            answer_rows: list[dict[str, Any]] = []
+            for candidate in cleaned[end_index + 1:]:
+                if int(candidate["start"]) >= next_question_start:
+                    break
+                if int(candidate["start"]) - question_end > 90_000:
+                    break
+                if sum(len(str(value["text"])) for value in answer_rows) >= 360:
+                    break
+                answer_rows.append(candidate)
+            answer = "，".join(str(value["text"]) for value in answer_rows).strip("，")
+            if len(question) < 4 or len(answer) < 4:
+                continue
+            clues.append({
+                "question_time_ms": question_start,
+                "question": question[:180],
+                "answer_start_time_ms": int(answer_rows[0]["start"]),
+                "answer_end_time_ms": int(answer_rows[-1]["end"]),
+                "answer": answer[:500],
+            })
+            if len(clues) >= max(1, int(limit)):
+                break
+        return clues
+
+    @staticmethod
+    def _spoken_content_classification(
+        rows: Sequence[sqlite3.Row], question_answers: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Classify spoken-video structure from existing ASR, without topic rules."""
+        if not rows:
+            return {
+                "content_kind": "unknown",
+                "content_label": "无法判断",
+                "classification_reason": "没有可用于判断的语音转写。",
+                "interview_score": 0.0,
+            }
+        first_ms = min(max(0, _int(row["start_time_ms"])) for row in rows)
+        last_ms = max(max(0, _int(row["end_time_ms"])) for row in rows)
+        span_ms = max(0, last_ms - first_ms)
+        clean_texts = [
+            re.sub(r"\s+", " ", str(row["transcript_text"] or "")).strip()
+            for row in rows
+        ]
+        character_count = sum(len(text) for text in clean_texts if text)
+        question_count = len(question_answers)
+        answer_character_count = sum(
+            len(str(pair.get("answer") or "")) for pair in question_answers
+        )
+
+        # These are deliberately content-independent signals: recording span,
+        # sustained speech, and repeated question-to-answer structure.  The
+        # result is a cautious label, never a claim about speaker identity.
+        duration_signal = min(1.0, span_ms / 600_000.0)
+        speech_signal = min(1.0, character_count / 2_000.0)
+        question_signal = min(1.0, question_count / 5.0)
+        answer_signal = min(1.0, answer_character_count / 900.0)
+        interview_score = round(
+            0.20 * duration_signal
+            + 0.20 * speech_signal
+            + 0.35 * question_signal
+            + 0.25 * answer_signal,
+            3,
+        )
+        if (
+            span_ms >= 120_000
+            and question_count >= 1
+            and answer_character_count >= 24
+        ):
+            return {
+                "content_kind": "likely_interview",
+                "content_label": "疑似采访/问答",
+                "classification_reason": (
+                    f"连续语音约{max(1, round(span_ms / 60_000))}分钟，"
+                    f"识别到{question_count}组提问与后续回答；请人工核对。"
+                ),
+                "interview_score": interview_score,
+            }
+        if span_ms >= 90_000 and len(rows) >= 10 and character_count >= 180:
+            return {
+                "content_kind": "long_spoken_content",
+                "content_label": "长口播/长对话",
+                "classification_reason": (
+                    "存在持续且较完整的语音内容，但问答结构不足，"
+                    "不能仅凭现有转写确定为采访。"
+                ),
+                "interview_score": interview_score,
+            }
+        return {
+            "content_kind": "sparse_speech",
+            "content_label": "零散语音",
+            "classification_reason": (
+                "语音时长或问答结构较少，暂不自动判断为采访；"
+                "仍可在全部有转写视频中查看。"
+            ),
+            "interview_score": interview_score,
+        }
+
+    def interview_content_catalog(
+        self,
+        source_content_ids: Iterable[str] = (),
+        offset: int = 0,
+        limit: int = 100,
+        content_kind: str = "all",
+    ) -> dict[str, Any]:
+        """Summarise each video's existing timestamped ASR without reading media."""
+        safe_offset = max(0, int(offset))
+        safe_limit = max(1, min(int(limit), 200))
+        requested_ids = sorted({str(value).strip() for value in source_content_ids if str(value).strip()})
+        with self.connect() as con:
+            if not (
+                self._table_exists(con, "audio_speech_evidence")
+                and self._table_exists(con, "source_assets")
+            ):
+                return {
+                    "total": 0, "offset": safe_offset, "limit": safe_limit,
+                    "items": [], "next_offset": None,
+                }
+            where = "WHERE s.media_type='video'"
+            params: list[Any] = []
+            if requested_ids:
+                placeholders = ",".join("?" for _ in requested_ids)
+                where += f" AND a.source_content_id IN ({placeholders})"
+                params.extend(requested_ids)
+            rows = con.execute(
+                f"""
+                SELECT a.source_content_id,a.start_time_ms,a.end_time_ms,
+                       a.transcript_text,s.file_name,s.relative_path,s.absolute_path
+                FROM audio_speech_evidence AS a
+                JOIN source_assets AS s USING(source_content_id)
+                {where}
+                ORDER BY s.file_name,a.source_content_id,a.start_time_ms,a.end_time_ms
+                """,
+                params,
+            ).fetchall()
+
+        grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["source_content_id"])].append(row)
+        items: list[dict[str, Any]] = []
+        for source_id, source_rows in grouped.items():
+            first = source_rows[0]
+            blocks = self._interview_excerpt_blocks(source_rows)
+            excerpts = self._representative_interview_excerpts(blocks)
+            timeline = self._interview_minute_timeline(source_rows)
+            question_answers = self._interview_question_answer_clues(source_rows)
+            classification = self._spoken_content_classification(source_rows, question_answers)
+            source_path = Path(str(first["absolute_path"])).expanduser().resolve()
+            summary = "；".join(str(row["text"])[:72] for row in excerpts[:3])
+            items.append({
+                "source_content_id": source_id,
+                "file_name": str(first["file_name"]),
+                "relative_path": str(first["relative_path"]),
+                "source_path": str(source_path),
+                "source_online": source_path.is_file(),
+                "segment_count": len(source_rows),
+                "first_speech_time_ms": min(_int(row["start_time_ms"]) for row in source_rows),
+                "last_speech_time_ms": max(_int(row["end_time_ms"]) for row in source_rows),
+                "summary": summary,
+                "question_summary": "；".join(
+                    str(row["question"])[:90] for row in question_answers[:6]
+                ),
+                "answer_summary": "；".join(
+                    str(row["answer"])[:110] for row in question_answers[:4]
+                ),
+                "excerpts": excerpts,
+                "minute_timeline": timeline,
+                "question_answers": question_answers,
+                **classification,
+            })
+        clean_content_kind = str(content_kind).strip()
+        if clean_content_kind in {"likely_interview", "long_spoken_content", "sparse_speech"}:
+            items = [row for row in items if row["content_kind"] == clean_content_kind]
+        items.sort(key=lambda row: (str(row["file_name"]).lower(), str(row["source_content_id"])))
+        page = items[safe_offset:safe_offset + safe_limit]
+        next_offset = safe_offset + len(page)
+        return {
+            "total": len(items), "offset": safe_offset, "limit": safe_limit,
+            "items": page,
+            "next_offset": next_offset if next_offset < len(items) else None,
         }
 
     def integrity(self) -> dict[str, Any]:

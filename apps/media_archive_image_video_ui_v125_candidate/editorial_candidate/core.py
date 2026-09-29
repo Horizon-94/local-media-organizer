@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from collections import Counter, defaultdict
 import sys
-from typing import Any
+from typing import Any, Callable
 
 try:
     from .cinematic_rerank import build_visual_strategy, make_keep_a_roll_candidate, score_candidate
@@ -225,14 +225,26 @@ def split_script(script: str, track: str = "documentary") -> list[dict[str, Any]
     if len(cleaned) > 20_000:
         raise ValueError("script exceeds 20000 characters")
 
-    source_chunks = [
-        _clean_text(part)
-        for part in re.split(r"(?<=[。！？!?；;])(?![】》」』”’）)])\s*|\n+", cleaned)
-        if _clean_text(part) and not _is_non_narration_chapter_card(part)
-    ]
+    grouped_script = "\u2063" in cleaned
+    if grouped_script:
+        source_chunks = [
+            _clean_text(part)
+            for part in cleaned.split("\u2063")
+            if _clean_text(part) and not _is_non_narration_chapter_card(part)
+        ]
+    else:
+        source_chunks = [
+            _clean_text(part)
+            for part in re.split(r"(?<=[。！？!?；;])(?![】》」』”’）)])\s*|\n+", cleaned)
+            if _clean_text(part) and not _is_non_narration_chapter_card(part)
+        ]
     if not source_chunks:
         source_chunks = [cleaned]
-    chunks = [part for source in source_chunks for part in _split_long_chunk(source)]
+    # An execution-table row is already an editor-defined unit. Preserve it
+    # even when it exceeds the generic prose length limit.
+    chunks = source_chunks if grouped_script else [
+        part for source in source_chunks for part in _split_long_chunk(source)
+    ]
 
     beats: list[dict[str, Any]] = []
     for index, text in enumerate(chunks, 1):
@@ -910,6 +922,7 @@ def build_board(
     comparison_mode: bool = False,
     dismissed_candidate_ids: list[str] | None = None,
     bound_guidance: list[dict[str, Any]] | None = None,
+    progress_callback: Callable[[dict[str, Any], int, int], None] | None = None,
 ) -> dict[str, Any]:
     validate_project(project)
     selected_track = track or str(project["track"])
@@ -1253,6 +1266,8 @@ def build_board(
             "candidate_pools": ranked_by_pool,
             "candidate_reserve_pools": reserve_by_pool,
         })
+        if progress_callback is not None:
+            progress_callback(board_beats[-1], len(board_beats), len(beats))
 
     return {
         "contract_version": CONTRACT_VERSION,

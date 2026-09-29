@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from .editorial_candidate.clip_timing import cut_range, timeline_duration_ms, validate_source_range
 from .editorial_candidate.editorial_labels import LABELS
@@ -109,6 +109,59 @@ def _compact_candidate(candidate: dict[str, Any], pool: str) -> dict[str, Any]:
     }
 
 
+def _compact_progress_beat(beat: dict[str, Any], guide_loaded: bool) -> dict[str, Any]:
+    """Produce the same UI-safe beat shape while the full board is running."""
+    candidates = [
+        _compact_candidate(row, str(pool))
+        for pool, rows in (beat.get("candidate_pools") or {}).items()
+        for row in rows
+    ]
+    candidates.sort(key=lambda row: (int(row["shortlist_rank"]), row["candidate_id"]))
+    reserve = [
+        _compact_candidate(row, str(pool))
+        for pool, rows in (beat.get("candidate_reserve_pools") or {}).items()
+        for row in rows
+    ]
+    reserve.sort(key=lambda row: (int(row["shortlist_rank"]), row["candidate_id"]))
+    strategy = beat.get("visual_strategy") or {}
+    requirement = beat.get("selection_requirement") or {}
+    a_roll = beat.get("a_roll_option")
+    return {
+        "beat_id": str(beat["beat_id"]),
+        "order": int(beat["order"]),
+        "text": str(beat["text"]),
+        "purpose": str(beat["purpose"]),
+        "estimated_narration_ms": int((beat.get("p0d_intent", {}).get("duration_plan", {}).get("estimated_narration_seconds") or 0) * 1000),
+        "excluded_visual_count": int(beat.get("excluded_visual_count") or 0),
+        "required_roles": [str(value) for value in beat.get("required_roles") or []],
+        "retrieval_candidate_count": int(beat.get("retrieval_candidate_count") or 0),
+        "retrieval_source_count": int(beat.get("retrieval_source_count") or 0),
+        "context_before": [str(value) for value in beat.get("context_before") or []],
+        "context_after": [str(value) for value in beat.get("context_after") or []],
+        "narrative_intent": str(strategy.get("narrative_intent") or ""),
+        "shot_brief": str(strategy.get("shot_brief") or ""),
+        "visual_task": str(requirement.get("visual_task") or "UNKNOWN"),
+        "expected_primary_subject": str(requirement.get("expected_primary_subject") or "UNKNOWN"),
+        "preferred_shot_roles": [str(value) for value in requirement.get("preferred_shot_roles") or []],
+        "visualizability": str(requirement.get("visualizability") or "NEEDS_HUMAN_REVIEW"),
+        "visual_target_labels": [str(value) for value in requirement.get("visual_target_labels") or []],
+        "project_editorial_guidance": requirement.get("project_editorial_guidance"),
+        "guide_search_message": str((beat.get("guide_source_search") or {}).get("message") or "未加载逐句表"),
+        "guide_match_status": "MATCHED" if requirement.get("project_editorial_guidance") else ("UNMATCHED" if guide_loaded else "NOT_LOADED"),
+        "fallback_plan": requirement.get("fallback_plan") or {},
+        "sound_instruction": bool(requirement.get("sound_instruction")),
+        "a_roll_preference": str(requirement.get("a_roll_preference") or "LOW"),
+        "a_roll_option": _compact_candidate(a_roll, "a_roll") if a_roll else None,
+        "gap_status": beat.get("gap_status") or {},
+        "candidates": candidates,
+        "reserve_candidates": reserve,
+        "candidate_groups": {
+            channel: [_compact_candidate(row, str(row.get("pool") or "supplement")) for row in rows]
+            for channel, rows in (beat.get("candidate_groups") or {}).items()
+        },
+    }
+
+
 def build_editorial_board(
     database: Path,
     script_path: Path,
@@ -118,6 +171,7 @@ def build_editorial_board(
     target_beat_id: str | None = None,
     reserved_visuals: list[dict[str, Any]] | None = None,
     bound_guidance: list[dict[str, Any]] | None = None,
+    progress_callback: Callable[[dict[str, Any], int, int], None] | None = None,
 ) -> dict[str, Any]:
     if track not in {"documentary", "short_video"}:
         raise ValueError("项目类型必须是纪录片或网感视频")
@@ -128,6 +182,10 @@ def build_editorial_board(
     project = adapter.load_database_project(database, limit=25_000)
     script = _read_script(script_path)
     guide = guide_module.load_editorial_guides(guide_path) if guide_path else None
+    def emit_progress(beat: dict[str, Any], completed: int, total: int) -> None:
+        if progress_callback is not None:
+            progress_callback(_compact_progress_beat(beat, guide is not None), completed, total)
+
     board = core.build_board(
         script,
         project,
@@ -138,6 +196,7 @@ def build_editorial_board(
         reserved_visuals=reserved_visuals,
         comparison_mode=True,
         bound_guidance=bound_guidance,
+        progress_callback=emit_progress,
     )
     beats = []
     for beat in board["beats"]:

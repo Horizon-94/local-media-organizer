@@ -29,6 +29,9 @@ DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_1c_person_reid_db_v1.json"
 DEFAULT_MIGRATION = PROJECT_ROOT / "migrations/20260726_stop03_1c_person_reid_db_v1.sql"
 TERMINAL = {"success", "no_face"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+ZERO_FACE_REASON_CODE = "PERSON_REID_IMPLAUSIBLE_ZERO_FACES"
+DEFAULT_ZERO_FACE_MIN_LABELLED_UNITS = 3
+DEFAULT_ZERO_FACE_MIN_LABELLED_RATIO = 0.005
 
 
 def utc_now() -> str:
@@ -186,6 +189,46 @@ def eligible_visual_units(db: Path) -> list[dict[str, Any]]:
             "visual_mtime_ns": visual.stat().st_mtime_ns if visual.is_file() else 0,
         })
     return values
+
+
+def eligible_visual_unit(db: Path, visual_unit_id: str) -> dict[str, Any] | None:
+    """Resolve one derived visual for a bounded detector diagnostic."""
+    con = readonly_connection(db)
+    try:
+        row = con.execute(
+            """
+            SELECT vu.visual_unit_id,vu.source_content_id,vu.derived_id,
+                   vu.visual_file,vu.time_position_ms,sa.media_type,
+                   sa.absolute_path AS source_absolute_path
+            FROM visual_units AS vu
+            JOIN source_assets AS sa
+              ON sa.source_content_id=vu.source_content_id
+            WHERE vu.visual_unit_id=?
+              AND sa.media_type IN ('image','video')
+              AND COALESCE(sa.online_status,1)=1
+              AND COALESCE(sa.is_deleted_or_missing,0)=0
+              AND COALESCE(vu.near_black,0)=0
+            """,
+            (visual_unit_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        return None
+    visual = Path(str(row["visual_file"])).expanduser()
+    source = Path(str(row["source_absolute_path"])).expanduser()
+    return {
+        "visual_unit_id": str(row["visual_unit_id"]),
+        "source_content_id": str(row["source_content_id"]),
+        "derived_id": str(row["derived_id"]),
+        "visual_file": str(visual),
+        "source_absolute_path": str(source),
+        "time_position_ms": int(row["time_position_ms"]),
+        "media_type": str(row["media_type"]),
+        "visual_exists": visual.is_file(),
+        "visual_suffix_allowed": visual.suffix.lower() in IMAGE_SUFFIXES,
+        "is_original_path": visual.resolve(strict=False) == source.resolve(strict=False),
+    }
 
 
 def build_preflight(
@@ -379,7 +422,7 @@ def _scrfd_output_groups(outputs: Sequence[Any], np: Any) -> list[tuple[Any, Any
 
 
 class OpenCVDnnBackend:
-    def __init__(self, config: Mapping[str, Any]) -> None:
+    def __init__(self, config: Mapping[str, Any], *, load_recognizer: bool = True) -> None:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
         self.cv2 = cv2
@@ -387,31 +430,55 @@ class OpenCVDnnBackend:
         cv2.setNumThreads(int(config["opencv_threads_per_worker"]))
         model_dir = Path(str(config["model_dir"]))
         self.detector = cv2.dnn.readNetFromONNX(str(model_dir / str(config["detector_file"])))
-        self.recognizer = cv2.dnn.readNetFromONNX(str(model_dir / str(config["recognizer_file"])))
+        self.recognizer = (
+            cv2.dnn.readNetFromONNX(str(model_dir / str(config["recognizer_file"])))
+            if load_recognizer else None
+        )
         self.detector_size = tuple(int(value) for value in config["detector_input_size"])
+        self.detector_fallback_sizes = [
+            tuple(int(value) for value in size)
+            for size in config.get("detector_fallback_input_sizes", [[320, 320]])
+        ]
         self.score_min = float(config["detector_score_min"])
         self.nms_iou = float(config["nms_iou_max"])
         self.minimum_face_pixels = int(config["minimum_face_pixels"])
         self.minimum_quality = float(config["minimum_quality_score"])
         self.dimension = int(config["embedding_dimension"])
 
-    def _detect(self, image: Any) -> list[dict[str, Any]]:
+    def _forward_detector(
+        self,
+        image: Any,
+        *,
+        detector_size: tuple[int, int] | None = None,
+        swap_rb: bool = True,
+    ) -> tuple[list[Any], float, tuple[int, int]]:
         cv2, np = self.cv2, self.np
         height, width = image.shape[:2]
-        input_width, input_height = self.detector_size
+        input_width, input_height = detector_size or self.detector_size
         ratio = min(input_width / width, input_height / height)
         resized = cv2.resize(image, (int(width * ratio), int(height * ratio)))
         canvas = np.zeros((input_height, input_width, 3), dtype=np.uint8)
         canvas[: resized.shape[0], : resized.shape[1]] = resized
         blob = cv2.dnn.blobFromImage(
             canvas, 1.0 / 128.0, (input_width, input_height),
-            (127.5, 127.5, 127.5), swapRB=True,
+            (127.5, 127.5, 127.5), swapRB=swap_rb,
         )
         self.detector.setInput(blob)
         names = self.detector.getUnconnectedOutLayersNames()
         outputs = list(self.detector.forward(names))
         if len(outputs) not in {6, 9, 10, 15}:
             raise RuntimeError(f"unsupported_scrfd_output_count:{len(outputs)}")
+        return outputs, ratio, (input_width, input_height)
+
+    def _detect_at_size(
+        self, image: Any, detector_size: tuple[int, int],
+    ) -> list[dict[str, Any]]:
+        np = self.np
+        height, width = image.shape[:2]
+        outputs, ratio, size = self._forward_detector(
+            image, detector_size=detector_size,
+        )
+        input_width, input_height = size
         groups = _scrfd_output_groups(outputs, np)
         strides = [8, 16, 32, 64, 128][:len(groups)]
         scores_all, boxes_all, keypoints_all = [], [], []
@@ -468,8 +535,137 @@ class OpenCVDnnBackend:
                 "landmarks": keypoints[item].astype(float).tolist(),
                 "detection_score": float(score),
                 "quality_score": float(quality),
+                "detector_input_size": [input_width, input_height],
             })
         return result
+
+    def _detect(self, image: Any) -> list[dict[str, Any]]:
+        """Use the standard scale, then retry close/large faces at smaller scales."""
+        sizes = [self.detector_size, *self.detector_fallback_sizes]
+        seen: set[tuple[int, int]] = set()
+        for size in sizes:
+            normalized = tuple(int(value) for value in size)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            faces = self._detect_at_size(image, normalized)
+            if faces:
+                return faces
+        return []
+
+    def probe(self, path: Path) -> dict[str, Any]:
+        """Return raw detector facts for one derived image; never writes a database."""
+        cv2, np = self.cv2, self.np
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise RuntimeError("derived_image_decode_failed")
+        outputs, _ratio, _size = self._forward_detector(image)
+        groups = _scrfd_output_groups(outputs, np)
+        score_outputs = []
+        for stride, (score_output, _bbox_output, _keypoint_output) in zip(
+            [8, 16, 32, 64, 128], groups,
+        ):
+            scores = np.asarray(score_output, dtype=np.float32).reshape(-1)
+            score_outputs.append({
+                "stride": stride,
+                "row_count": int(scores.size),
+                "minimum": float(scores.min()) if scores.size else None,
+                "maximum": float(scores.max()) if scores.size else None,
+                "mean": float(scores.mean()) if scores.size else None,
+                "above_configured_threshold": int(np.sum(scores >= self.score_min)),
+                "above_0_3": int(np.sum(scores >= 0.3)),
+                "above_0_1": int(np.sum(scores >= 0.1)),
+            })
+        profile_results = []
+        gamma_lut = np.asarray([
+            min(255, round(((value / 255.0) ** 0.65) * 255.0))
+            for value in range(256)
+        ], dtype=np.uint8)
+        brightened = cv2.LUT(image, gamma_lut)
+        profiles = [
+            ("canonical_320", image, (320, 320), True),
+            ("canonical_480", image, (480, 480), True),
+            ("canonical_640", image, (640, 640), True),
+            ("brightened_480", brightened, (480, 480), True),
+            ("brightened_640", brightened, (640, 640), True),
+            ("bgr_without_channel_swap_640", image, (640, 640), False),
+        ]
+        for name, profile_image, size, swap_rb in profiles:
+            try:
+                profile_outputs, _profile_ratio, actual_size = self._forward_detector(
+                    profile_image, detector_size=size, swap_rb=swap_rb,
+                )
+                profile_groups = _scrfd_output_groups(profile_outputs, np)
+                maxima = [
+                    float(np.asarray(group[0], dtype=np.float32).max())
+                    for group in profile_groups
+                ]
+                profile_results.append({
+                    "name": name,
+                    "input_size": list(actual_size),
+                    "swap_rb": swap_rb,
+                    "maximum_score": max(maxima),
+                    "maximum_score_by_stride": maxima,
+                    "above_0_6": sum(int(np.sum(
+                        np.asarray(group[0]).reshape(-1) >= 0.6
+                    )) for group in profile_groups),
+                    "above_0_3": sum(int(np.sum(
+                        np.asarray(group[0]).reshape(-1) >= 0.3
+                    )) for group in profile_groups),
+                    "above_0_1": sum(int(np.sum(
+                        np.asarray(group[0]).reshape(-1) >= 0.1
+                    )) for group in profile_groups),
+                })
+            except BaseException as error:
+                profile_results.append({"name": name, "error": str(error)[:1000]})
+        accepted = self._detect(image)
+        recognition = {
+            "attempted": self.recognizer is not None and bool(accepted),
+            "face_count": 0,
+            "embedding_dimensions": [],
+            "embedding_norms": [],
+        }
+        if self.recognizer is not None:
+            for face in accepted:
+                aligned = self._align(image, face["landmarks"])
+                blob = cv2.dnn.blobFromImage(
+                    aligned, 1.0 / 127.5, (112, 112),
+                    (127.5, 127.5, 127.5), swapRB=True,
+                )
+                self.recognizer.setInput(blob)
+                vector = np.asarray(
+                    self.recognizer.forward(), dtype=np.float32,
+                ).reshape(-1)
+                recognition["embedding_dimensions"].append(int(len(vector)))
+                recognition["embedding_norms"].append(float(np.linalg.norm(vector)))
+            recognition["face_count"] = len(accepted)
+        return {
+            "status": "DIAGNOSTIC",
+            "visual_file": str(path),
+            "image_width": int(image.shape[1]),
+            "image_height": int(image.shape[0]),
+            "output_names": list(self.detector.getUnconnectedOutLayersNames()),
+            "output_shapes": [list(np.asarray(output).shape) for output in outputs],
+            "configured_score_threshold": self.score_min,
+            "configured_minimum_face_pixels": self.minimum_face_pixels,
+            "configured_minimum_quality": self.minimum_quality,
+            "score_outputs": score_outputs,
+            "profile_results": profile_results,
+            "accepted_face_count": len(accepted),
+            "accepted_faces": [
+                {
+                    "bbox": face["bbox"],
+                    "detection_score": face["detection_score"],
+                    "quality_score": face["quality_score"],
+                }
+                for face in accepted
+            ],
+            "recognition": recognition,
+            "database_write": False,
+            "recognizer_loaded": self.recognizer is not None,
+            "original_media_read": False,
+            "network_used": False,
+        }
 
     def _align(self, image: Any, landmarks: Any) -> Any:
         cv2, np = self.cv2, self.np
@@ -490,6 +686,8 @@ class OpenCVDnnBackend:
         if image is None:
             raise RuntimeError("derived_image_decode_failed")
         faces = self._detect(image)
+        if self.recognizer is None:
+            raise RuntimeError("person_reid_recognizer_not_loaded")
         for face in faces:
             aligned = self._align(image, face["landmarks"])
             blob = cv2.dnn.blobFromImage(
@@ -537,8 +735,10 @@ def prepare_run(
     inventory: Mapping[str, Any],
     workers: int,
     max_attempts: int,
+    orchestrator_sha: str | None = None,
 ) -> str:
     config_sha = sha256_file(Path(str(config["_config_path"])))
+    script_sha = orchestrator_sha or sha256_file(Path(__file__).resolve())
     visual_digest = sha256_bytes(canonical_json([
         [row["visual_unit_id"], row["visual_size_bytes"], row["visual_mtime_ns"]]
         for row in rows
@@ -548,6 +748,7 @@ def prepare_run(
         "detector": inventory["detector_sha256"],
         "recognizer": inventory["recognizer_sha256"],
         "config": config_sha,
+        "orchestrator": script_sha,
         "visuals": visual_digest,
     }).encode("utf-8"))
     run_id = stable_id("stop03_1c_", payload_digest)
@@ -571,7 +772,7 @@ def prepare_run(
                 (
                     run_id, CONTRACT_VERSION, config["model_name"], inventory["model_dir"],
                     inventory["detector_sha256"], inventory["recognizer_sha256"],
-                    config_sha, sha256_file(Path(__file__).resolve()),
+                    config_sha, script_sha,
                     "dynamic_database_claim", workers, max_attempts, len(rows),
                     len(rows), payload_digest, "planned", now,
                 ),
@@ -581,6 +782,7 @@ def prepare_run(
                     "faceexec_",
                     row["visual_unit_id"], row["visual_size_bytes"], row["visual_mtime_ns"],
                     inventory["detector_sha256"], inventory["recognizer_sha256"], config_sha,
+                    script_sha,
                 )
                 con.execute(
                     """
@@ -1046,19 +1248,95 @@ def build_clusters(db: Path, run_id: str, threshold: float) -> int:
         con.close()
 
 
-def finish_run(db: Path, run_id: str) -> dict[str, Any]:
+def independent_face_label_evidence(db: Path, run_id: str) -> dict[str, Any]:
+    """Read existing label evidence for this run without invoking another model."""
+    con = readonly_connection(db)
+    try:
+        table_exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='visual_labels'"
+        ).fetchone() is not None
+        if not table_exists:
+            return {
+                "available": False,
+                "person_visual_unit_count": 0,
+                "face_visual_unit_count": 0,
+            }
+        columns = {
+            str(row[1]) for row in con.execute("PRAGMA table_info(visual_labels)")
+        }
+        if not {"visual_unit_id", "label"}.issubset(columns):
+            return {
+                "available": False,
+                "person_visual_unit_count": 0,
+                "face_visual_unit_count": 0,
+            }
+        counts = {
+            str(row[0]).lower(): int(row[1])
+            for row in con.execute(
+                """
+                SELECT LOWER(TRIM(vl.label)),COUNT(DISTINCT vl.visual_unit_id)
+                FROM visual_labels AS vl
+                JOIN stop03_1c_person_reid_run_items AS i
+                  ON i.visual_unit_id=vl.visual_unit_id
+                WHERE i.run_id=?
+                  AND LOWER(TRIM(vl.label)) IN ('person','face')
+                GROUP BY LOWER(TRIM(vl.label))
+                """,
+                (run_id,),
+            )
+        }
+        return {
+            "available": True,
+            "person_visual_unit_count": counts.get("person", 0),
+            "face_visual_unit_count": counts.get("face", 0),
+        }
+    finally:
+        con.close()
+
+
+def finish_run(
+    db: Path,
+    run_id: str,
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     counts = refresh_counts(db, run_id)
     terminal = counts["pending"] == 0 and counts["running"] == 0 and counts["failed"] == 0
+    evidence = independent_face_label_evidence(db, run_id)
+    labelled_faces = int(evidence["face_visual_unit_count"])
+    total = max(1, sum(counts[key] for key in (
+        "pending", "running", "success", "no_face", "failed",
+    )))
+    minimum_units = int((config or {}).get(
+        "zero_face_health_min_labelled_units", DEFAULT_ZERO_FACE_MIN_LABELLED_UNITS,
+    ))
+    minimum_ratio = float((config or {}).get(
+        "zero_face_health_min_labelled_ratio", DEFAULT_ZERO_FACE_MIN_LABELLED_RATIO,
+    ))
+    implausible_zero = (
+        terminal
+        and counts["face_count"] == 0
+        and labelled_faces >= minimum_units
+        and labelled_faces / total >= minimum_ratio
+    )
     con = writable_connection(db)
     try:
         cluster_count = int(con.execute(
             "SELECT COUNT(*) FROM stop03_1c_person_clusters WHERE run_id=?", (run_id,)
         ).fetchone()[0])
-        status = "success" if terminal else "failed"
+        status = "success" if terminal and not implausible_zero else "failed"
+        if implausible_zero:
+            error_message = (
+                f"{ZERO_FACE_REASON_CODE}:independent_face_visual_units={labelled_faces};"
+                f"visual_units={total}"
+            )
+        elif terminal:
+            error_message = ""
+        else:
+            error_message = "person_reid_items_incomplete"
         con.execute(
             "UPDATE stop03_1c_person_reid_runs SET status=?,finished_at=?,error_message=? "
             "WHERE run_id=?",
-            (status, utc_now(), "" if terminal else "person_reid_items_incomplete", run_id),
+            (status, utc_now(), error_message, run_id),
         )
         con.commit()
     finally:
@@ -1103,6 +1381,9 @@ def readback(db: Path, run_id: str) -> dict[str, Any]:
         result = dict(run)
     finally:
         con.close()
+    evidence = independent_face_label_evidence(db, run_id)
+    error_message = str(result.get("error_message") or "")
+    reason_code = error_message.split(":", 1)[0] if error_message else ""
     return {
         "status": "PASS" if result["status"] == "success" else "FAIL",
         "technical_status": "PASS" if result["status"] == "success" else "FAIL",
@@ -1118,6 +1399,9 @@ def readback(db: Path, run_id: str) -> dict[str, Any]:
         "running_count": result["running_count"],
         "face_count": result["face_count"],
         "person_cluster_count": result["cluster_count"],
+        "reason_code": reason_code,
+        "error_message": error_message,
+        "independent_label_evidence": evidence,
         "execution_key_duplicates": duplicates,
         "database_integrity_check": integrity,
         "foreign_key_error_count": foreign_keys,
@@ -1133,13 +1417,18 @@ def readback(db: Path, run_id: str) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("preflight-only", "dry-run", "run", "readback"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("preflight-only", "dry-run", "detector-probe", "run", "readback"),
+        required=True,
+    )
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--migration", type=Path, default=DEFAULT_MIGRATION)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--allowed-output-root", type=Path)
     parser.add_argument("--run-id")
+    parser.add_argument("--probe-visual-unit-id")
     parser.add_argument("--workers", type=int)
     parser.add_argument("--max-attempts", type=int)
     parser.add_argument(
@@ -1169,6 +1458,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     allowed = args.allowed_output_root.expanduser().resolve(strict=True)
     ensure_under(out, allowed)
     out.mkdir(parents=True, exist_ok=True)
+    if args.mode == "detector-probe":
+        visual_id = str(args.probe_visual_unit_id or "").strip()
+        if not visual_id:
+            raise RuntimeError("person_reid_probe_visual_unit_id_required")
+        selected = eligible_visual_unit(db, visual_id)
+        if selected is None:
+            raise RuntimeError(f"person_reid_probe_visual_unit_not_found:{visual_id}")
+        if not selected["visual_exists"] or not selected["visual_suffix_allowed"]:
+            raise RuntimeError("person_reid_probe_derived_visual_unavailable")
+        if selected["is_original_path"]:
+            raise RuntimeError("person_reid_probe_refuses_original_media")
+        if args.backend != "opencv":
+            raise RuntimeError("person_reid_probe_requires_opencv_backend")
+        block_network()
+        config = load_config(config_path)
+        report = OpenCVDnnBackend(config, load_recognizer=True).probe(
+            Path(str(selected["visual_file"])),
+        )
+        report["visual_unit_id"] = visual_id
+        report["config_sha256"] = sha256_file(config_path)
+        report["script_sha256"] = sha256_file(Path(__file__).resolve())
+        write_json_atomic(out / "detector_probe_summary.json", report)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
     preflight, rows, inventory = build_preflight(
         db, config_path, migration, backend=args.backend
     )
@@ -1229,7 +1542,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     counts = refresh_counts(db, run_id)
     if counts["failed"] == 0 and counts["pending"] == 0 and counts["running"] == 0:
         build_clusters(db, run_id, float(config["auto_merge_cosine_min"]))
-    final = {**finish_run(db, run_id), **worker_report}
+    final = {**finish_run(db, run_id, config), **worker_report}
     final["total_elapsed_seconds"] = time.perf_counter() - run_started
     final["throughput_visual_units_per_second"] = (
         len(rows) / final["total_elapsed_seconds"]
