@@ -11,9 +11,8 @@ RUN_HEAVY="${RUN_HEAVY:-0}"
 APP="/Applications/本地数据库 1.2.8.app"
 PY_QWEN="$APP/Contents/Helpers/PipelinePython/qwen"
 PY_WHISPER="$APP/Contents/Helpers/PipelinePython/whisper"
-FIXTURE="$ROOT/test-output/001dzl-pipeline-benchmark-20260929/fixture-qwen-r6/media_archive.sqlite"
-QWEN_CONFIG="$ROOT/test-output/001dzl-pipeline-benchmark-20260929/qwen-config.json"
-QWEN_STAGE="$ROOT/test-output/001dzl-pipeline-benchmark-20260929/qwen-x1-host/stage"
+FIXTURE="${QWEN_DB:-/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/qwen_fixture.sqlite}"
+QWEN_CONFIG="${QWEN_CONFIG:-/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/qwen-config.json}"
 
 mkdir -p "$OUT" "$OUT/logs"
 exec > >(tee "$OUT/logs/host-benchmark.log") 2>&1
@@ -62,7 +61,7 @@ mkdir -p "$BENCH_OUT"
   --mode run --db "$FIXTURE" --config "$QWEN_CONFIG" \
   --prompt "$APP/Contents/Resources/Pipeline/configs/qwenvl_prompt_v2_384.txt" \
   --model "/Users/horizon/Documents/model/Qwen3-VL-4B-Instruct-4bit" \
-  --qwen-python "$PY_QWEN" --out "$QWEN_STAGE" --workers 1 \
+  --qwen-python "$PY_QWEN" --out "$OUT/qwen-stage" --workers 1 \
   --max-tokens 384 --max-attempts 1 --confirm-central-db-write
 
 echo "Qwen host x1 completed; Whisper remains a separate workload and must use its formal audio fixture/entry."
