@@ -22,8 +22,8 @@ class HostBenchmarkContractTest(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('if [[ "$PREFLIGHT_ONLY" == "1" ]]; then', text)
         self.assertIn('--mode "$MODE"', text)
-        self.assertIn('--workers 1', text)
-        self.assertIn('--max-tokens 384', text)
+        self.assertIn('--workers "$QWEN_WORKERS"', text)
+        self.assertIn('--max-tokens "$QWEN_MAX_TOKENS"', text)
         self.assertIn('--max-attempts 1', text)
 
 

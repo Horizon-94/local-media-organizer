@@ -15,6 +15,8 @@ PY_WHISPER="$APP/Contents/Helpers/PipelinePython/whisper"
 FIXTURE="${QWEN_DB:-/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/qwen_fixture.sqlite}"
 QWEN_CONFIG="${QWEN_CONFIG:-/Users/horizon/Documents/AI-Local/test-output/qwen-host-fixture-v2/qwen-config.json}"
 QWEN_ALLOWED_ROOT="${QWEN_ALLOWED_OUTPUT_ROOT:-/Users/horizon/Documents/AI-Local/test-output}"
+QWEN_WORKERS="${QWEN_WORKERS:-1}"
+QWEN_MAX_TOKENS="${QWEN_MAX_TOKENS:-384}"
 
 mkdir -p "$OUT" "$OUT/logs"
 exec > >(tee "$OUT/logs/host-benchmark.log") 2>&1
@@ -72,8 +74,8 @@ QWEN_COMMAND=(
   --model "/Users/horizon/Documents/model/Qwen3-VL-4B-Instruct-4bit"
   --qwen-python "$PY_QWEN"
   --out "$OUT/qwen-stage"
-  --workers 1
-  --max-tokens 384
+  --workers "$QWEN_WORKERS"
+  --max-tokens "$QWEN_MAX_TOKENS"
   --max-attempts 1
   --confirm-central-db-write
 )
