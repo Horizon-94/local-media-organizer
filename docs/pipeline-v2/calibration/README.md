@@ -10,6 +10,11 @@ or fixture is never represented as a successful measurement.
 
 The coordinator currently has a verified Qwen host entry. Whisper, YOLOE,
 OpenCLIP, OCR, Embedding, FFmpeg, Person ReID, pair, triple, HDD, and soak
-rows remain explicit until their 1.2.8 formal command and isolated fixture are
-registered. This prevents a synthetic substitute from being mistaken for a
-Pipeline V2 resource result.
+rows are now registered against the 1.2.8 runtime contract and appear in the
+readiness matrix. Readiness only verifies that the production entrypoint,
+runtime/model location, and fixture-builder contract exist; it does not claim
+that the Metal benchmark has already passed.
+
+Use `--check` before a campaign. It prints `READY` for active workloads and
+`OPTIONAL_NOT_ACTIVE` for Silero VAD/DeepFilterNet3, which are not in the
+current default visual 19-stage path.
