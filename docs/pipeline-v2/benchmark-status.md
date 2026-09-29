@@ -12,11 +12,17 @@ RSS, compressed memory, swap, Metal errors, and output correctness.
 | Formal installed Stage 03 | same source, DB-backed | 1 | PASS, 168 frames | unavailable in sandbox | unavailable | exact 1.2.8 contract; 546.85 s |
 | YOLOE | 10 derived frames | 1 | PASS | 1.25 GB | 0 | short model-load test only |
 | OpenCLIP | 10 derived frames | 1 | PASS | 1.40 GB | 0 | short model-load test only |
+| OCR | 5 derived frames | 1 | model completed, fixture acceptance failed | N/A | N/A | 5 no-text results; DB FK audit exposed fixture mismatch |
 
 The direct FFmpeg and model measurements are not long-duration concurrency
 evidence.  No Qwen/Whisper cross-model safety conclusion is made from the
 30-frame fixture.  The complete readonly fixture now contains 10 videos and 20
 images and is the required source for sustained runs and Legacy-vs-V2 A/B.
+
+OCR was intentionally not promoted to a resource baseline: the installed OCR
+model loaded and processed five items, but the isolated synthetic candidate
+fixture failed its foreign-key acceptance audit.  The result is retained as a
+fixture-contract failure, not as a claim about OCR stability or throughput.
 
 ## Safety interpretation
 

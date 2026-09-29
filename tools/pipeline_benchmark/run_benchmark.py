@@ -45,6 +45,8 @@ def vm_snapshot() -> dict[str, int | None]:
     physical = int(physical_text) if physical_text.isdigit() else None
     free = bytes_for("Pages free")
     speculative = bytes_for("Pages speculative") or 0
+    pressure = run_text(["/usr/bin/memory_pressure", "-Q"])
+    pressure_match = re.search(r"free percentage:\s*([0-9.]+)%", pressure)
     return {
         "physical_memory_bytes": physical,
         "memory_available_approx_bytes": free + speculative if free is not None else None,
@@ -53,6 +55,7 @@ def vm_snapshot() -> dict[str, int | None]:
         "memory_wired_bytes": bytes_for("Pages wired down"),
         "memory_compressed_bytes": bytes_for("Pages occupied by compressor"),
         "swap_used_bytes": swap_used,
+        "memory_pressure_free_percent": float(pressure_match.group(1)) if pressure_match else None,
     }
 
 
@@ -92,6 +95,7 @@ def process_table(root_pid: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         "process_rss_kib": sum(row["rss_kib"] for row in rows),
         "process_cpu_percent": round(sum(row["cpu_percent"] for row in rows), 2),
         "root_alive": int(root_pid in all_rows),
+        "rss_measurement_status": "ok" if root_pid in all_rows else "N/A - process visibility unavailable",
     }
 
 
@@ -208,6 +212,8 @@ def main() -> int:
         "system_disk_delta_mib": max(disk) - min(disk) if disk else None,
         "gpu_memory_metric": None,
         "gpu_memory_note": "No reliable separate GPU-memory counter is exposed on Apple Silicon; unified memory, swap and Metal errors are the safety signals.",
+        "process_rss_note": "N/A - process tree visibility was unavailable" if peak_rss == 0 else "process tree RSS sampled with ps",
+        "memory_pressure_note": "memory_pressure -Q free percentage is sampled when available",
         "artifacts": {
             "samples_csv": str(samples_path),
             "process_samples_jsonl": str(processes_path),
