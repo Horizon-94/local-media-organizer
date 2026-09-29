@@ -24,6 +24,13 @@ except ModuleNotFoundError:  # loaded by a test/importlib from repository root
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from formal_adapters import AdapterSpec, adapter_contract_complete
 
+try:
+    from run_remaining_adapter_smokes import commands as smoke_commands, fresh_db as smoke_fresh_db, wrapper as smoke_wrapper
+except ModuleNotFoundError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from run_remaining_adapter_smokes import commands as smoke_commands, fresh_db as smoke_fresh_db, wrapper as smoke_wrapper
+
 
 REPO = Path(__file__).resolve().parents[2]
 TEST_ROOT = Path("/Users/horizon/Documents/AI-Local/test-output")
@@ -49,10 +56,11 @@ def campaign_plan() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for mode, workers in (("cold", 1), ("resident", 1), ("homogeneous", 2), ("homogeneous", 3)):
         rows.append({"id": f"qwen-{mode}-x{workers}", "kind": "qwen", "mode": mode, "workers": workers})
-    for name in ("whisper-cold-x1", "whisper-resident-x1", "yoloe-x1", "openclip-x1", "ocr-x1", "embedding-x1", "ffmpeg-stage03-x1", "person-reid-x1"):
-        rows.append({"id": name, "kind": name.split("-")[0], "mode": "baseline", "workers": 1})
+    for name, kind in (("whisper-cold-x1", "whisper"), ("whisper-resident-x1", "whisper"), ("yoloe-x1", "yoloe"), ("openclip-x1", "openclip"), ("ocr-x1", "ocr"), ("embedding-x1", "embedding"), ("ffmpeg-stage03-x1", "ffmpeg"), ("person-reid-x1", "person-reid")):
+        rows.append({"id": name, "kind": kind, "mode": "baseline", "workers": 1})
     for name in ("whisper-x2", "yoloe-x2", "yoloe-x3", "openclip-x2", "openclip-x3", "ocr-x2", "embedding-x2", "ffmpeg-stage03-x2", "ffmpeg-stage03-x3", "ffmpeg-stage03-x4", "ffmpeg-stage03-x5"):
-        rows.append({"id": name, "kind": name.split("-")[0], "mode": "homogeneous", "workers": int(name.rsplit("x", 1)[1])})
+        kind = "ffmpeg" if name.startswith("ffmpeg-") else name.split("-")[0]
+        rows.append({"id": name, "kind": kind, "mode": "homogeneous", "workers": int(name.rsplit("x", 1)[1])})
     for name in ("ffmpeg+yoloe", "ffmpeg+openclip", "ffmpeg+ocr", "ffmpeg+qwen", "yoloe+openclip", "yoloe+ocr", "yoloe+qwen", "openclip+qwen", "ocr+qwen", "embedding+qwen", "qwen+whisper", "whisper+yoloe", "whisper+openclip", "qwen+ffmpeg+yoloe", "qwen+ffmpeg+ocr", "qwen+openclip+ocr", "whisper+ffmpeg+yoloe", "qwen+whisper+ffmpeg", "event-driven-mixed-soak", "hdd-validation"):
         rows.append({"id": name, "kind": "combination", "mode": "representative", "workers": 1})
     return rows
@@ -191,12 +199,57 @@ def run_qwen(row: dict[str, object], run_root: Path) -> dict[str, object]:
     return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(fixture), "workers": row["workers"], "note": "resident mode requires a true multi-batch idle harness; 1.2.8 formal entry currently exposes only one batch."}
 
 
+def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, object]:
+    """Dispatch a non-Qwen case through the already smoke-validated adapter."""
+    kind = str(row["kind"])
+    if row.get("mode") == "resident":
+        return {"status": "NOT_SUPPORTED_YET", "reason_code": "production_entry_has_no_multi_batch_resident_contract", "workers": row["workers"]}
+    adapter_root = run_root / "adapter" / kind / "latest"
+    # Frozen production wrappers accept output only below TEST_ROOT.  Keep
+    # coordinator state anywhere the caller requested, but place the actual
+    # workload artifacts under the same safe root used by smoke adapters.
+    try:
+        adapter_root.resolve().relative_to(TEST_ROOT.resolve())
+    except ValueError:
+        adapter_root = TEST_ROOT / "pipeline-v2-dispatch" / run_root.parent.name / run_root.name / kind / "latest"
+    adapter_root.mkdir(parents=True, exist_ok=True)
+    try:
+        if kind in {"whisper", "ocr", "embedding", "ffmpeg", "person-reid"}:
+            db = smoke_fresh_db(adapter_root)
+            command, env_delta = smoke_commands(kind, adapter_root, db)
+        elif kind in {"yoloe", "openclip"}:
+            db = adapter_root / "fixture" / "media_archive.sqlite"
+            db.parent.mkdir(parents=True, exist_ok=True)
+            template = TEST_ROOT / "001dzl-pipeline-benchmark-20260929" / "fixture-yolo" / "media_archive.sqlite"
+            shutil.copy2(template, db)
+            out = adapter_root / "stage"
+            spec = next(item for item in workload_registry() if item["id"] == kind)
+            runtime = APP / "Contents/Helpers/PipelinePython" / ("yolo" if kind == "yoloe" else "visual")
+            args = (["--model", str(spec["model"]), "--device", "mps", "--limit", "5", "--concurrency", str(row["workers"])] if kind == "yoloe" else ["--model", str(spec["model"]), "--model-name", "ViT-B-32", "--device", "mps", "--workers", str(row["workers"]), "--limit", "5"])
+            command = smoke_wrapper(str(runtime.name), Path(spec["entrypoint"]), db=db, out=out, args=args)
+            env_delta = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "MEDIA_ARCHIVE_MODEL_ROOT": str(MODEL_ROOT)}
+        else:
+            return {"status": "HARNESS_FAIL", "reason_code": "unsupported_campaign_adapter", "workers": row["workers"]}
+        output = adapter_root
+        bench = ["python3", str(REPO / "tools/pipeline_benchmark/run_benchmark.py"), "--name", str(row["id"]), "--output", str(output), "--interval", "1", "--timeout", "3600", "--", *command]
+        env = os.environ.copy(); env.update(env_delta)
+        started = time.time()
+        completed = subprocess.run(bench, cwd=REPO, env=env, check=False)
+        summary_path = output / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
+        status = "PASS" if completed.returncode == 0 else "MODEL_FAIL"
+        return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(db), "command": bench, "metrics": summary, "workers": row["workers"]}
+    except Exception as exc:
+        return {"status": "HARNESS_FAIL", "reason_code": type(exc).__name__, "error": str(exc), "workers": row["workers"]}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=TEST_ROOT / f"pipeline-v2-calibration-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     ap.add_argument("--check", action="store_true", help="contract readiness only; never runs a model")
     ap.add_argument("--check-execution", action="store_true", help="strict contract + host adapter readiness; never runs a model")
     ap.add_argument("--allow-partial", action="store_true", help="allow campaign rows with missing adapters")
+    ap.add_argument("--case", help="dispatch one exact campaign case for regression validation")
     args = ap.parse_args()
     if args.check or args.check_execution:
         return print_readiness(execution=args.check_execution)
@@ -211,20 +264,28 @@ def main() -> int:
     state_path = root / "calibration-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"campaign": "pipeline-v2-resource-calibration-v1", "started_at": utc_now(), "results": {}}
     results: dict[str, object] = state.setdefault("results", {})
-    for row in campaign_plan():
+    plan = [row for row in campaign_plan() if not args.case or row["id"] == args.case]
+    if args.case and not plan:
+        print(f"UNKNOWN_CASE: {args.case}")
+        return 2
+    for index, row in enumerate(plan, 1):
         item_id = str(row["id"])
         previous = results.get(item_id)
-        if isinstance(previous, dict) and previous.get("status") in {"PASS", "MODEL_FAIL", "HARNESS_FAIL", "UNSAFE", "BORDERLINE", "CONTRACT_NOT_READY", "ADAPTER_UNRESOLVED", "NOT_SUPPORTED_YET", "SKIPPED_DUE_TO_UNSAFE_PARENT"}:
+        if isinstance(previous, dict) and previous.get("status") in {"PASS", "MODEL_FAIL", "HARNESS_FAIL", "UNSAFE", "BORDERLINE", "CONTRACT_NOT_READY", "NOT_SUPPORTED_YET", "SKIPPED_DUE_TO_UNSAFE_PARENT"}:
             continue
         item_root = root / "runs" / item_id
-        print(f"[{len(results)+1}] {item_id}", flush=True)
+        print(f"[{index:02d}/{len(plan):02d}] {item_id} RUNNING", flush=True)
         if row["kind"] == "qwen":
             result = run_qwen(row, item_root)
+        elif row["kind"] != "combination":
+            result = run_formal_adapter(row, item_root)
         else:
-            result = {"status": "ADAPTER_UNRESOLVED", "reason_code": "formal_host_adapter_not_implemented_in_coordinator", "kind": row["kind"], "workers": row["workers"]}
+            result = {"status": "SKIPPED", "reason_code": "combination_dispatch_pending_single_workload_results", "kind": row["kind"], "workers": row["workers"]}
         result.update({"id": item_id, "kind": row["kind"], "mode": row["mode"], "finished_at": utc_now()})
         results[item_id] = result
         write_json(state_path, state)
+        metrics = result.get("metrics") if isinstance(result, dict) else {}
+        print(f"[{index:02d}/{len(plan):02d}] {item_id} {result.get('status')} elapsed={result.get('elapsed_seconds', 'N/A')} rss_peak={metrics.get('peak_process_tree_rss_bytes', 'N/A') if isinstance(metrics, dict) else 'N/A'}", flush=True)
     summary = {"campaign": state["campaign"], "finished_at": utc_now(), "tested": len(results), "passed": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "PASS"), "failed": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") in {"MODEL_FAIL", "HARNESS_FAIL", "UNSAFE"}), "unresolved": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "ADAPTER_UNRESOLVED"), "results": results}
     write_json(root / "calibration-results.json", summary)
     lines = ["# Pipeline V2 calibration campaign", "", f"- campaign: `{summary['campaign']}`", f"- tested rows: `{summary['tested']}`", f"- pass: `{summary['passed']}`", f"- fail: `{summary['failed']}`", f"- unresolved adapters: `{summary['unresolved']}`", "", "Readiness and execution are separate: a registered production contract can be READY while its host execution adapter remains unresolved."]
