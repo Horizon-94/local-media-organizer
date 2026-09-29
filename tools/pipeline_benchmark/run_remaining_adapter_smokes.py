@@ -45,6 +45,7 @@ def fresh_db(run_root: Path) -> Path:
     shutil.copy2(source, target)
     case = run_root.parent.name
     migrations = {
+        "whisper": [PIPELINE / "migrations/20260809_audio_speech_search_v1.sql"],
         "ocr": [PIPELINE / "migrations/20260716_stop03_4_ocr_db_v1.sql"],
         "embedding": [PIPELINE / "migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql", PIPELINE / "migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql", PIPELINE / "migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql"],
         "person-reid": [PIPELINE / "migrations/20260726_stop03_1c_person_reid_db_v1.sql"],
@@ -54,7 +55,46 @@ def fresh_db(run_root: Path) -> Path:
             for migration in migrations:
                 con.executescript(migration.read_text(encoding="utf-8"))
             con.commit()
+    if case == "whisper":
+        # The generic benchmark DB normally points at the offline 001DZL
+        # source volume.  Audio smoke needs a local, read-only fixture media
+        # file; use the existing generated control clip and rewrite only the
+        # fresh clone's lineage row.
+        fixture_media = Path(os.environ.get(
+            "ADAPTER_WHISPER_MEDIA",
+            "/Users/horizon/Documents/AI-Local/test-output/media-archive-v0.1/test-fixtures/valid-control.mp4",
+        ))
+        if not fixture_media.is_file():
+            raise FileNotFoundError(f"whisper_fixture_media_missing:{fixture_media}")
+        with sqlite3.connect(target) as con:
+            columns = {row[1] for row in con.execute("pragma table_info(source_assets)")}
+            updates = {"absolute_path": str(fixture_media), "file_name": fixture_media.name,
+                       "extension": fixture_media.suffix, "media_type": "video",
+                       "size_bytes": fixture_media.stat().st_size, "is_deleted_or_missing": 0}
+            fields = [key for key in updates if key in columns]
+            assignments = ", ".join(f"{key}=?" for key in fields)
+            con.execute(f"update source_assets set {assignments}", [updates[key] for key in fields])
+            con.commit()
     return target
+
+
+def validate_whisper_fixture(db: Path) -> None:
+    """Reject an audio smoke fixture before starting the formal stage.
+
+    The production audio entry point deliberately refuses an offline source
+    volume.  Treat that as a fixture error, rather than allowing a short-lived
+    process to be reported as a model/Metal failure.
+    """
+    with sqlite3.connect(db) as con:
+        cols = {row[1] for row in con.execute("pragma table_info(source_assets)")}
+        if "absolute_path" not in cols:
+            raise RuntimeError("whisper_fixture_missing_absolute_path")
+        paths = [row[0] for row in con.execute("select absolute_path from source_assets where absolute_path is not null")]
+    if not paths:
+        raise RuntimeError("whisper_fixture_no_source_assets")
+    missing = [path for path in paths if not Path(path).exists()]
+    if missing:
+        raise RuntimeError(f"SOURCE_VOLUME_OFFLINE:{missing[0]}")
 
 
 def wrapper(runtime: str, entrypoint: Path, *, db: Path, out: Path, args: list[str]) -> list[str]:
@@ -68,6 +108,7 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
     out = run_root / "stage"
     env = {"MEDIA_ARCHIVE_MODEL_ROOT": "/Users/horizon/Documents/model", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
     if case == "whisper":
+        validate_whisper_fixture(db)
         script = PIPELINE / "scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py"
         # The formal audio stage requires every dependency explicitly; paths
         # are resolved here, never substituted with a different backend.
@@ -84,10 +125,19 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
     if case == "ocr":
         src = PIPELINE / "configs/stop03_4_ocr_db_v1.json"; cfg = materialize_config(src, run_root / "config.json", task_runtime=run_root)
         script = PIPELINE / "scripts/03_stop03_visual_analysis/stop03_4_ocr_db_orchestrator_v1.py"
-        return wrapper("ocr", script, db=db, out=out, args=["--mode", "run", "--config", str(cfg), "--workers", "1", "--limit", "3", "--max-attempts", "1", "--confirm-central-db-write"]), env
+        migration = PIPELINE / "migrations/20260716_stop03_4_ocr_db_v1.sql"
+        return wrapper("ocr", script, db=db, out=out, args=["--mode", "run", "--config", str(cfg), "--migration", str(migration), "--workers", "1", "--limit", "3", "--max-attempts", "1", "--confirm-central-db-write"]), env
     if case == "embedding":
         contract = materialize_config(PIPELINE / "configs/stop03_5d_text_embedding_db_contract_v1.json", run_root / "contract.json", task_runtime=run_root)
         runtime = materialize_config(PIPELINE / "configs/stop03_5d_text_embedding_db_orchestrator_v1.json", run_root / "runtime.json", task_runtime=run_root)
+        # The packaged contract names a development-only virtualenv
+        # (media-archive-embedding).  The installed 1.2.8 app exposes the
+        # production embedding runtime as a single helper executable.  Resolve
+        # the benchmark copy to that executable without touching the packaged
+        # config or model directory.
+        contract_data = json.loads(contract.read_text(encoding="utf-8"))
+        contract_data["python_path"] = str(APP / "Contents/Helpers/PipelinePython/embedding")
+        contract.write_text(json.dumps(contract_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         migration = PIPELINE / "migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql"
         script = PIPELINE / "scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py"
         args = ["--mode", "run", "--contract-config", str(contract), "--runtime-config", str(runtime), "--migration", str(migration), "--workers", "1", "--max-attempts", "1", "--confirm-central-db-write"]
@@ -103,7 +153,10 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
         # Stage03's formal adapter receives interval=3; all video task
         # parallelism belongs to the coordinator, never ffmpeg -threads.
         args = ["--frame-interval-seconds", "3", "--db", str(db), "--out", str(out), "--limit-new", "1", "--concurrency", "1", "--no-open"]
-        return [str(APP / "Contents/Helpers/PipelinePython/system"), str(script), *args], env
+        # The generic stage wrapper injects TEST_OUTPUT_ROOT and the frozen
+        # output-path policy.  Directly invoking the frozen script bypasses
+        # that policy and falsely rejects a valid benchmark sibling directory.
+        return wrapper("system", script, db=db, out=out, args=["--frame-interval-seconds", "3", "--limit-new", "1", "--concurrency", "1", "--no-open"]), env
     raise ValueError(case)
 
 
@@ -127,8 +180,13 @@ def run_case(index: int, case: str) -> dict[str, object]:
                 error_text += candidate.read_text(errors="replace")[-8000:]
         phase = "OUTPUT_CONTRACT" if completed.returncode == 0 else "RUNTIME_IMPORT"
         markers = {
+            "SOURCE_VOLUME_OFFLINE": "FIXTURE_BUILD",
+            "whisper_fixture_": "FIXTURE_BUILD",
             "missing_local_model_dir": "PREFLIGHT",
             "frozen_ocr_queue_view_missing": "FIXTURE_BUILD",
+            "output_path_outside_allowed_roots": "PREFLIGHT",
+            "stop03_5d_python_path_missing": "PREFLIGHT",
+            "FileNotFoundError": "PREFLIGHT",
             "unrecognized arguments": "COMMAND_CONSTRUCTION",
             "audio_pilot.py": "COMMAND_CONSTRUCTION",
             "output_and_allowed_root_required": "COMMAND_CONSTRUCTION",
@@ -141,15 +199,27 @@ def run_case(index: int, case: str) -> dict[str, object]:
                 break
         result = {"status": status, "workload": case, "exit_code": completed.returncode, "command": bench, "output": str(run_root), "failure_phase": None if status == "PASS" else phase, "stderr_root_error": None if status == "PASS" else error_text[-2000:]}
     except Exception as exc:
-        result = {"status": "HOST_SMOKE_FAIL", "workload": case, "reason_code": type(exc).__name__, "error": str(exc)}
+        message = str(exc)
+        phase = "FIXTURE_BUILD" if any(token in message for token in ("fixture", "SOURCE_VOLUME_OFFLINE")) else "COMMAND_CONSTRUCTION"
+        result = {"status": "HOST_SMOKE_FAIL", "workload": case, "reason_code": type(exc).__name__, "error": message, "failure_phase": phase}
     smoke = SMOKE_ROOT / case / "smoke.json"; smoke.parent.mkdir(parents=True, exist_ok=True)
     smoke.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"[{index}/5] {case} {result['status']}", flush=True)
+    print(f"[{index}] {case} {result['status']}", flush=True)
     return result
 
 
 def main() -> int:
-    cases = ["whisper", "ocr", "embedding", "ffmpeg", "person-reid"]
+    all_cases = ["whisper", "ocr", "embedding", "ffmpeg", "person-reid"]
+    # Do not rerun adapters whose host smoke has already promoted them to
+    # ADAPTER_READY.  This keeps the repair command focused and prevents
+    # regressions in a previously verified adapter.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from run_full_pipeline_calibration import readiness
+        ready = {str(row["id"]) for row in readiness() if row.get("execution_readiness") == "ADAPTER_READY"}
+    except Exception:
+        ready = set()
+    cases = [case for case in all_cases if case not in ready]
     results = [run_case(i, case) for i, case in enumerate(cases, 1)]
     (SMOKE_ROOT / "remaining-smokes.json").write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     check = subprocess.run([sys.executable, str(ROOT / "tools/pipeline_benchmark/run_full_pipeline_calibration.py"), "--check-execution"], cwd=ROOT, check=False)
