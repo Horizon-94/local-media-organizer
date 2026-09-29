@@ -36,8 +36,19 @@ def fresh_db(run_root: Path) -> Path:
     # fixture does not contain that view.  Keep each case isolated by copying
     # the appropriate immutable template, never the result of a prior run.
     case = run_root.parent.name
-    default_name = "fixture-yolo/media_archive.sqlite" if case in {"ocr", "person-reid"} else "fixture/media_archive.sqlite"
-    source = Path(os.environ.get("ADAPTER_FIXTURE_DB", str(FIXTURE_ROOT.parent / default_name)))
+    default_name = (
+        "fixture-yolo/media_archive.sqlite" if case in {"ocr", "person-reid"}
+        else "fixture-embedding/media_archive.sqlite" if case == "embedding"
+        else "fixture/media_archive.sqlite"
+    )
+    if case == "embedding" and "ADAPTER_FIXTURE_DB" not in os.environ:
+        source = Path(
+            "/Users/horizon/Documents/AI-Local/test-output/"
+            "local-database-stage-handoff-sample-v1/library/tasks/"
+            "20260728_133201_1.1.2阶段接力小样本/workspace/media_archive.sqlite"
+        )
+    else:
+        source = Path(os.environ.get("ADAPTER_FIXTURE_DB", str(FIXTURE_ROOT.parent / default_name)))
     if not source.is_file():
         raise FileNotFoundError(f"fresh_fixture_template_missing:{source}")
     target = run_root / "fixture" / "media_archive.sqlite"
@@ -54,6 +65,17 @@ def fresh_db(run_root: Path) -> Path:
         with sqlite3.connect(target) as con:
             for migration in migrations:
                 con.executescript(migration.read_text(encoding="utf-8"))
+            con.commit()
+    if case == "embedding":
+        # The template contains valid upstream 5b/5c success evidence, but its
+        # old 5d run must not contaminate a fresh embedding smoke.  Clear only
+        # the copied 5d result tables; upstream evidence remains read-only and
+        # available to the contract builder.
+        with sqlite3.connect(target) as con:
+            for table in ("stop03_5d_document_vector_links", "stop03_5d_text_vectors",
+                          "stop03_5d_text_documents", "stop03_5d_text_embedding_runs"):
+                if con.execute("select 1 from sqlite_master where type='table' and name=?", (table,)).fetchone():
+                    con.execute(f"delete from {table}")
             con.commit()
     if case == "whisper":
         # The generic benchmark DB normally points at the offline 001DZL
@@ -116,7 +138,7 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
                 "--audio-python", str(APP / "Contents/Helpers/PipelinePython/whisper"),
                 "--embedding-python", str(APP / "Contents/Helpers/PipelinePython/embedding"),
                 "--audio-pilot-script", str(PIPELINE / "scripts/04_media_archive_app/run_audio_search_pilot_v1.py"),
-                "--embedding-script", str(PIPELINE / "scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py"),
+                "--embedding-script", str(PIPELINE / "scripts/04_media_archive_app/run_audio_embedding_commit_v1.py"),
                 "--ffmpeg", "/opt/homebrew/bin/ffmpeg", "--ffprobe", "/opt/homebrew/bin/ffprobe",
                 "--silero-root", "/Users/horizon/Documents/model/silero-vad", "--whisper-model", "/Users/horizon/Documents/model/whisper-large-v3-turbo",
                 "--deep-filter-executable", str(PIPELINE / "tools/deep-filter/deep-filter"), "--deep-filter-model", "/Users/horizon/Documents/model/DeepFilterNet3_onnx.tar.gz",
