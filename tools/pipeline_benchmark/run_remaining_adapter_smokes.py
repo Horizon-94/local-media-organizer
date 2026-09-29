@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sqlite3
 from pathlib import Path
 
 try:
@@ -31,12 +32,28 @@ FIXTURE_ROOT = Path(os.environ.get("ADAPTER_FIXTURE_ROOT", "/Users/horizon/Docum
 
 
 def fresh_db(run_root: Path) -> Path:
-    source = Path(os.environ.get("ADAPTER_FIXTURE_DB", str(FIXTURE_ROOT / "media_archive.sqlite")))
+    # OCR/Person require the frozen v25 visual queue; the minimal generic
+    # fixture does not contain that view.  Keep each case isolated by copying
+    # the appropriate immutable template, never the result of a prior run.
+    case = run_root.parent.name
+    default_name = "fixture-yolo/media_archive.sqlite" if case in {"ocr", "person-reid"} else "fixture/media_archive.sqlite"
+    source = Path(os.environ.get("ADAPTER_FIXTURE_DB", str(FIXTURE_ROOT.parent / default_name)))
     if not source.is_file():
         raise FileNotFoundError(f"fresh_fixture_template_missing:{source}")
     target = run_root / "fixture" / "media_archive.sqlite"
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
+    case = run_root.parent.name
+    migrations = {
+        "ocr": [PIPELINE / "migrations/20260716_stop03_4_ocr_db_v1.sql"],
+        "embedding": [PIPELINE / "migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql", PIPELINE / "migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql", PIPELINE / "migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql"],
+        "person-reid": [PIPELINE / "migrations/20260726_stop03_1c_person_reid_db_v1.sql"],
+    }.get(case, [])
+    if migrations:
+        with sqlite3.connect(target) as con:
+            for migration in migrations:
+                con.executescript(migration.read_text(encoding="utf-8"))
+            con.commit()
     return target
 
 
@@ -57,11 +74,11 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
         args = ["--out", str(out), "--migration", str(PIPELINE / "migrations/20260716_stop03_4_ocr_db_v1.sql"),
                 "--audio-python", str(APP / "Contents/Helpers/PipelinePython/whisper"),
                 "--embedding-python", str(APP / "Contents/Helpers/PipelinePython/embedding"),
-                "--audio-pilot-script", str(PIPELINE / "scripts/04_media_archive_app/audio_pilot.py"),
+                "--audio-pilot-script", str(PIPELINE / "scripts/04_media_archive_app/run_audio_search_pilot_v1.py"),
                 "--embedding-script", str(PIPELINE / "scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py"),
                 "--ffmpeg", "/opt/homebrew/bin/ffmpeg", "--ffprobe", "/opt/homebrew/bin/ffprobe",
                 "--silero-root", "/Users/horizon/Documents/model/silero-vad", "--whisper-model", "/Users/horizon/Documents/model/whisper-large-v3-turbo",
-                "--deep-filter-executable", "/usr/bin/true", "--deep-filter-model", "/Users/horizon/Documents/model/DeepFilterNet3_onnx.tar.gz",
+                "--deep-filter-executable", str(PIPELINE / "tools/deep-filter/deep-filter"), "--deep-filter-model", "/Users/horizon/Documents/model/DeepFilterNet3_onnx.tar.gz",
                 "--embedding-model", "/Users/horizon/Documents/model/Qwen3-Embedding-0.6B", "--workers", "1", "--limit", "3", "--confirm-central-db-write"]
         return [str(APP / "Contents/Helpers/PipelinePython/whisper"), str(script), *args, "--db", str(db)], env
     if case == "ocr":
@@ -73,20 +90,20 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
         runtime = materialize_config(PIPELINE / "configs/stop03_5d_text_embedding_db_orchestrator_v1.json", run_root / "runtime.json", task_runtime=run_root)
         migration = PIPELINE / "migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql"
         script = PIPELINE / "scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py"
-        args = ["--mode", "run", "--contract-config", str(contract), "--runtime-config", str(runtime), "--migration", str(migration), "--model", "/Users/horizon/Documents/model/Qwen3-Embedding-0.6B", "--workers", "1", "--max-attempts", "1", "--confirm-central-db-write"]
+        args = ["--mode", "run", "--contract-config", str(contract), "--runtime-config", str(runtime), "--migration", str(migration), "--workers", "1", "--max-attempts", "1", "--confirm-central-db-write"]
         return wrapper("embedding", script, db=db, out=out, args=args), env
     if case == "person-reid":
         cfg = materialize_config(PIPELINE / "configs/stop03_1c_person_reid_db_v1.json", run_root / "config.json", task_runtime=run_root)
         migration = PIPELINE / "migrations/20260726_stop03_1c_person_reid_db_v1.sql"
         script = PIPELINE / "scripts/04_media_archive_app/stop03_1c_person_reid_db_orchestrator_v1.py"
-        args = ["--mode", "run", "--config", str(cfg), "--migration", str(migration), "--workers", "1", "--max-attempts", "1", "--limit", "3", "--backend", "opencv", "--confirm-central-db-write"]
+        args = ["--mode", "run", "--config", str(cfg), "--migration", str(migration), "--out", str(out), "--allowed-output-root", str(TEST_ROOT), "--workers", "1", "--max-attempts", "1", "--limit", "3", "--backend", "opencv", "--confirm-central-db-write"]
         return wrapper("person_reid", script, db=db, out=out, args=args), env
     if case == "ffmpeg":
         script = PIPELINE / "scripts/04_media_archive_app/step02_video_frame_generic_interval_v1.py"
         # Stage03's formal adapter receives interval=3; all video task
         # parallelism belongs to the coordinator, never ffmpeg -threads.
-        args = ["--frame-interval-seconds", "3", "--workers", "1"]
-        return ["python3", str(script), *args, "--db", str(db), "--out", str(out)], env
+        args = ["--frame-interval-seconds", "3", "--db", str(db), "--out", str(out), "--limit-new", "1", "--concurrency", "1", "--no-open"]
+        return [str(APP / "Contents/Helpers/PipelinePython/system"), str(script), *args], env
     raise ValueError(case)
 
 
@@ -104,7 +121,25 @@ def run_case(index: int, case: str) -> dict[str, object]:
         finally:
             log.close()
         status = "PASS" if completed.returncode == 0 else "HOST_SMOKE_FAIL"
-        result = {"status": status, "workload": case, "exit_code": completed.returncode, "command": bench, "output": str(run_root)}
+        error_text = ""
+        for candidate in (run_root / "workload.stderr.log", run_root / "workload.stdout.log", run_root / "smoke.stdout.log"):
+            if candidate.is_file():
+                error_text += candidate.read_text(errors="replace")[-8000:]
+        phase = "OUTPUT_CONTRACT" if completed.returncode == 0 else "RUNTIME_IMPORT"
+        markers = {
+            "missing_local_model_dir": "PREFLIGHT",
+            "frozen_ocr_queue_view_missing": "FIXTURE_BUILD",
+            "unrecognized arguments": "COMMAND_CONSTRUCTION",
+            "audio_pilot.py": "COMMAND_CONSTRUCTION",
+            "output_and_allowed_root_required": "COMMAND_CONSTRUCTION",
+            "unsupported operand type": "RUNTIME_IMPORT",
+            "no eligible": "FIXTURE_BUILD",
+        }
+        for marker, marker_phase in markers.items():
+            if marker in error_text:
+                phase = marker_phase
+                break
+        result = {"status": status, "workload": case, "exit_code": completed.returncode, "command": bench, "output": str(run_root), "failure_phase": None if status == "PASS" else phase, "stderr_root_error": None if status == "PASS" else error_text[-2000:]}
     except Exception as exc:
         result = {"status": "HOST_SMOKE_FAIL", "workload": case, "reason_code": type(exc).__name__, "error": str(exc)}
     smoke = SMOKE_ROOT / case / "smoke.json"; smoke.parent.mkdir(parents=True, exist_ok=True)
