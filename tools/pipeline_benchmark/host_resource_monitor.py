@@ -199,6 +199,8 @@ def main() -> int:
         marker_file.flush()
     print(f"HOST MONITOR running; interval={args.interval}s; CSV={csv_path}; JSONL={jsonl_path}")
     print("GPU_MEMORY_PROCESS=N/A (Apple Silicon unified memory; no NVIDIA-style per-process VRAM)")
+    if args.powermetrics:
+        print("POWER/GPU=N/A: powermetrics collection requires explicit sudo and is not started automatically")
     try:
         while not stop and (args.duration <= 0 or time.monotonic() - start < args.duration):
             now = datetime.now(timezone.utc).isoformat()
