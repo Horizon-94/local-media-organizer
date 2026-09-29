@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 import shutil as which_module
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,6 +238,13 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
             env_delta = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "MEDIA_ARCHIVE_MODEL_ROOT": str(MODEL_ROOT)}
         else:
             return {"status": "HARNESS_FAIL", "reason_code": "unsupported_campaign_adapter", "workers": row["workers"]}
+        # Smoke adapters default to x1.  Homogeneous campaign rows must alter
+        # the actual production pool argument, not merely the case label.
+        workers = str(row.get("workers", 1))
+        for flag in ("--workers", "--concurrency"):
+            for pos in range(len(command) - 1):
+                if command[pos] == flag:
+                    command[pos + 1] = workers
         output = adapter_root
         bench = ["python3", str(REPO / "tools/pipeline_benchmark/run_benchmark.py"), "--name", str(row["id"]), "--output", str(output), "--interval", "1", "--timeout", "3600", "--", *command]
         env = os.environ.copy(); env.update(env_delta)
@@ -248,6 +256,23 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
         return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(db), "command": bench, "metrics": summary, "workers": row["workers"]}
     except Exception as exc:
         return {"status": "HARNESS_FAIL", "reason_code": type(exc).__name__, "error": str(exc), "workers": row["workers"]}
+
+
+def run_composite(row: dict[str, object], run_root: Path) -> dict[str, object]:
+    """Run constituent formal adapters concurrently under one campaign case."""
+    name = str(row["id"])
+    if name in {"event-driven-mixed-soak", "hdd-validation"}:
+        return {"status": "SKIPPED", "reason_code": "composite_harness_not_yet_implemented", "workers": 1}
+    kinds = name.split("+")
+    rows = [{"id": f"{name}:{kind}", "kind": kind, "mode": "baseline", "workers": 1} for kind in kinds]
+    with ThreadPoolExecutor(max_workers=len(rows), thread_name_prefix="campaign-composite") as pool:
+        futures = [pool.submit(run_qwen if item["kind"] == "qwen" else run_formal_adapter, item, run_root / item["kind"]) for item in rows]
+        results = [future.result() for future in futures]
+    statuses = [str(result.get("status")) for result in results]
+    status = "PASS" if all(value == "PASS" for value in statuses) else "MODEL_FAIL"
+    if any(value == "HARNESS_FAIL" for value in statuses):
+        status = "HARNESS_FAIL"
+    return {"status": status, "constituents": results, "workers": 1}
 
 
 def main() -> int:
@@ -287,7 +312,7 @@ def main() -> int:
         elif row["kind"] != "combination":
             result = run_formal_adapter(row, item_root)
         else:
-            result = {"status": "SKIPPED", "reason_code": "combination_dispatch_pending_single_workload_results", "kind": row["kind"], "workers": row["workers"]}
+            result = run_composite(row, item_root)
         result.update({"id": item_id, "kind": row["kind"], "mode": row["mode"], "finished_at": utc_now()})
         results[item_id] = result
         write_json(state_path, state)
