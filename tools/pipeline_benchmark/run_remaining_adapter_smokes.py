@@ -71,7 +71,7 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
         script = PIPELINE / "scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py"
         # The formal audio stage requires every dependency explicitly; paths
         # are resolved here, never substituted with a different backend.
-        args = ["--out", str(out), "--migration", str(PIPELINE / "migrations/20260716_stop03_4_ocr_db_v1.sql"),
+        args = ["--out", str(out), "--migration", str(PIPELINE / "migrations/20260809_audio_speech_search_v1.sql"),
                 "--audio-python", str(APP / "Contents/Helpers/PipelinePython/whisper"),
                 "--embedding-python", str(APP / "Contents/Helpers/PipelinePython/embedding"),
                 "--audio-pilot-script", str(PIPELINE / "scripts/04_media_archive_app/run_audio_search_pilot_v1.py"),
