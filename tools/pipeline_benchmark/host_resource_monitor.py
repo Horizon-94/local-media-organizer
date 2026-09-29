@@ -183,7 +183,7 @@ def main() -> int:
     csv_file = csv_path.open("w", newline="", encoding="utf-8")
     jsonl_file = jsonl_path.open("w", encoding="utf-8")
     marker_file = marker_path.open("w", encoding="utf-8")
-    fieldnames = ["timestamp", "event", "memory", "cpu", "disk", "process_tree_rss_bytes", "process_tree_cpu_percent", "processes"]
+    fieldnames = ["timestamp", "event", "phase", "memory", "cpu", "disk", "process_tree_rss_bytes", "process_tree_cpu_percent", "processes"]
     writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
     writer.writeheader()
     start = time.monotonic()
@@ -200,6 +200,9 @@ def main() -> int:
     else:
         print(f"WORKLOAD_SCOPE_ROOT_PID={root_pid}", flush=True)
     seen_pids: set[int] = set()
+    root_seen = False
+    root_exit_monotonic: float | None = None
+    post_events_emitted: set[int] = set()
     stop = False
 
     def on_signal(_signum: int, _frame: Any) -> None:
@@ -226,6 +229,17 @@ def main() -> int:
             cpu = cpu_snapshot()
             disk = disk_snapshot()
             rows = process_tree(ps_rows(), root_pid)
+            if root_pid is not None and root_pid in {int(r["pid"]) for r in rows}:
+                root_seen = True
+            elif root_seen and root_exit_monotonic is None:
+                root_exit_monotonic = time.monotonic()
+            if root_exit_monotonic is not None:
+                elapsed_exit = time.monotonic() - root_exit_monotonic
+                for offset in (10, 30):
+                    if elapsed_exit >= offset and offset not in post_events_emitted:
+                        marker_file.write(json.dumps({"timestamp": now, "event": f"POST_EXIT_{offset}S", "pid": root_pid, "source": "inferred"}) + "\n")
+                        marker_file.flush()
+                        post_events_emitted.add(offset)
             current_pids = {int(r["pid"]) for r in rows}
             for pid in sorted(current_pids - seen_pids):
                 event = {"timestamp": now, "event": "PROCESS_START", "pid": pid, "source": "inferred"}
@@ -243,10 +257,11 @@ def main() -> int:
             rss_total = sum(int(r["rss_kib"]) * 1024 for r in rows)
             cpu_total = sum(float(r["cpu_percent"]) for r in rows)
             processes = [{**r, "rss_mib": round(int(r["rss_kib"]) / 1024, 1)} for r in rows]
-            sample = {"timestamp": now, "event": "SAMPLE", "memory": mem, "cpu": cpu, "disk": disk,
+            phase = "active" if root_exit_monotonic is None else "post_exit"
+            sample = {"timestamp": now, "event": "SAMPLE", "phase": phase, "memory": mem, "cpu": cpu, "disk": disk,
                       "gpu_memory_process": None, "process_tree_rss_bytes": rss_total,
                       "process_tree_cpu_percent": cpu_total, "processes": processes}
-            writer.writerow({"timestamp": now, "event": "SAMPLE", "memory": json.dumps(mem), "cpu": json.dumps(cpu),
+            writer.writerow({"timestamp": now, "event": "SAMPLE", "phase": phase, "memory": json.dumps(mem), "cpu": json.dumps(cpu),
                              "disk": json.dumps(disk), "process_tree_rss_bytes": rss_total,
                              "process_tree_cpu_percent": round(cpu_total, 2), "processes": json.dumps(processes, ensure_ascii=False)})
             csv_file.flush()
