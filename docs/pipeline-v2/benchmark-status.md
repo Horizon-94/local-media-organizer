@@ -48,3 +48,24 @@ swap and failure monitoring.
    model baselines are available.
 3. Legacy vs Pipeline V2 on the complete 10-video/20-image fixture with result
    parity checks.
+
+## Audit continuation
+
+The completed YOLOE, OpenCLIP, and direct-FFmpeg CSVs have now been audited
+without rerunning workloads. The full derived table (system-used memory,
+process-tree RSS, compressed memory, swap, CPU average/P95/peak, sampling
+interval, throughput, and explicit N/A fields) is in
+`docs/pipeline-v2/audits/existing-benchmark-data-audit.md`.
+
+The monitor self-check is in
+`docs/pipeline-v2/audits/monitor-validation.md`. `vm_stat` and
+`memory_pressure -Q` are observable in this shell, but sandbox policy denies
+reliable `ps` process-tree visibility, swap usage, and iostat. Consequently
+the monitor is **PARTIAL** here; host-terminal sampling is required before new
+resource numbers can enter the formal matrix.
+
+Qwen and Whisper are intentionally not retried in this environment. The host
+entry point is `tools/pipeline_benchmark/run_host_benchmark.sh`; it probes both
+installed MLX runtimes for Metal and only starts the isolated Qwen fixture when
+`RUN_HEAVY=1` is explicitly set from an ordinary macOS Terminal. It never
+writes the source media or model directory.

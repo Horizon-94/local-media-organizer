@@ -1,0 +1,431 @@
+{
+  "contract": "pipeline_benchmark_monitor_validation_v1",
+  "cases": [
+    {
+      "name": "cpu",
+      "exit_code": 0,
+      "samples": [
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 123666432,
+            "memory_active_bytes": 14093090816,
+            "memory_inactive_bytes": 14091862016,
+            "memory_wired_bytes": 3010707456,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686046.183014
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 122175488,
+            "memory_active_bytes": 14118567936,
+            "memory_inactive_bytes": 14081916928,
+            "memory_wired_bytes": 2996666368,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686046.459212
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 119947264,
+            "memory_active_bytes": 14107394048,
+            "memory_inactive_bytes": 14061371392,
+            "memory_wired_bytes": 3030614016,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686046.735494
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 119422976,
+            "memory_active_bytes": 14133116928,
+            "memory_inactive_bytes": 14071021568,
+            "memory_wired_bytes": 2995765248,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686047.0127559
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 121716736,
+            "memory_active_bytes": 14159675392,
+            "memory_inactive_bytes": 14084997120,
+            "memory_wired_bytes": 2952937472,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686047.2883399
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 152354816,
+            "memory_active_bytes": 14123188224,
+            "memory_inactive_bytes": 14069923840,
+            "memory_wired_bytes": 2973859840,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686047.564306
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 152174592,
+            "memory_active_bytes": 14115258368,
+            "memory_inactive_bytes": 14060896256,
+            "memory_wired_bytes": 2990997504,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686047.840333
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 152141824,
+            "memory_active_bytes": 14141095936,
+            "memory_inactive_bytes": 14073921536,
+            "memory_wired_bytes": 2952167424,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686048.115791
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 167739392,
+            "memory_active_bytes": 14167834624,
+            "memory_inactive_bytes": 14108966912,
+            "memory_wired_bytes": 2874785792,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686048.39216
+        }
+      ]
+    },
+    {
+      "name": "memory",
+      "exit_code": 0,
+      "samples": [
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 166461440,
+            "memory_active_bytes": 14168588288,
+            "memory_inactive_bytes": 14109179904,
+            "memory_wired_bytes": 2875097088,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686048.4108129
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 75923456,
+            "memory_active_bytes": 14214086656,
+            "memory_inactive_bytes": 14177304576,
+            "memory_wired_bytes": 2852012032,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686048.6966882
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 75956224,
+            "memory_active_bytes": 14287634432,
+            "memory_inactive_bytes": 14220558336,
+            "memory_wired_bytes": 2735177728,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686048.990437
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 78561280,
+            "memory_active_bytes": 14270136320,
+            "memory_inactive_bytes": 14237614080,
+            "memory_wired_bytes": 2733015040,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686049.28803
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 79331328,
+            "memory_active_bytes": 14259486720,
+            "memory_inactive_bytes": 14243282944,
+            "memory_wired_bytes": 2737225728,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686049.583072
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 79413248,
+            "memory_active_bytes": 14299348992,
+            "memory_inactive_bytes": 14255177728,
+            "memory_wired_bytes": 2685386752,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686049.8777611
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 79233024,
+            "memory_active_bytes": 14285570048,
+            "memory_inactive_bytes": 14269218816,
+            "memory_wired_bytes": 2685304832,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686050.170857
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 79331328,
+            "memory_active_bytes": 14249132032,
+            "memory_inactive_bytes": 14253719552,
+            "memory_wired_bytes": 2737143808,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 85.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686050.450312
+        },
+        {
+          "vm": {
+            "physical_memory_bytes": null,
+            "memory_available_approx_bytes": 225869824,
+            "memory_active_bytes": 14091255808,
+            "memory_inactive_bytes": 14072053760,
+            "memory_wired_bytes": 2930147328,
+            "memory_compressed_bytes": 2115977216,
+            "swap_used_bytes": null,
+            "memory_pressure_free_percent": 84.0
+          },
+          "disk": {
+            "disk_cumulative_mib": null
+          },
+          "process": {
+            "process_count": 0,
+            "process_rss_kib": 0,
+            "process_cpu_percent": 0,
+            "root_alive": 0,
+            "rss_measurement_status": "N/A - process visibility unavailable"
+          },
+          "t": 1790686050.7352152
+        }
+      ]
+    }
+  ]
+}
