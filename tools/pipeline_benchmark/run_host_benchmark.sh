@@ -87,6 +87,10 @@ printf '\n'
   --timeout 3600 \
   -- "${QWEN_COMMAND[@]}"
 
+# Normalize the raw time series and formal-stage report into the shared
+# benchmark contract.  This is post-processing only; it never reruns a model.
+python3 "$ROOT/tools/pipeline_benchmark/summarize_host_benchmark.py" "$OUT"
+
 if [[ "$MODE" == "preflight" ]]; then
   echo "Qwen host exact-run preflight completed; model was not loaded."
 else
