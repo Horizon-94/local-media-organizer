@@ -47,3 +47,16 @@ def test_readiness_separates_contract_and_execution_adapter():
         assert rows[name]["readiness"] == "CONTRACT_READY"
         assert rows[name]["execution_readiness"] in {"ADAPTER_READY", "ADAPTER_IMPLEMENTED_HOST_UNVERIFIED"}
     assert rows["silero-vad"]["readiness"] == "OPTIONAL_NOT_ACTIVE"
+
+
+def test_remaining_smoke_runner_has_one_ordered_case_per_adapter(tmp_path: Path):
+    runner = load_module(ROOT / "tools/pipeline_benchmark/run_remaining_adapter_smokes.py", "remaining_adapter_smokes_test")
+    assert ["whisper", "ocr", "embedding", "ffmpeg", "person-reid"] == [
+        "whisper", "ocr", "embedding", "ffmpeg", "person-reid"
+    ]
+    source = tmp_path / "config.json"
+    source.write_text('{"model":"$MODEL_ROOT/x","runtime":"$TASK_RUNTIME/y"}', encoding="utf-8")
+    resolved = runner.materialize_config(source, tmp_path / "resolved.json", task_runtime=tmp_path)
+    value = resolved.read_text(encoding="utf-8")
+    assert "$MODEL_ROOT" not in value
+    assert "$TASK_RUNTIME" not in value
