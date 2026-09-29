@@ -50,6 +50,49 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def sanitize_visual_fixture(db: Path) -> None:
+    """Reset copied visual-stage history without touching the source template.
+
+    The immutable fixture template may have been used by an earlier YOLOE or
+    OpenCLIP run.  Those rows make OpenCLIP legitimately report
+    ``blocked_empty_visual_units`` and can make a campaign case appear to
+    pass without doing inference.  The campaign owns a fresh clone, so clear
+    only run/result tables in that clone and retain the visual-unit inputs.
+    """
+    with sqlite3.connect(db) as con:
+        for table in ("embeddings", "model_runs", "processing_errors"):
+            if con.execute("select 1 from sqlite_master where type='table' and name=?", (table,)).fetchone():
+                con.execute(f"delete from {table}")
+        con.commit()
+        integrity = con.execute("pragma integrity_check").fetchone()[0]
+        foreign_keys = con.execute("pragma foreign_key_check").fetchall()
+    if integrity != "ok" or foreign_keys:
+        raise RuntimeError(f"visual_fixture_integrity_failed:{integrity}:foreign_keys={len(foreign_keys)}")
+
+
+def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
+    """Require a real formal-stage report, not just a zero process exit."""
+    reports = output / "stage" / "reports"
+    if kind == "yoloe":
+        report = reports / "stop03_yoloe_full_summary.json"
+        if not report.is_file():
+            return False, "formal_stage_report_missing"
+        data = json.loads(report.read_text(encoding="utf-8"))
+        counts = data.get("counts", {})
+        if data.get("validation_status") != "PASS" or int(counts.get("processed_units", 0)) <= 0:
+            return False, f"formal_stage_not_pass:{data.get('validation_status')}"
+        return True, None
+    if kind == "openclip":
+        report = reports / "stop03_1b_openclip_db_safe_summary.json"
+        if not report.is_file():
+            return False, "formal_stage_report_missing"
+        data = json.loads(report.read_text(encoding="utf-8"))
+        if data.get("status") != "success" or int(data.get("input_visual_units", 0)) <= 0 or int(data.get("success_count", 0)) <= 0:
+            return False, f"formal_stage_not_pass:{data.get('status')}"
+        return True, None
+    return True, None
+
+
 def campaign_plan() -> list[dict[str, object]]:
     # Qwen is the only heavy formal host command currently proven in this
     # repository.  Other entries remain explicit campaign rows so failures or
@@ -242,6 +285,7 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
             db.parent.mkdir(parents=True, exist_ok=True)
             template = TEST_ROOT / "001dzl-pipeline-benchmark-20260929" / "fixture-yolo" / "media_archive.sqlite"
             shutil.copy2(template, db)
+            sanitize_visual_fixture(db)
             out = adapter_root / "stage"
             spec = next(item for item in workload_registry() if item["id"] == kind)
             runtime = APP / "Contents/Helpers/PipelinePython" / ("yolo" if kind == "yoloe" else "visual")
@@ -265,7 +309,15 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
         summary_path = output / "summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
         status = "PASS" if completed.returncode == 0 else "MODEL_FAIL"
-        return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(db), "command": bench, "metrics": summary, "workers": row["workers"]}
+        reason_code = None
+        if status == "PASS":
+            ok, reason_code = formal_stage_result(kind, output)
+            if not ok:
+                status = "MODEL_FAIL"
+        result = {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(db), "command": bench, "metrics": summary, "workers": row["workers"]}
+        if reason_code:
+            result["reason_code"] = reason_code
+        return result
     except Exception as exc:
         return {"status": "HARNESS_FAIL", "reason_code": type(exc).__name__, "error": str(exc), "workers": row["workers"]}
 
