@@ -29,6 +29,11 @@ class Semantics(unittest.TestCase):
     def test_unknown_parser_fails_closed(self):
         self.assertEqual(campaign.formal_stage_result('missing',Path('/tmp')), (False,'formal_success_parser_missing'))
 
+    def test_resource_verdict_does_not_hide_swap_or_harness_failure(self):
+        self.assertEqual(campaign.classify_observed_resources({'status':'PASS','metrics':{'swap_delta_bytes':1}}),'BORDERLINE')
+        self.assertEqual(campaign.classify_observed_resources({'status':'HARNESS_FAIL'}),'HARNESS_INVALID')
+        self.assertEqual(campaign.classify_observed_resources({'status':'SKIPPED_DUE_TO_UNSAFE_PARENT'}),'SKIPPED')
+
     def test_task_trace_and_overlap(self):
         with tempfile.TemporaryDirectory() as td:
             previous={k:os.environ.get(k) for k in ('BENCHMARK_TRACE_STAGE','BENCHMARK_TRACE_DIR')}

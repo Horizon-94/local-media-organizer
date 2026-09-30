@@ -448,6 +448,27 @@ def run_monitored_composite(row: dict[str, object], run_root: Path) -> dict[str,
     return result
 
 
+def classify_observed_resources(result: dict[str, object]) -> str:
+    """Short-run observation, not a promise of sustained production safety."""
+    if result.get('status')=='NOT_SUPPORTED_YET': return 'NOT_SUPPORTED'
+    if str(result.get('status','')).startswith('SKIPPED'): return 'SKIPPED'
+    child_verdicts=[classify_observed_resources(c) for c in result.get('constituents',[])]
+    if 'UNSAFE' in child_verdicts: return 'UNSAFE'
+    metrics=result.get('metrics',{})
+    stderr=Path(metrics.get('artifacts',{}).get('stderr',''))
+    error=stderr.read_text(errors='replace').lower() if stderr.is_file() else ''
+    if any(token in error for token in ('out of memory','memoryerror','gpu timeout','metal timeout','command buffer execution failed')):
+        return 'UNSAFE'
+    if result.get('status')!='PASS':
+        return 'HARNESS_INVALID' if result.get('status')=='HARNESS_FAIL' else 'MODEL_FAIL'
+    if metrics.get('timed_out'):
+        return 'BORDERLINE'
+    if (metrics.get('swap_delta_bytes') or 0)>0:
+        return 'BORDERLINE'
+    if 'BORDERLINE' in child_verdicts: return 'BORDERLINE'
+    return 'SAFE'
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=TEST_ROOT / f"pipeline-v2-calibration-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
@@ -486,13 +507,19 @@ def main() -> int:
             continue
         item_root = root / "runs" / item_id
         print(f"[{index:02d}/{len(plan):02d}] {item_id} RUNNING", flush=True)
-        if row["kind"] == "qwen":
+        unsafe_parent = next((r for r in results.values() if r.get('kind')==row['kind'] and r.get('status')=='UNSAFE' and int(r.get('workers',1))<int(row.get('workers',1))),None)
+        if unsafe_parent:
+            result={'status':'SKIPPED_DUE_TO_UNSAFE_PARENT','workers':row['workers'],'reason_code':'previous_homogeneous_level_unsafe'}
+        elif row["kind"] == "qwen":
             result = run_qwen(row, item_root)
         elif row["kind"] != "combination":
             result = run_formal_adapter(row, item_root)
         else:
             result = run_monitored_composite(row, item_root)
         result.update({"id": item_id, "kind": row["kind"], "mode": row["mode"], "finished_at": utc_now()})
+        result['resource_verdict']=classify_observed_resources(result)
+        result['resource_verdict_scope']='SHORT_RUN_OBSERVATION_NOT_SUSTAINED_SAFETY'
+        if result['resource_verdict']=='UNSAFE': result['status']='UNSAFE'
         results[item_id] = result
         write_json(state_path, state)
         metrics = result.get("metrics") if isinstance(result, dict) else {}
@@ -504,7 +531,7 @@ def main() -> int:
     summary["not_supported"] = sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "NOT_SUPPORTED_YET")
     summary["skipped"] = sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "SKIPPED")
     write_json(root / "calibration-results.json", summary)
-    lines = ["# Pipeline V2 calibration campaign", "", f"- campaign: `{summary['campaign']}`", f"- tested rows: `{summary['tested']}`", f"- pass: `{summary['passed']}`", f"- fail: `{summary['failed']}`", f"- unresolved adapters: `{summary['unresolved']}`", "", "Readiness and execution are separate: a registered production contract can be READY while its host execution adapter remains unresolved."]
+    lines = ["# Pipeline V2 calibration campaign", "", f"- campaign: `{summary['campaign']}`", f"- recorded rows (not executed count): `{summary['tested']}`", f"- actually executed: `{summary['executed']}`", f"- not supported: `{summary['not_supported']}`", f"- skipped: `{summary['skipped']}`", f"- semantic pass: `{summary['passed']}`", f"- fail: `{summary['failed']}`", f"- unresolved adapters: `{summary['unresolved']}`", "", "Semantic PASS does not imply valid scaling or sustained safety; consult validity audit and raw time series."]
     (root / "calibration-summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(root / "calibration-summary.md")
     return 0 if summary["failed"] == 0 else 1

@@ -44,7 +44,9 @@ def concurrency_evidence(name, result):
 def inspect_result(name, result):
     m = result.get("metrics", {})
     row = {"case": name, "requested_concurrency": result.get("workers"), "effective_concurrency": None,
-           "validity": "SUSPICIOUS", "reason": "inference_overlap_not_proven"}
+           "validity": "SUSPICIOUS", "reason": "inference_overlap_not_proven",
+           "semantic_status": result.get('status'), "resource_verdict": result.get('resource_verdict'),
+           "long_term_safety": 'NOT_PROVEN'}
     if result.get("status") != "PASS":
         status=str(result.get('status'))
         row.update(validity="NOT_SUPPORTED" if "SUPPORTED" in status else "SKIPPED" if status=='SKIPPED' else "INVALID", reason=result.get("reason_code"))
@@ -69,6 +71,11 @@ def inspect_result(name, result):
     row.update(workload_wall_time=wall if wall > 0 else None, monitor_total_elapsed=m.get("elapsed_seconds"),
                compressed_peak=m.get("peak_compressed_memory_bytes"), swap_delta=m.get("swap_delta_bytes"), disk_delta_mib=m.get("system_disk_delta_mib"),
                memory_pressure_minimum=min((float(r["memory_pressure_free_percent"]) for r in active if r.get("memory_pressure_free_percent")),default=None))
+    row['cpu_normalized_machine_avg_percent']=row.get('cpu_avg',0)/10
+    row['disk_read_bytes']=None
+    row['disk_write_bytes']=None
+    row['gpu_memory_process']=None
+    row['measurement_note']='RSS is not unified GPU allocation. System disk is combined whole-machine I/O. Process CPU is ps sampling, not exact CPU-time integration.'
     output = Path(result.get("output", ""))
     reports = list(output.glob("stage/reports/*summary*.json"))
     count = None
@@ -97,7 +104,7 @@ def inspect_result(name, result):
         row['aggregate_units_are_heterogeneous']=True
         row['overlap_seconds']=result.get('all_constituents_overlap_seconds')
         if row['overlap_seconds'] and all(c.get('status')=='PASS' for c in result['constituents']):
-            row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads')
+            row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads',effective_concurrency=len(result['constituents']))
         return row
     if name == "whisper-resident-x1": row.update(validity="INVALID", reason="fresh_process_not_resident_lifecycle")
     elif name.startswith("ffmpeg"):
