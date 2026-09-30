@@ -60,7 +60,8 @@ def main() -> int:
     worker_reports = stage.get("worker_reports", [])
     mlx = worker_reports[0].get("mlx_memory_bytes", {}) if worker_reports else {}
     candidates = int(counts.get("total", 0) or 0)
-    wall = float(rows[-1].get("elapsed_seconds", 0)) if rows else None
+    active_rows = [r for r in rows if (r.get("phase") or "active") == "active"]
+    wall = float(active_rows[-1].get("elapsed_seconds", 0)) if active_rows else None
     summary: dict[str, Any] = {
         "workload": "Qwen3-VL-4B-Instruct-4bit",
         "mode": "cold",

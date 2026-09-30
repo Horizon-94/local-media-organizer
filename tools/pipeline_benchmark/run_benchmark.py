@@ -11,6 +11,7 @@ import re
 import signal
 import subprocess
 import time
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -229,6 +230,9 @@ def main() -> int:
         "exit_code": exit_code,
         "timed_out": timed_out,
         "elapsed_seconds": round(time.time() - started, 3),
+        "monitor_total_elapsed_seconds": round(time.time() - started, 3),
+        "workload_elapsed_seconds": next((e["timestamp_epoch"] - started for e in events if e["event"] == "PROCESS_EXIT"), None),
+        "post_exit_observation_seconds": 30,
         "sample_count": len(samples),
         "active_sample_count": len(active_samples),
         "events": events,
@@ -270,6 +274,13 @@ def main() -> int:
             "exit": str(exit_path),
         },
     }
+    for prefix, field, scale in (("rss", "process_rss_kib", 1024), ("cpu", "process_cpu_percent", 1)):
+        values = sorted(float(row[field]) * scale for row in active_samples)
+        for name, value in (("avg", statistics.mean(values) if values else None),
+                            ("p95", values[min(len(values)-1, int((len(values)-1)*.95))] if values else None),
+                            ("peak", max(values) if values else None)):
+            summary[f"{prefix}_{name}"] = value
+    summary["memory_pressure_minimum"] = min((float(r["memory_pressure_free_percent"]) for r in active_samples if r.get("memory_pressure_free_percent") is not None), default=None)
     (output / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

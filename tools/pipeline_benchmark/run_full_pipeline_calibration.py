@@ -87,7 +87,7 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
         if not report.is_file():
             return False, "formal_stage_report_missing"
         data = json.loads(report.read_text(encoding="utf-8"))
-        if data.get("status") != "success" or int(data.get("input_visual_units", 0)) <= 0 or int(data.get("success_count", 0)) <= 0:
+        if data.get("status") != "success" or int(data.get("input_visual_units", 0)) <= 0 or data.get("success_count") != data.get("input_visual_units") or data.get("embedding_dim") != 512:
             return False, f"formal_stage_not_pass:{data.get('status')}"
         return True, None
     if kind == "ocr":
@@ -118,8 +118,29 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
         frames_dir = output / "stage" / "derived" / "video_frames" / "c4s_id_incremental_jpg1280"
         if not any(frames_dir.rglob("*.jpg")):
             return False, "formal_stage_no_frames"
+        if int(data.get("video_report_rows_this_run", 0)) != int(data.get("planned_new_job_count", -1)) or int(data.get("total_valid_jpg1280_count_in_report", 0)) <= 0:
+            return False, "formal_stage_incomplete_extraction"
         return True, None
-    return True, None
+    report_names = {"embedding": "stage/reports/stop03_5d_full_summary.json",
+                    "whisper": "stage/audio_enrichment_summary.json",
+                    "person-reid": "stage/run_summary.json",
+                    "qwen": "qwen-stage/reports/final_report.json"}
+    if kind not in report_names:
+        return False, "formal_success_parser_missing"
+    path = output / report_names[kind]
+    if not path.is_file():
+        return False, "formal_stage_report_missing"
+    d = json.loads(path.read_text())
+    if kind == "qwen":
+        counts = d.get("counts", {})
+        ok = d.get("status") == "DYNAMIC_DB_FULL_PASS" and counts.get("total", 0) > 0 and counts.get("success") == counts.get("total")
+    elif kind == "whisper":
+        ok = d.get("status") == "SUCCESS" and d.get("source_video_count", 0) > 0 and d.get("transcript_segment_count", 0) > 0 and d.get("vector_count", 0) > 0
+    elif kind == "embedding":
+        ok = d.get("status") == "PASS" and d.get("document_count", 0) > 0 and d.get("success_count") == d.get("document_count") and d.get("vector_blobs_valid") is True
+    else:
+        ok = d.get("run_status") == "success" and d.get("visual_unit_count", 0) > 0 and d.get("failed_count", 0) == 0 and d.get("success_count", 0) + d.get("no_face_count", 0) > 0
+    return (True, None) if ok else (False, "formal_stage_semantic_failure")
 
 
 def campaign_plan() -> list[dict[str, object]]:
@@ -130,7 +151,7 @@ def campaign_plan() -> list[dict[str, object]]:
     for mode, workers in (("cold", 1), ("resident", 1), ("homogeneous", 2), ("homogeneous", 3)):
         rows.append({"id": f"qwen-{mode}-x{workers}", "kind": "qwen", "mode": mode, "workers": workers})
     for name, kind in (("whisper-cold-x1", "whisper"), ("whisper-resident-x1", "whisper"), ("yoloe-x1", "yoloe"), ("openclip-x1", "openclip"), ("ocr-x1", "ocr"), ("embedding-x1", "embedding"), ("ffmpeg-stage03-x1", "ffmpeg"), ("person-reid-x1", "person-reid")):
-        rows.append({"id": name, "kind": kind, "mode": "baseline", "workers": 1})
+        rows.append({"id": name, "kind": kind, "mode": "resident" if "resident" in name else "baseline", "workers": 1})
     for name in ("whisper-x2", "yoloe-x2", "yoloe-x3", "openclip-x2", "openclip-x3", "ocr-x2", "embedding-x2", "ffmpeg-stage03-x2", "ffmpeg-stage03-x3", "ffmpeg-stage03-x4", "ffmpeg-stage03-x5"):
         kind = "ffmpeg" if name.startswith("ffmpeg-") else name.split("-")[0]
         rows.append({"id": name, "kind": kind, "mode": "homogeneous", "workers": int(name.rsplit("x", 1)[1])})
@@ -278,6 +299,11 @@ def run_qwen(row: dict[str, object], run_root: Path) -> dict[str, object]:
     started = time.time()
     completed = subprocess.run(command, cwd=REPO, env=env, check=False)
     status = "PASS" if completed.returncode == 0 else "MODEL_FAIL"
+    reason_code = None
+    if status == "PASS":
+        ok, reason_code = formal_stage_result("qwen", output)
+        if not ok:
+            status = "HARNESS_FAIL"
     if completed.returncode != 0 and row.get("mode") == "resident":
         status = "NOT_SUPPORTED_YET"
     metrics = {}
@@ -288,7 +314,7 @@ def run_qwen(row: dict[str, object], run_root: Path) -> dict[str, object]:
             except (OSError, ValueError, TypeError):
                 metrics = {}
             break
-    return {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(fixture), "workers": row["workers"], "metrics": metrics, "note": "resident mode requires a true multi-batch idle harness; 1.2.8 formal entry currently exposes only one batch."}
+    return {"status": status, "reason_code": reason_code, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(fixture), "workers": row["workers"], "metrics": metrics}
 
 
 def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, object]:
@@ -373,6 +399,24 @@ def run_composite(row: dict[str, object], run_root: Path) -> dict[str, object]:
     return {"status": status, "constituents": results, "workers": 1}
 
 
+def run_monitored_composite(row: dict[str, object], run_root: Path) -> dict[str, object]:
+    """Sample the shared coordinator PID and descendants on one clock."""
+    if row["id"] in {"event-driven-mixed-soak", "hdd-validation"}:
+        return run_composite(row, run_root)
+    command = ["python3", str(REPO / "tools/pipeline_benchmark/run_benchmark.py"),
+               "--name", str(row["id"]), "--output", str(run_root / "aggregate"),
+               "--timeout", "7200", "--", "python3", str(Path(__file__).resolve()),
+               "--internal-composite", str(row["id"]), "--root", str(run_root)]
+    completed = subprocess.run(command, cwd=REPO, check=False)
+    path = run_root / "composite-result.json"
+    result = json.loads(path.read_text()) if path.exists() else {"status": "HARNESS_FAIL", "reason_code": "composite_result_missing"}
+    metrics_path = run_root / "aggregate" / "summary.json"
+    result["metrics"] = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
+    result["exit_code"] = completed.returncode
+    result["elapsed_seconds"] = result["metrics"].get("workload_elapsed_seconds")
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=TEST_ROOT / f"pipeline-v2-calibration-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
@@ -380,7 +424,13 @@ def main() -> int:
     ap.add_argument("--check-execution", action="store_true", help="strict contract + host adapter readiness; never runs a model")
     ap.add_argument("--allow-partial", action="store_true", help="allow campaign rows with missing adapters")
     ap.add_argument("--case", help="dispatch one exact campaign case for regression validation")
+    ap.add_argument("--internal-composite", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.internal_composite:
+        row = next(r for r in campaign_plan() if r["id"] == args.internal_composite)
+        result = run_composite(row, args.root)
+        write_json(args.root / "composite-result.json", result)
+        return 0 if result.get("status") == "PASS" else 1
     if args.check or args.check_execution:
         return print_readiness(execution=args.check_execution)
     missing = [row["id"] for row in readiness() if row["readiness"] == "CONTRACT_NOT_READY"]
@@ -410,7 +460,7 @@ def main() -> int:
         elif row["kind"] != "combination":
             result = run_formal_adapter(row, item_root)
         else:
-            result = run_composite(row, item_root)
+            result = run_monitored_composite(row, item_root)
         result.update({"id": item_id, "kind": row["kind"], "mode": row["mode"], "finished_at": utc_now()})
         results[item_id] = result
         write_json(state_path, state)
