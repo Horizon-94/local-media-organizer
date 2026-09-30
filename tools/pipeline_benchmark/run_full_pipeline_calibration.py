@@ -523,9 +523,12 @@ def main() -> int:
         result['resource_verdict_scope']='SHORT_RUN_OBSERVATION_NOT_SUSTAINED_SAFETY'
         if result['resource_verdict']=='UNSAFE': result['status']='UNSAFE'
         results[item_id] = result
-        write_json(state_path, state)
         metrics = result.get("metrics") if isinstance(result, dict) else {}
-        print(f"[{index:02d}/{len(plan):02d}] {item_id} {result.get('status')} elapsed={result.get('elapsed_seconds', 'N/A')} rss_peak={metrics.get('peak_process_tree_rss_bytes', 'N/A') if isinstance(metrics, dict) else 'N/A'}", flush=True)
+        if isinstance(metrics,dict):
+            result['workload_elapsed_seconds']=metrics.get('workload_elapsed_seconds')
+            result['monitor_total_elapsed_seconds']=metrics.get('monitor_total_elapsed_seconds',metrics.get('elapsed_seconds'))
+        write_json(state_path, state)
+        print(f"[{index:02d}/{len(plan):02d}] {item_id} {result.get('status')} workload_elapsed={result.get('workload_elapsed_seconds', 'N/A')} monitor_total_elapsed={result.get('monitor_total_elapsed_seconds','N/A')} rss_peak={metrics.get('peak_process_tree_rss_bytes', 'N/A') if isinstance(metrics, dict) else 'N/A'}", flush=True)
     summary = {"campaign": state["campaign"], "finished_at": utc_now(), "tested": len(results), "passed": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "PASS"), "failed": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") in {"MODEL_FAIL", "HARNESS_FAIL", "UNSAFE"}), "unresolved": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "ADAPTER_UNRESOLVED"), "results": results}
     write_json(root / "calibration-results.json", summary)
     summary["planned"] = len(plan)
