@@ -90,6 +90,35 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
         if data.get("status") != "success" or int(data.get("input_visual_units", 0)) <= 0 or int(data.get("success_count", 0)) <= 0:
             return False, f"formal_stage_not_pass:{data.get('status')}"
         return True, None
+    if kind == "ocr":
+        reports = sorted(reports.glob("*_summary.json"), key=lambda p: p.stat().st_mtime)
+        if not reports:
+            return False, "formal_stage_report_missing"
+        data = json.loads(reports[-1].read_text(encoding="utf-8"))
+        if data.get("run_status") != "success":
+            return False, f"formal_stage_not_pass:{data.get('run_status')}"
+        candidates = int(data.get("candidate_count", 0) or 0)
+        completed = sum(int(data.get(key, 0) or 0) for key in ("success_count", "no_text_count", "reused_count"))
+        if candidates <= 0:
+            return False, "formal_stage_empty_candidates"
+        if completed <= 0 and int(data.get("result_count", 0) or 0) <= 0:
+            return False, "formal_stage_no_ocr_results"
+        return True, None
+    if kind == "ffmpeg":
+        queue_reports = sorted((output / "stage" / "reports").glob("*queue_summary.json"), key=lambda p: p.stat().st_mtime)
+        if not queue_reports:
+            return False, "formal_stage_report_missing"
+        data = json.loads(queue_reports[-1].read_text(encoding="utf-8"))
+        # A zero-exit Stage03 with an empty source queue is a harness/fixture
+        # result, not a successful extraction benchmark.
+        summary = data.get("step02_summary", data)
+        queue_status = str(summary.get("queue_status", summary.get("status", ""))).lower()
+        if queue_status in {"empty", "no_input", "no_eligible_input"} or (output / "stage" / "manifests" / "video_extract_c4s_step01_queue_report.csv").exists() and (output / "stage" / "manifests" / "video_extract_c4s_step01_queue_report.csv").read_text(encoding="utf-8", errors="replace").strip().lower() == "empty":
+            return False, "formal_stage_empty_video_queue"
+        frames_dir = output / "stage" / "derived" / "video_frames" / "c4s_id_incremental_jpg1280"
+        if not any(frames_dir.rglob("*.jpg")):
+            return False, "formal_stage_no_frames"
+        return True, None
     return True, None
 
 
@@ -313,7 +342,12 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
         if status == "PASS":
             ok, reason_code = formal_stage_result(kind, output)
             if not ok:
-                status = "MODEL_FAIL"
+                status = "HARNESS_FAIL" if reason_code in {
+                    "formal_stage_empty_candidates",
+                    "formal_stage_no_ocr_results",
+                    "formal_stage_empty_video_queue",
+                    "formal_stage_no_frames",
+                } else "MODEL_FAIL"
         result = {"status": status, "exit_code": completed.returncode, "elapsed_seconds": round(time.time() - started, 3), "output": str(output), "fixture": str(db), "command": bench, "metrics": summary, "workers": row["workers"]}
         if reason_code:
             result["reason_code"] = reason_code
