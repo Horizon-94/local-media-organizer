@@ -367,6 +367,8 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
             # Add task-level overlap evidence without changing the installed
             # stage, runtime, model, preprocessing or worker count.
             command[1] = str(REPO / "tools/pipeline_benchmark/trace_formal_stage.py")
+        if kind=='whisper':
+            command[command.index('--audio-pilot-script')+1]=str(REPO/'tools/pipeline_benchmark/trace_audio_pilot.py')
         bench = ["python3", str(REPO / "tools/pipeline_benchmark/run_benchmark.py"), "--name", str(row["id"]), "--output", str(output), "--interval", "1", "--timeout", "3600", "--", *command]
         env = os.environ.copy(); env.update(env_delta)
         started = time.time()

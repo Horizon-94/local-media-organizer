@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 import run_full_pipeline_calibration as campaign
 import trace_formal_stage as trace
-from audit_calibration_validity import concurrency_evidence
+from audit_calibration_validity import concurrency_evidence, inspect_result
 
 
 class Semantics(unittest.TestCase):
@@ -33,6 +33,16 @@ class Semantics(unittest.TestCase):
         self.assertEqual(campaign.classify_observed_resources({'status':'PASS','metrics':{'swap_delta_bytes':1}}),'BORDERLINE')
         self.assertEqual(campaign.classify_observed_resources({'status':'HARNESS_FAIL'}),'HARNESS_INVALID')
         self.assertEqual(campaign.classify_observed_resources({'status':'SKIPPED_DUE_TO_UNSAFE_PARENT'}),'SKIPPED')
+
+    def test_parallel_audio_jobs_are_not_parallel_whisper_inference(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'stage').mkdir()
+            (root/'stage/audio_enrichment_summary.json').write_text(json.dumps({'source_video_count':3,'counts':{'success':1,'no_speech':2}}))
+            samples=root/'samples.csv'
+            samples.write_text('phase,timestamp_epoch,process_rss_kib,process_cpu_percent,memory_pressure_free_percent\nactive,1,100,10,80\n')
+            row=inspect_result('whisper-x2',{'status':'PASS','workers':2,'output':td,'metrics':{'artifacts':{'samples_csv':str(samples)},'events':[{'event':'BENCHMARK_START','timestamp_epoch':0},{'event':'PROCESS_EXIT','timestamp_epoch':2}]}})
+            self.assertEqual(row['validity'],'INVALID')
+            self.assertEqual(row['speech_inference_inputs'],1)
 
     def test_task_trace_and_overlap(self):
         with tempfile.TemporaryDirectory() as td:

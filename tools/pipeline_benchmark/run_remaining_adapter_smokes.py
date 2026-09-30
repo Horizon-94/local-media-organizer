@@ -9,6 +9,7 @@ exist; no toy inference or CPU fallback is used.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -61,6 +62,14 @@ def fresh_db(run_root: Path) -> Path:
     )
     if case == "ocr" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = ocr_template
+    elif case == "whisper" and os.environ.get('AUDIO_CALIBRATION_FIXTURE_DB'):
+        source = Path(os.environ['AUDIO_CALIBRATION_FIXTURE_DB'])
+    elif case == 'whisper' and (Path('/Users/horizon/Documents/AI-Local/test-output/calibration-audio-pristine-v1/manifest.json')).exists():
+        published=Path('/Users/horizon/Documents/AI-Local/test-output/calibration-audio-pristine-v1')
+        manifest=json.loads((published/'manifest.json').read_text())
+        source=published/'pristine.sqlite'
+        if manifest.get('speech_inference_inputs',0)<2 or hashlib.sha256(source.read_bytes()).hexdigest()!=manifest['template_sha256']:
+            raise RuntimeError('published_audio_fixture_contract_invalid')
     elif case in {"ffmpeg", "whisper"} and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = ffmpeg_template
     elif case == "embedding" and "ADAPTER_FIXTURE_DB" not in os.environ:

@@ -16,6 +16,15 @@ def stats(values):
 
 
 def concurrency_evidence(name, result):
+    if name.startswith('whisper'):
+        events=[]
+        for file in (Path(result.get('output',''))/'stage/items').glob('*/benchmark-whisper-timing.jsonl'):
+            for line in file.read_text().splitlines():
+                r=json.loads(line); events.extend([(r['started_epoch'],1),(r['finished_epoch'],-1)])
+        active=peak=0
+        for _,delta in sorted(events): active+=delta; peak=max(peak,active)
+        # Never promote audio preparation/VAD overlap to Whisper inference.
+        return peak if events else None
     timing=Path(result.get('output',''))/'stage/benchmark-task-timing'
     events=[]
     for file in timing.glob('worker-*.jsonl'):
@@ -87,9 +96,15 @@ def inspect_result(name, result):
     if name.startswith("qwen"):
         p=output/'qwen-stage/reports/final_report.json'
         if p.exists(): count=json.loads(p.read_text()).get('counts',{}).get('success')
+    if name.startswith('openclip'):
+        p=output/'stage/reports/stop03_1b_openclip_db_safe_summary.json'
+        if p.exists(): count=json.loads(p.read_text()).get('success_count')
     if name.startswith("whisper"):
         p=output / "stage/audio_enrichment_summary.json"
-        if p.exists(): count=json.loads(p.read_text()).get("source_video_count")
+        if p.exists():
+            audio=json.loads(p.read_text()); count=audio.get('source_video_count')
+            row['speech_inference_inputs']=audio.get('counts',{}).get('success',0)
+            row['non_speech_inputs']=audio.get('counts',{}).get('no_speech',0)
     if name.startswith("person"):
         p=output / "stage/run_summary.json"
         if p.exists(): count=json.loads(p.read_text()).get("visual_unit_count")
@@ -116,6 +131,8 @@ def inspect_result(name, result):
             row['throughput']=count/wall if count and wall>0 else None
             row['frames_per_second']=d.get('total_valid_jpg1280_count_in_report',0)/wall if wall>0 else None
         row.update(validity="INVALID" if result.get("workers",1)>1 and limit=="1" else "SUSPICIOUS", reason="limit_new_1_not_scaling_dataset" if limit=='1' else "awaiting_verified_video_task_overlap")
+        if limit=='1' and result.get('workers')==1 and count==1:
+            row.update(validity='VALID',reason='single_video_resource_only_not_ten_video_scaling_baseline',effective_concurrency=1)
         telemetry=output/'stage/telemetry/step02_video_frame_resource_samples_latest.csv'
         if limit=='10' and count==10 and telemetry.exists():
             with telemetry.open() as f: samples=list(csv.DictReader(f))
@@ -127,6 +144,8 @@ def inspect_result(name, result):
         row.update(validity="VALID", reason="single_workload_resource_short_baseline", effective_concurrency=1)
     elif count and count < int(result.get("workers",1)):
         row.update(validity="INVALID", reason="fewer_inputs_than_requested_workers")
+    if name.startswith('whisper') and int(result.get('workers',1))>1 and row.get('speech_inference_inputs',0)<int(result['workers']):
+        row.update(validity='INVALID',reason='audio_jobs_overlap_but_too_few_whisper_inference_inputs')
     if row['validity']=='SUSPICIOUS' and not name.startswith('ffmpeg'):
         effective=concurrency_evidence(name,result)
         row['effective_concurrency']=effective
@@ -139,6 +158,27 @@ def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--root",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); a=ap.parse_args()
     data=json.loads((a.root/"calibration-results.json").read_text())
     rows=[inspect_result(k,v) for k,v in data["results"].items()]
+    # Compare only validated fixed-volume homogeneous cases, never a mixture
+    # of one-video and ten-video timings or heterogeneous units.
+    grouped={}
+    for row in rows:
+        original=data['results'][row['case']]
+        if row['validity']=='VALID' and row.get('throughput') and '+' not in row['case']:
+            grouped.setdefault((original.get('kind'),row.get('processed_units')),[]).append(row)
+    for group in grouped.values():
+        group.sort(key=lambda r:r.get('requested_concurrency') or 1)
+        baseline=next((r for r in group if r.get('requested_concurrency')==1),None)
+        previous=None
+        for row in group:
+            n=row.get('requested_concurrency') or 1
+            if baseline:
+                row['throughput_gain_vs_x1']=row['throughput']/baseline['throughput']
+                row['scaling_efficiency']=row['throughput_gain_vs_x1']/n
+            if previous:
+                gain=row['throughput']/previous['throughput']-1
+                row['marginal_gain_vs_previous']=gain
+                if gain<=0 and row.get('resource_verdict')=='SAFE': row['resource_verdict']='SAFE_BUT_INEFFICIENT'
+            previous=row
     a.out.mkdir(parents=True,exist_ok=True)
     (a.out/"validity-audit.json").write_text(json.dumps(rows,ensure_ascii=False,indent=2)+"\n")
     fields=sorted(set().union(*(r.keys() for r in rows)))

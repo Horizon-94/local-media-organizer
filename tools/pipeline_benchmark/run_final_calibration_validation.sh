@@ -15,6 +15,8 @@ python3 "$TASK_REPO/tools/pipeline_benchmark/run_full_pipeline_calibration.py" -
 TASK_EXIT=${PIPESTATUS[0]}
 if [[ "$TASK_EXIT" != 0 ]]; then TASK_FAILED=1; fi
 python3 "$TASK_REPO/tools/pipeline_benchmark/audit_calibration_validity.py" --root "$TASK_OUT" --out "$TASK_OUT/audit" 2>&1 | tee -a "$TASK_OUT/validation.log"
+TASK_EXIT=${PIPESTATUS[0]}
+if [[ "$TASK_EXIT" != 0 ]]; then TASK_FAILED=1; fi
 echo "$TASK_FAILED" > "$TASK_OUT/validation.exit"
 echo "Targeted validation finished; audit=$TASK_OUT/audit/validity-audit.md"
 echo "Full Campaign and production budgets require review of actual overlap evidence."
