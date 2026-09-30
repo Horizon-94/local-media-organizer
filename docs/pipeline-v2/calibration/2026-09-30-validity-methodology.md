@@ -11,6 +11,7 @@ Installed 1.2.8 (128) production runtimes, stages, models and preprocessing rema
 - Whisper's resident label was another fresh production process, not a load-once, multi-batch, idle-resident lifecycle. Both heavy models' unsupported resident cases are excluded from the executed denominator.
 - Overlapping audio preparation or VAD tasks do not establish overlapping Whisper inference. A valid x2 fixture must contain at least two actual speech inputs and overlapping production `mlx_whisper.transcribe` calls.
 - Independent constituent peak RSS values cannot be summed or maximized to obtain a composite peak. Historical composites without synchronized aggregate sampling cannot supply combined resource costs.
+- Simultaneously launched Qwen/Whisper processes did not necessarily overlap model execution: audio preparation could finish after the entire visual run. A benchmark-only exact Whisper function-entry marker now defers other visual model launches until the production backend starts; preserved task intervals must confirm actual backend overlap. Old process-only overlap remains separate evidence, not heavy-model compatibility proof.
 - Historical short-sample P95 calculations are superseded by empirical nearest-rank P95 recomputed from preserved raw samples.
 
 ## Current evidence requirements
@@ -29,6 +30,8 @@ Composite sampling tracks the shared coordinator and descendants on one clock. S
 - Apple Silicon uses unified memory. Whole-system used-memory estimates include reclaimable cache and are not Activity Monitor application-memory figures.
 - `ps` CPU samples use approximately 100% per logical core. This machine has ten cores; normalized machine utilization divides workload CPU by ten. Samples are not exact CPU-time integration.
 - One-second sampling can miss brief peaks. This especially affects very short Person/ReID runs.
+- Formal worker lifetime RSS peaks can exceed sampled process-tree peaks, particularly during Embedding loading. They are reported separately, not summed into a fabricated synchronized peak. Sampled RSS must not be treated as an upper bound for admission.
+- Workload elapsed is measured through monitor detection of process exit; polling can add up to approximately the observation cadence. Near-tied short runs and small speedups need repeated trials before an efficient ceiling can be claimed.
 - Disk counters currently provide combined whole-system I/O, not reliable per-workload read/write separation. Per-process GPU memory and optional GPU power/utilization remain N/A when not measured.
 - Post-exit 10/30-second samples distinguish workload PID disappearance from system cache, compression and swap behavior. A zero process-tree RSS does not mean all system memory must return immediately to its original baseline.
 - Fresh isolated databases and outputs prevent execution-history contamination. Successful prior fixtures are not reused as mutable run templates.

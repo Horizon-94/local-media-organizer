@@ -30,15 +30,20 @@ def input_fingerprint(name, result):
         if not path.is_file(): return None
         # Called only for completed workloads: immutable prevents SQLite from
         # attempting to create a WAL/SHM file during a read-only audit.
-        with sqlite3.connect(f'file:{path}?mode=ro&immutable=1',uri=True) as c:
-            if name.startswith('qwen'):
-                evidence=c.execute('select candidate_id,runtime_visual_file_sha256,candidate_semantic_sha256 from stop03_2_candidate_queue_frozen_v25 order by candidate_id').fetchall()
-            elif name.startswith('embedding'):
-                evidence=c.execute('select document_id,embedding_text_sha256 from stop03_5d_text_documents order by document_id').fetchall()
-            elif name.startswith('whisper'):
-                evidence=c.execute('select source_file_id,content_sha256,size_bytes,mtime_ns from source_file_records order by source_file_id').fetchall()
-            else:
-                evidence=c.execute('select v.visual_unit_id,d.sha256 from visual_units v left join derived_assets d on v.derived_id=d.derived_id order by v.visual_unit_id').fetchall()
+        try:
+            with sqlite3.connect(f'file:{path}?mode=ro&immutable=1',uri=True) as c:
+                if name.startswith('qwen'):
+                    evidence=c.execute('select candidate_id,runtime_visual_file_sha256,candidate_semantic_sha256 from stop03_2_candidate_queue_frozen_v25 order by candidate_id').fetchall()
+                elif name.startswith('embedding'):
+                    evidence=c.execute('select document_id,embedding_text_sha256 from stop03_5d_text_documents order by document_id').fetchall()
+                elif name.startswith('whisper'):
+                    evidence=c.execute('select source_file_id,content_sha256,size_bytes,mtime_ns from source_file_records order by source_file_id').fetchall()
+                else:
+                    evidence=c.execute('select v.visual_unit_id,d.sha256 from visual_units v left join derived_assets d on v.derived_id=d.derived_id order by v.visual_unit_id').fetchall()
+        except sqlite3.OperationalError:
+            # Legacy fixtures may lack stable identity columns. Never invent
+            # an equivalent input fingerprint from a mutable run database.
+            return None
     return hashlib.sha256(json.dumps(evidence,separators=(',',':')).encode()).hexdigest() if evidence else None
 
 
@@ -195,7 +200,7 @@ def inspect_result(name, result):
         # per-constituent counts instead of fabricating a homogeneous rate.
         row['constituent_processed_units']=[r.get('processed_units') for r in constituent_rows]
         row['requested_concurrency']='+'.join(str(c.get('workers',1)) for c in result['constituents'])
-        row['constituent_workload_metrics']=[{k:r.get(k) for k in ('case','validity','processed_units','workload_wall_time','throughput','effective_concurrency')} for r in constituent_rows]
+        row['constituent_workload_metrics']=[{k:r.get(k) for k in ('case','validity','processed_units','workload_wall_time','throughput','effective_concurrency','input_evidence_fingerprint')} for r in constituent_rows]
         row['aggregate_units_are_heterogeneous']=True
         row['overlap_seconds']=result.get('all_constituents_overlap_seconds')
         if any(c['validity']=='INVALID' for c in constituent_rows):
@@ -253,9 +258,23 @@ def inspect_result(name, result):
 
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--root",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); a=ap.parse_args()
+    ap=argparse.ArgumentParser(); ap.add_argument("--root",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); ap.add_argument('--supplement',type=Path,action='append',default=[]); a=ap.parse_args()
     data=json.loads((a.root/"calibration-results.json").read_text())
     rows=[inspect_result(k,v) for k,v in data["results"].items()]
+    for supplement in a.supplement:
+        revised=json.loads((supplement/'calibration-results.json').read_text())['results']
+        for name,result in revised.items():
+            original=next((r for r in rows if r['case']==name),None)
+            replacement=inspect_result(name,result)
+            def inputs(r):
+                return [(c.get('case'),c.get('processed_units'),c.get('input_evidence_fingerprint')) for c in r.get('constituent_workload_metrics',[])] or [(r.get('processed_units'),r.get('input_evidence_fingerprint'))]
+            if original is None or replacement['validity']!='VALID' or inputs(original)!=inputs(replacement):
+                raise RuntimeError(f'supplement_not_valid_or_input_drift:{name}')
+            replacement['superseded_validity']=original['validity']
+            replacement['superseded_reason']=original['reason']
+            replacement['revision_source']=str(supplement)
+            rows[rows.index(original)]=replacement
+            data['results'][name]=result
     # Compare only validated fixed-volume homogeneous cases, never a mixture
     # of one-video and ten-video timings or heterogeneous units.
     grouped={}
