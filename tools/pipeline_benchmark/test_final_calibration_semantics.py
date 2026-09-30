@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 import run_full_pipeline_calibration as campaign
 import trace_formal_stage as trace
-from audit_calibration_validity import concurrency_evidence, inspect_result
+from audit_calibration_validity import concurrency_evidence, inspect_result, input_fingerprint
 from measurement_stats import p95
 
 
@@ -16,6 +16,27 @@ def spawned_encode_probe(): encode()
 
 
 class Semantics(unittest.TestCase):
+    def test_ffmpeg_fingerprint_checks_content_not_only_count(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); p=root/'stage/manifests/source_video_identity_step01_queue.csv'
+            p.parent.mkdir(parents=True)
+            header='source_video_fingerprint_sha256,sampling_contract_id\n'
+            p.write_text(header+'sha-a,contract-3s\nsha-b,contract-3s\n')
+            before=input_fingerprint('ffmpeg-stage03-x1',{'output':td})
+            p.write_text(header+'sha-b,contract-3s\nsha-a,contract-3s\n')
+            self.assertEqual(before,input_fingerprint('ffmpeg-stage03-x2',{'output':td}))
+            p.write_text(header+'sha-a,contract-3s\nsha-c,contract-3s\n')
+            self.assertNotEqual(before,input_fingerprint('ffmpeg-stage03-x2',{'output':td}))
+
+    def test_composite_cannot_hide_invalid_constituent(self):
+        with tempfile.TemporaryDirectory() as td:
+            samples=Path(td)/'samples.csv'
+            samples.write_text('phase,timestamp_epoch,process_rss_kib,process_cpu_percent\nactive,1,100,10\n')
+            result={'status':'PASS','output':td,'workers':1,'metrics':{'artifacts':{'samples_csv':str(samples)}},'constituents':[{'status':'HARNESS_FAIL'}],'constituent_intervals':[[0,2]],'workload_elapsed_seconds':2,'all_constituents_overlap_seconds':2}
+            row=inspect_result('yoloe+openclip',result)
+            self.assertEqual(row['validity'],'INVALID')
+            self.assertEqual(row['resource_verdict'],'HARNESS_INVALID')
+
     def test_spawn_observer_keeps_real_child_pid(self):
         with tempfile.TemporaryDirectory() as td:
             keys=('BENCHMARK_TRACE_STAGE','BENCHMARK_TRACE_DIR')

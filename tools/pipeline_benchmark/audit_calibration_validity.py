@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import csv
+import hashlib
 import json
 import statistics
 import sqlite3
@@ -14,6 +15,31 @@ from measurement_stats import p95
 def stats(values):
     values = sorted(values)
     return {"avg": statistics.mean(values), "p95": p95(values), "peak": max(values)} if values else {"avg": None, "p95": None, "peak": None}
+
+
+def input_fingerprint(name, result):
+    """Hash stable input evidence, never the mutated DB binary or run IDs."""
+    output=Path(result.get('output',''))
+    if name.startswith('ffmpeg'):
+        path=output/'stage/manifests/source_video_identity_step01_queue.csv'
+        if not path.exists(): return None
+        with path.open() as f:
+            evidence=sorted((r['source_video_fingerprint_sha256'],r['sampling_contract_id']) for r in csv.DictReader(f))
+    else:
+        path=Path(result.get('fixture',''))
+        if not path.is_file(): return None
+        # Called only for completed workloads: immutable prevents SQLite from
+        # attempting to create a WAL/SHM file during a read-only audit.
+        with sqlite3.connect(f'file:{path}?mode=ro&immutable=1',uri=True) as c:
+            if name.startswith('qwen'):
+                evidence=c.execute('select candidate_id,runtime_visual_file_sha256,candidate_semantic_sha256 from stop03_2_candidate_queue_frozen_v25 order by candidate_id').fetchall()
+            elif name.startswith('embedding'):
+                evidence=c.execute('select document_id,embedding_text_sha256 from stop03_5d_text_documents order by document_id').fetchall()
+            elif name.startswith('whisper'):
+                evidence=c.execute('select source_file_id,content_sha256,size_bytes,mtime_ns from source_file_records order by source_file_id').fetchall()
+            else:
+                evidence=c.execute('select v.visual_unit_id,d.sha256 from visual_units v left join derived_assets d on v.derived_id=d.derived_id order by v.visual_unit_id').fetchall()
+    return hashlib.sha256(json.dumps(evidence,separators=(',',':')).encode()).hexdigest() if evidence else None
 
 
 def concurrency_evidence(name, result):
@@ -133,6 +159,8 @@ def inspect_result(name, result):
         if p.exists(): count=json.loads(p.read_text()).get("visual_unit_count")
     row["processed_units"] = count
     row["throughput"] = count/wall if count and wall > 0 else None
+    if 'constituents' not in result:
+        row['input_evidence_fingerprint']=input_fingerprint(name,result)
     if 'constituents' in result:
         kinds=name.split('+')
         constituent_rows=[inspect_result(kinds[i] if i<len(kinds) else 'constituent',c) for i,c in enumerate(result['constituents'])]
@@ -203,6 +231,11 @@ def main():
     for group in grouped.values():
         group.sort(key=lambda r:r.get('requested_concurrency') or 1)
         baseline=next((r for r in group if r.get('requested_concurrency')==1),None)
+        fingerprints={r.get('input_evidence_fingerprint') for r in group}
+        if len(group)>1 and (None in fingerprints or len(fingerprints)!=1):
+            for r in group:
+                r.update(validity='INVALID',reason='homogeneous_input_fingerprints_differ_or_missing',resource_verdict='HARNESS_INVALID')
+            continue
         previous=None
         for row in group:
             n=row.get('requested_concurrency') or 1
