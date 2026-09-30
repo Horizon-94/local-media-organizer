@@ -48,7 +48,7 @@ def main() -> int:
             file_id = "fixture_file_" + hashlib.sha256(str(path).encode()).hexdigest()[:24]
             con.execute(
                 "INSERT INTO source_file_records(source_file_id,source_content_id,absolute_path,relative_path,source_root,file_name,extension,media_kind,support_status,size_bytes,mtime_ns,ctime_ns,dedup_role,next_action,canonical_source_file_id,folder_path,file_stem,stem_key,finder_tag_status,finder_tags_json,scan_run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (file_id, source_id, str(path), str(row.get("relative_path") or path.name), str(path.parents[-1]), path.name, path.suffix.lower(), media_type, "supported", stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, "canonical", "process", file_id, str(path.parent), path.stem, path.stem, "unread", "[]", "benchmark_fixture"),
+                (file_id, source_id, str(path), str(row.get("relative_path") or path.name), str(path.parent), path.name, path.suffix.lower(), media_type, "supported", stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, "canonical", "process", file_id, str(path.parent), path.stem, path.stem, "unread", "[]", "benchmark_fixture"),
             )
         con.commit()
         integrity = con.execute("PRAGMA integrity_check").fetchone()[0]

@@ -50,6 +50,10 @@ def fresh_db(run_root: Path) -> Path:
         "stop03_3g_local_db_fullflow_20260711_191408/database/"
         "media_archive_stop03_3g_validation.sqlite"
     )
+    ffmpeg_template = Path(
+        "/Users/horizon/Documents/AI-Local/test-output/"
+        "001dzl-pipeline-benchmark-20260929/fixture-10video-r2.sqlite"
+    )
     default_name = (
         "fixture-yolo/media_archive.sqlite" if case == "person-reid"
         else "fixture-embedding/media_archive.sqlite" if case == "embedding"
@@ -58,7 +62,7 @@ def fresh_db(run_root: Path) -> Path:
     if case == "ocr" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = ocr_template
     elif case == "ffmpeg" and "ADAPTER_FIXTURE_DB" not in os.environ:
-        source = handoff_template
+        source = ffmpeg_template
     elif case == "embedding" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = Path(
             "/Users/horizon/Documents/AI-Local/test-output/"
