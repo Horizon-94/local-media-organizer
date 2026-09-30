@@ -8,9 +8,13 @@ from pathlib import Path
 import run_full_pipeline_calibration as campaign
 import trace_formal_stage as trace
 from audit_calibration_validity import concurrency_evidence, inspect_result
+from measurement_stats import p95
 
 
 class Semantics(unittest.TestCase):
+    def test_p95_short_sample_is_not_zero_when_peak_is_positive(self):
+        self.assertEqual(p95([0,0,100]),100)
+        self.assertIsNone(p95([]))
     def test_resident_is_not_cold_alias(self):
         row = next(r for r in campaign.campaign_plan() if r['id']=='whisper-resident-x1')
         self.assertEqual(row['mode'], 'resident')
@@ -37,7 +41,7 @@ class Semantics(unittest.TestCase):
     def test_parallel_audio_jobs_are_not_parallel_whisper_inference(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'stage').mkdir()
-            (root/'stage/audio_enrichment_summary.json').write_text(json.dumps({'source_video_count':3,'counts':{'success':1,'no_speech':2}}))
+            (root/'stage/audio_enrichment_summary.json').write_text(json.dumps({'status':'SUCCESS','source_video_count':3,'transcript_segment_count':10,'vector_count':10,'counts':{'success':1,'no_speech':2}}))
             samples=root/'samples.csv'
             samples.write_text('phase,timestamp_epoch,process_rss_kib,process_cpu_percent,memory_pressure_free_percent\nactive,1,100,10,80\n')
             row=inspect_result('whisper-x2',{'status':'PASS','workers':2,'output':td,'metrics':{'artifacts':{'samples_csv':str(samples)},'events':[{'event':'BENCHMARK_START','timestamp_epoch':0},{'event':'PROCESS_EXIT','timestamp_epoch':2}]}})

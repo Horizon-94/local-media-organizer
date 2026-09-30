@@ -20,9 +20,15 @@ def trace(frame,event,arg):
     if event=='call': starts[key]=time.time()
     elif event=='return' and key in starts:
         output=Path(sys.argv[sys.argv.index('--output-dir')+1])/'benchmark-whisper-timing.jsonl'
+        mx=frame.f_globals.get('mx')
+        memory={}
+        for name in ('get_active_memory','get_cache_memory','get_peak_memory'):
+            try: memory[name]=int(getattr(mx,name)())
+            except (AttributeError,RuntimeError): memory[name]=None
         with output.open('a') as f:
             f.write(json.dumps({'pid':os.getpid(),'started_epoch':starts.pop(key),'finished_epoch':time.time(),
-                                'scope':'formal_mlx_transcribe_load_and_inference'})+'\n')
+                                'scope':'formal_mlx_transcribe_load_and_inference',
+                                'mlx_memory_bytes_at_transcribe_return':memory})+'\n')
 
 
 if __name__=='__main__':

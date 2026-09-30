@@ -14,6 +14,12 @@ import time
 import statistics
 from pathlib import Path
 from typing import Any
+try:
+    from measurement_stats import p95
+except ModuleNotFoundError:
+    import sys
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    from measurement_stats import p95
 
 
 def run_text(command: list[str], timeout: float = 5.0) -> str:
@@ -278,7 +284,7 @@ def main() -> int:
     for prefix, field, scale in (("rss", "process_rss_kib", 1024), ("cpu", "process_cpu_percent", 1)):
         values = sorted(float(row[field]) * scale for row in active_samples)
         for name, value in (("avg", statistics.mean(values) if values else None),
-                            ("p95", values[min(len(values)-1, int((len(values)-1)*.95))] if values else None),
+                            ("p95", p95(values)),
                             ("peak", max(values) if values else None)):
             summary[f"{prefix}_{name}"] = value
     summary["memory_pressure_minimum"] = min((float(r["memory_pressure_free_percent"]) for r in active_samples if r.get("memory_pressure_free_percent") is not None), default=None)

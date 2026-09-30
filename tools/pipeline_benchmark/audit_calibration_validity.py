@@ -8,11 +8,12 @@ import statistics
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from measurement_stats import p95
 
 
 def stats(values):
     values = sorted(values)
-    return {"avg": statistics.mean(values), "p95": values[int((len(values)-1)*.95)], "peak": max(values)} if values else {"avg": None, "p95": None, "peak": None}
+    return {"avg": statistics.mean(values), "p95": p95(values), "peak": max(values)} if values else {"avg": None, "p95": None, "peak": None}
 
 
 def concurrency_evidence(name, result):
@@ -60,6 +61,13 @@ def inspect_result(name, result):
         status=str(result.get('status'))
         row.update(validity="NOT_SUPPORTED" if "SUPPORTED" in status else "SKIPPED" if status=='SKIPPED' else "INVALID", reason=result.get("reason_code"))
         return row
+    if 'constituents' not in result:
+        from run_full_pipeline_calibration import formal_stage_result
+        kind=result.get('kind') or ('person-reid' if name.startswith('person-reid') else name.split('-')[0])
+        semantic_ok,semantic_reason=formal_stage_result(kind,Path(result.get('output','')))
+        if not semantic_ok:
+            row.update(validity='INVALID',reason=semantic_reason,resource_verdict='HARNESS_INVALID')
+            return row
     if "constituents" in result and not m.get('artifacts',{}).get('samples_csv'):
         row.update(reason="historical_composite_has_no_synchronized_aggregate_monitor")
         return row
@@ -95,7 +103,9 @@ def inspect_result(name, result):
         if "counts" in d and "processed_units" in d["counts"]: count = d["counts"]["processed_units"]
     if name.startswith("qwen"):
         p=output/'qwen-stage/reports/final_report.json'
-        if p.exists(): count=json.loads(p.read_text()).get('counts',{}).get('success')
+        if p.exists():
+            qwen=json.loads(p.read_text()); count=qwen.get('counts',{}).get('success')
+            row['mlx_per_worker_snapshots']=[w.get('mlx_memory_bytes') for w in qwen.get('worker_reports',[]) if w.get('mlx_memory_bytes')]
     if name.startswith('openclip'):
         p=output/'stage/reports/stop03_1b_openclip_db_safe_summary.json'
         if p.exists(): count=json.loads(p.read_text()).get('success_count')
@@ -105,6 +115,7 @@ def inspect_result(name, result):
             audio=json.loads(p.read_text()); count=audio.get('source_video_count')
             row['speech_inference_inputs']=audio.get('counts',{}).get('success',0)
             row['non_speech_inputs']=audio.get('counts',{}).get('no_speech',0)
+        row['mlx_per_worker_snapshots']=[json.loads(line).get('mlx_memory_bytes_at_transcribe_return') for file in (output/'stage/items').glob('*/benchmark-whisper-timing.jsonl') for line in file.read_text().splitlines()]
     if name.startswith("person"):
         p=output / "stage/run_summary.json"
         if p.exists(): count=json.loads(p.read_text()).get("visual_unit_count")
@@ -150,7 +161,7 @@ def inspect_result(name, result):
         effective=concurrency_evidence(name,result)
         row['effective_concurrency']=effective
         if effective and effective >= int(result.get('workers',1)):
-            row.update(validity='VALID',reason='short_baseline_with_overlapping_committed_task_intervals')
+            row.update(validity='VALID',reason='short_baseline_with_measured_formal_work_overlap')
     return row
 
 

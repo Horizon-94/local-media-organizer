@@ -21,6 +21,12 @@ import shutil as which_module
 from datetime import datetime, timezone
 from pathlib import Path
 try:
+    from measurement_stats import p95
+except ModuleNotFoundError:
+    import sys
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    from measurement_stats import p95
+try:
     from formal_adapters import AdapterSpec, adapter_contract_complete
 except ModuleNotFoundError:  # loaded by a test/importlib from repository root
     import sys
@@ -141,9 +147,9 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
     elif kind == "whisper":
         ok = d.get("status") == "SUCCESS" and d.get("source_video_count", 0) > 0 and d.get("transcript_segment_count", 0) > 0 and d.get("vector_count", 0) > 0
     elif kind == "embedding":
-        ok = d.get("status") == "PASS" and d.get("document_count", 0) > 0 and d.get("success_count") == d.get("document_count") and d.get("vector_blobs_valid") is True
+        ok = d.get("status") == "PASS" and d.get("document_count", 0) > 0 and d.get("success_count") == d.get("document_count") and d.get("vector_blobs_valid") is True and d.get('database_integrity_check')=='ok' and d.get('foreign_key_error_count')==0
     else:
-        ok = d.get("run_status") == "success" and d.get("visual_unit_count", 0) > 0 and d.get("failed_count", 0) == 0 and d.get("success_count", 0) + d.get("no_face_count", 0) > 0
+        ok = d.get("run_status") == "success" and d.get("visual_unit_count", 0) > 0 and d.get("failed_count", 0) == 0 and d.get("success_count", 0) + d.get("no_face_count", 0) == d.get('visual_unit_count') and d.get('foreign_key_error_count')==0
     return (True, None) if ok else (False, "formal_stage_semantic_failure")
 
 
@@ -441,7 +447,7 @@ def run_monitored_composite(row: dict[str, object], run_root: Path) -> dict[str,
         for prefix, field, scale in (("rss", "process_rss_kib", 1024), ("cpu", "process_cpu_percent", 1)):
             values = sorted(float(r[field])*scale for r in rows)
             if values:
-                result["metrics"].update({prefix+"_avg": statistics.mean(values), prefix+"_p95": values[int((len(values)-1)*.95)], prefix+"_peak": max(values)})
+                result["metrics"].update({prefix+"_avg": statistics.mean(values), prefix+"_p95": p95(values), prefix+"_peak": max(values)})
         result["metrics"]["workload_elapsed_seconds"] = last-first
         result["metrics"]["peak_process_tree_rss_bytes"] = result["metrics"].get("rss_peak")
         result["metrics"]["peak_process_tree_cpu_percent"] = result["metrics"].get("cpu_peak")
