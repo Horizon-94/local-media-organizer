@@ -97,6 +97,7 @@ def inspect_result(name, result):
     for prefix,key in (('compressed','memory_compressed_bytes'),('swap','swap_used_bytes')):
         values=measured(key)
         row.update({prefix+'_baseline':values[0] if values else None,prefix+'_end':values[-1] if values else None,prefix+'_peak':max(values) if values else None})
+    row['active_window_swap_delta']=row['swap_end']-row['swap_baseline'] if row['swap_end'] is not None and row['swap_baseline'] is not None else None
     used=[float(r['physical_memory_bytes'])-float(r['memory_available_approx_bytes']) for r in active if r.get('physical_memory_bytes') and r.get('memory_available_approx_bytes')]
     row['system_memory_including_cache_baseline']=used[0] if used else None
     row['system_memory_including_cache_peak']=max(used) if used else None
@@ -140,7 +141,9 @@ def inspect_result(name, result):
         row['constituent_processed_units']=[r.get('processed_units') for r in constituent_rows]
         row['aggregate_units_are_heterogeneous']=True
         row['overlap_seconds']=result.get('all_constituents_overlap_seconds')
-        if row['overlap_seconds'] and all(c.get('status')=='PASS' for c in result['constituents']):
+        if any(c['validity']=='INVALID' for c in constituent_rows):
+            row.update(validity='INVALID',reason='constituent_semantic_or_measurement_contract_invalid',resource_verdict='HARNESS_INVALID')
+        elif row['overlap_seconds'] and all(c.get('status')=='PASS' for c in result['constituents']):
             row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads',effective_concurrency=len(result['constituents']))
         return row
     if name == "whisper-resident-x1": row.update(validity="INVALID", reason="fresh_process_not_resident_lifecycle")
@@ -156,6 +159,16 @@ def inspect_result(name, result):
         if limit=='1' and result.get('workers')==1 and count==1:
             row.update(validity='VALID',reason='single_video_resource_only_not_ten_video_scaling_baseline',effective_concurrency=1)
         telemetry=output/'stage/telemetry/step02_video_frame_resource_samples_latest.csv'
+        per_video=output/'stage/telemetry/step02_video_frame_per_video_timing_latest.csv'
+        if per_video.exists():
+            with per_video.open() as f: video_rows=list(csv.DictReader(f))
+            durations=[float(r['task_elapsed_seconds']) for r in video_rows if r.get('task_elapsed_seconds')]
+            frames=[int(r['valid_jpg1280_count']) for r in video_rows if r.get('valid_jpg1280_count')]
+            row['video_task_sum_seconds']=sum(durations) if durations else None
+            row['longest_video_task_seconds']=max(durations) if durations else None
+            row['longest_task_fraction_of_wall']=max(durations)/wall if durations and wall>0 else None
+            row['largest_video_fraction_of_frames']=max(frames)/sum(frames) if frames and sum(frames) else None
+            row['ffmpeg_scaling_scope']='Fixed ten-video batch; skewed video lengths can cap batch speedup. Not a hardware-wide worker ceiling.'
         if limit=='10' and count==10 and telemetry.exists():
             with telemetry.open() as f: samples=list(csv.DictReader(f))
             effective=max((int(r.get('ffmpeg_pid_count') or 0) for r in samples),default=0)
@@ -206,11 +219,24 @@ def main():
     fields=sorted(set().union(*(r.keys() for r in rows)))
     with (a.out/"validity-audit.csv").open("w",newline="") as f:
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
-    lines=["# CALIBRATION VALIDITY AUDIT", "", "Historical wall time excludes post-exit observation. RSS is process memory, not GPU VRAM. CPU 100% represents approximately one logical core; divide by 10 for machine normalization.","", "| case | validity | work sec | RSS avg/P95/peak GiB | CPU avg/P95/peak % | reason |", "|---|---|---:|---|---|---|"]
+    lines=["# CALIBRATION VALIDITY AUDIT", "", "Wall time excludes post-exit observation. P95 is empirical nearest-rank, recalculated from raw samples. RSS is process memory, not GPU VRAM. CPU 100% represents approximately one logical core; divide by 10 for machine normalization. System used/available estimates include/exclude reclaimable cache and are NOT Activity Monitor application memory. One-second sampling can miss brief peaks.","", "| case | validity | requested / effective | processed units | work sec | units/sec | RSS avg/P95/peak GiB | CPU avg/P95/peak % | pressure free min % | swap delta bytes | reason |", "|---|---|---|---:|---:|---:|---|---|---:|---:|---|"]
     for r in rows:
         fmt=lambda k,s: '/'.join(f'{r[k+"_"+t]/s:.2f}' if r.get(k+"_"+t) is not None else 'N/A' for t in ('avg','p95','peak'))
-        lines.append(f"| {r['case']} | {r['validity']} | {r.get('workload_wall_time', 'N/A')} | {fmt('rss',2**30)} | {fmt('cpu',1)} | {r['reason']} |")
+        lines.append(f"| {r['case']} | {r['validity']} | {r.get('requested_concurrency')} / {r.get('effective_concurrency')} | {r.get('processed_units','N/A')} | {r.get('workload_wall_time', 'N/A')} | {r.get('throughput','N/A')} | {fmt('rss',2**30)} | {fmt('cpu',1)} | {r.get('memory_pressure_minimum','N/A')} | {r.get('swap_delta','N/A')} | {r['reason']} |")
     lines += ["", "SAFE profile: NOT PROVEN. MAX_THROUGHPUT profile: NOT PROVEN. Production scheduler resource costs remain pending valid concurrency, aggregate overlap and sustained validation. Disk totals are whole-system combined I/O; separate read/write and GPU utilization are N/A."]
     (a.out/"validity-audit.md").write_text('\n'.join(lines)+'\n')
+    proposal=['# Observed admission resource table (NOT a production budget)', '',
+              'Only validated x1 rows below. Cold whole-workload RSS peak is an observed reservation reference, not a proven upper bound. MLX allocator snapshots are per worker, not independent VRAM; never add them to RSS. Startup-only allowance is N/A because no exact load/steady-state phase boundary was measured.', '',
+              '| workload | RSS P95 / peak GiB | CPU P95 cores | startup-only allowance | coexistence evidence |',
+              '|---|---:|---:|---|---|']
+    mixes=[r for r in rows if '+' in r['case'] and r['validity']=='VALID']
+    for r in rows:
+        if r['validity']=='VALID' and r.get('requested_concurrency')==1 and '+' not in r['case']:
+            evidence=', '.join(m['case'] for m in mixes if r['case'].split('-')[0] in m['case'].split('+')) or 'N/A'
+            proposal.append(f"| {r['case']} | {r['rss_p95']/2**30:.3f} / {r['rss_peak']/2**30:.3f} | {r['cpu_p95']/100:.3f} | N/A | {evidence} (short cold overlap only) |")
+    proposal += ['', 'SAFE production profile: NOT PROVEN. MAX_THROUGHPUT whole-pipeline profile: NOT PROVEN.',
+                 'Measured local combinations are resource coexistence evidence, not an optimal total-media schedule. Different models have heterogeneous units; do not sum units/sec or compare different work mixes as an overall pipeline speedup.',
+                 'No production scheduler defaults were changed. Next validation must cover sustained mixed execution, startup/load reserve, background headroom and shared DB writer. HDD limits remain unmeasured without a real HDD fixture.']
+    (a.out/'observed-admission-resources.md').write_text('\n'.join(proposal)+'\n')
     print(a.out/"validity-audit.md")
 if __name__=="__main__": main()
