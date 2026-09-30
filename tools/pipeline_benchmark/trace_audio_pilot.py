@@ -24,10 +24,14 @@ def trace(frame,event,arg):
             f.write(json.dumps({'event':'FORMAL_WHISPER_BACKEND_START','timestamp_epoch':starts[key],'pid':os.getpid(),'source':'exact_function_entry'})+'\n')
     elif event=='return' and key in starts:
         output=Path(sys.argv[sys.argv.index('--output-dir')+1])/'benchmark-whisper-timing.jsonl'
-        mx=frame.f_globals.get('mx')
+        # Some Whisper versions do not expose mx in transcribe's globals.
+        # Read the already-loaded module; do not import/load another backend.
+        mx=frame.f_globals.get('mx') or sys.modules.get('mlx.core')
         memory={}
         for name in ('get_active_memory','get_cache_memory','get_peak_memory'):
-            try: memory[name]=int(getattr(mx,name)())
+            try:
+                getter=getattr(mx,name,None) or getattr(getattr(mx,'metal',None),name,None)
+                memory[name]=int(getter()) if getter else None
             except (AttributeError,RuntimeError): memory[name]=None
         with output.open('a') as f:
             f.write(json.dumps({'pid':os.getpid(),'started_epoch':starts.pop(key),'finished_epoch':time.time(),

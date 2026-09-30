@@ -154,9 +154,8 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
 
 
 def campaign_plan() -> list[dict[str, object]]:
-    # Qwen is the only heavy formal host command currently proven in this
-    # repository.  Other entries remain explicit campaign rows so failures or
-    # missing formal contracts are visible and resumable.
+    # All eight formal adapters have independent Host validation. Resident
+    # and unimplemented soak/HDD rows remain explicit, never fake executions.
     rows: list[dict[str, object]] = []
     for mode, workers in (("cold", 1), ("resident", 1), ("homogeneous", 2), ("homogeneous", 3)):
         rows.append({"id": f"qwen-{mode}-x{workers}", "kind": "qwen", "mode": mode, "workers": workers})

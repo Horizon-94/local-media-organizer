@@ -166,7 +166,7 @@ def inspect_result(name, result):
     row['workload_disk_combined_delta_mib']=disks[-1]-disks[0] if len(disks)>1 else None
     row['post_exit_observations']=m.get('post_exit_observations')
     if result.get('constituent_intervals'):
-        row['coordinator_post_exit_observations']=row['post_exit_observations']
+        row['coordinator_post_exit_observations']=m.get('coordinator_post_exit_observations',row['post_exit_observations'])
         row['post_exit_observations']=post_exit_samples(all_samples,max(b for a,b in result['constituent_intervals']))
     output = Path(result.get("output", ""))
     reports = list(output.glob("stage/reports/*summary*.json"))
@@ -337,7 +337,8 @@ def main():
     lines=["# CALIBRATION VALIDITY AUDIT", "", "Wall time excludes post-exit observation. P95 is empirical nearest-rank, recalculated from raw samples. RSS is process memory, not GPU VRAM. CPU 100% represents approximately one logical core; divide by 10 for machine normalization. System used/available estimates include/exclude reclaimable cache and are NOT Activity Monitor application memory. One-second sampling can miss brief peaks.","", "| case | validity | requested / effective | processed units | work sec | units/sec | RSS avg/P95/peak GiB | CPU avg/P95/peak % | compressed peak bytes | pressure free min % | swap delta bytes | active system I/O MiB | resource verdict | reason |", "|---|---|---|---:|---:|---:|---|---|---:|---:|---:|---:|---|---|"]
     for r in rows:
         fmt=lambda k,s: '/'.join(f'{r[k+"_"+t]/s:.2f}' if r.get(k+"_"+t) is not None else 'N/A' for t in ('avg','p95','peak'))
-        lines.append(f"| {r['case']} | {r['validity']} | {r.get('requested_concurrency')} / {r.get('effective_concurrency')} | {r.get('processed_units','N/A')} | {r.get('workload_wall_time', 'N/A')} | {r.get('throughput','N/A')} | {fmt('rss',2**30)} | {fmt('cpu',1)} | {r.get('compressed_peak','N/A')} | {r.get('memory_pressure_minimum','N/A')} | {r.get('swap_delta','N/A')} | {r.get('workload_disk_combined_delta_mib','N/A')} | {r.get('resource_verdict','N/A')} | {r['reason']} |")
+        show=lambda k:'N/A' if r.get(k) is None else r[k]
+        lines.append(f"| {r['case']} | {r['validity']} | {show('requested_concurrency')} / {show('effective_concurrency')} | {show('processed_units')} | {show('workload_wall_time')} | {show('throughput')} | {fmt('rss',2**30)} | {fmt('cpu',1)} | {show('compressed_peak')} | {show('memory_pressure_minimum')} | {show('swap_delta')} | {show('workload_disk_combined_delta_mib')} | {show('resource_verdict')} | {r['reason']} |")
     lines += ["", "SAFE profile: NOT PROVEN. MAX_THROUGHPUT profile: NOT PROVEN. Production scheduler resource costs remain pending valid concurrency, aggregate overlap and sustained validation. Disk totals are whole-system combined I/O; separate read/write and GPU utilization are N/A."]
     (a.out/"validity-audit.md").write_text('\n'.join(lines)+'\n')
     proposal=['# Observed admission resource table (NOT a production budget)', '',
