@@ -161,6 +161,14 @@ def inspect_result(name, result):
     row["throughput"] = count/wall if count and wall > 0 else None
     if 'constituents' not in result:
         row['input_evidence_fingerprint']=input_fingerprint(name,result)
+    if name.startswith('embedding') and result.get('fixture'):
+        with sqlite3.connect(f"file:{result['fixture']}?mode=ro&immutable=1",uri=True) as c:
+            vectors=c.execute("select model_dimension,vector_byte_length,length(vector_blob) from stop03_5d_text_vectors where status='success'").fetchall()
+        row['embedding_rows_committed']=len(vectors)
+        row['embedding_dimensions']=sorted({v[0] for v in vectors})
+        if not vectors or len(vectors)!=count or any(v!=(1024,4096,4096) for v in vectors):
+            row.update(validity='INVALID',reason='embedding_vector_rows_or_dimensions_invalid',resource_verdict='HARNESS_INVALID')
+            return row
     if 'constituents' in result:
         kinds=name.split('+')
         constituent_rows=[inspect_result(kinds[i] if i<len(kinds) else 'constituent',c) for i,c in enumerate(result['constituents'])]
