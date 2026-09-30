@@ -9,7 +9,7 @@ import statistics
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from measurement_stats import p95
+from measurement_stats import p95, post_exit_samples
 
 
 def stats(values):
@@ -119,7 +119,8 @@ def inspect_result(name, result):
         row.update(validity="INVALID", reason="samples_missing")
         return row
     with Path(sample).open() as f:
-        active = [r for r in csv.DictReader(f) if r.get("phase", "active") == "active"]
+        all_samples=list(csv.DictReader(f))
+        active = [r for r in all_samples if r.get("phase", "active") == "active"]
     if result.get('constituent_intervals'):
         first=min(a for a,b in result['constituent_intervals']); last=max(b for a,b in result['constituent_intervals'])
         active=[r for r in active if first <= float(r['timestamp_epoch']) <= last]
@@ -148,6 +149,9 @@ def inspect_result(name, result):
     disks=measured('disk_cumulative_mib')
     row['workload_disk_combined_delta_mib']=disks[-1]-disks[0] if len(disks)>1 else None
     row['post_exit_observations']=m.get('post_exit_observations')
+    if result.get('constituent_intervals'):
+        row['coordinator_post_exit_observations']=row['post_exit_observations']
+        row['post_exit_observations']=post_exit_samples(all_samples,max(b for a,b in result['constituent_intervals']))
     output = Path(result.get("output", ""))
     reports = list(output.glob("stage/reports/*summary*.json"))
     count = None

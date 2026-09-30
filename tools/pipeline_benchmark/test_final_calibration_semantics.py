@@ -9,7 +9,7 @@ from pathlib import Path
 import run_full_pipeline_calibration as campaign
 import trace_formal_stage as trace
 from audit_calibration_validity import concurrency_evidence, inspect_result, input_fingerprint
-from measurement_stats import p95
+from measurement_stats import p95, post_exit_samples
 
 
 def encode(): return 42
@@ -17,6 +17,14 @@ def spawned_encode_probe(): encode()
 
 
 class Semantics(unittest.TestCase):
+    def test_composite_recovery_uses_last_model_exit_not_coordinator_exit(self):
+        rows=[{'timestamp_epoch':str(t),'physical_memory_bytes':'1000','memory_available_approx_bytes':str(f),'process_rss_kib':'1'} for t,f in ((60,200),(80,300),(90,400),(110,500))]
+        observations=post_exit_samples(rows,50)
+        self.assertEqual(observations['post_exit_10s']['timestamp_epoch'],60)
+        self.assertEqual(observations['post_exit_30s']['timestamp_epoch'],80)
+        self.assertEqual(observations['post_exit_10s']['system_memory_used_bytes'],800)
+        self.assertIsNone(post_exit_samples([],50)['post_exit_10s'])
+
     def test_whisper_composite_waits_for_backend_not_process_start(self):
         with tempfile.TemporaryDirectory() as td:
             seen=[]

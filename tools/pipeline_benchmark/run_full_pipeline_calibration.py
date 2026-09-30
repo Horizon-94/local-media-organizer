@@ -458,7 +458,11 @@ def run_monitored_composite(row: dict[str, object], run_root: Path) -> dict[str,
         result["constituent_intervals"] = intervals
         sample_path = run_root / "aggregate/resource_samples.csv"
         with sample_path.open() as handle:
-            rows = [r for r in csv.DictReader(handle) if first <= float(r["timestamp_epoch"]) <= last]
+            all_samples=list(csv.DictReader(handle))
+            rows = [r for r in all_samples if first <= float(r["timestamp_epoch"]) <= last]
+        from measurement_stats import post_exit_samples
+        result['metrics']['coordinator_post_exit_observations']=result['metrics'].get('post_exit_observations')
+        result['metrics']['post_exit_observations']=post_exit_samples(all_samples,last)
         for prefix, field, scale in (("rss", "process_rss_kib", 1024), ("cpu", "process_cpu_percent", 1)):
             values = sorted(float(r[field])*scale for r in rows)
             if values:
