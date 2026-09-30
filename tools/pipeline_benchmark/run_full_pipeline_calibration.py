@@ -468,6 +468,11 @@ def main() -> int:
         print(f"[{index:02d}/{len(plan):02d}] {item_id} {result.get('status')} elapsed={result.get('elapsed_seconds', 'N/A')} rss_peak={metrics.get('peak_process_tree_rss_bytes', 'N/A') if isinstance(metrics, dict) else 'N/A'}", flush=True)
     summary = {"campaign": state["campaign"], "finished_at": utc_now(), "tested": len(results), "passed": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "PASS"), "failed": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") in {"MODEL_FAIL", "HARNESS_FAIL", "UNSAFE"}), "unresolved": sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "ADAPTER_UNRESOLVED"), "results": results}
     write_json(root / "calibration-results.json", summary)
+    summary["planned"] = len(plan)
+    summary["executed"] = sum(1 for r in results.values() if isinstance(r, dict) and (r.get("metrics", {}).get("pid") is not None or any(c.get("metrics", {}).get("pid") is not None for c in r.get("constituents", []))))
+    summary["not_supported"] = sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "NOT_SUPPORTED_YET")
+    summary["skipped"] = sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "SKIPPED")
+    write_json(root / "calibration-results.json", summary)
     lines = ["# Pipeline V2 calibration campaign", "", f"- campaign: `{summary['campaign']}`", f"- tested rows: `{summary['tested']}`", f"- pass: `{summary['passed']}`", f"- fail: `{summary['failed']}`", f"- unresolved adapters: `{summary['unresolved']}`", "", "Readiness and execution are separate: a registered production contract can be READY while its host execution adapter remains unresolved."]
     (root / "calibration-summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(root / "calibration-summary.md")

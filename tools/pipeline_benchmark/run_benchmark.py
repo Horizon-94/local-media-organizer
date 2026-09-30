@@ -181,6 +181,7 @@ def main() -> int:
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()
+                    events.append({"event": "PROCESS_EXIT", "timestamp_epoch": time.time(), "source": "exact", "timed_out": True})
                     break
                 time.sleep(max(0.25, args.interval))
             # Keep the process tree scoped to the original root PID, while
