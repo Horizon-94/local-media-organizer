@@ -61,7 +61,7 @@ def fresh_db(run_root: Path) -> Path:
     )
     if case == "ocr" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = ocr_template
-    elif case == "ffmpeg" and "ADAPTER_FIXTURE_DB" not in os.environ:
+    elif case in {"ffmpeg", "whisper"} and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = ffmpeg_template
     elif case == "embedding" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = Path(
@@ -107,15 +107,12 @@ def fresh_db(run_root: Path) -> Path:
                 if con.execute("select 1 from sqlite_master where type='table' and name=?", (table,)).fetchone():
                     con.execute(f"delete from {table}")
             con.commit()
-    if case == "whisper":
+    if case == "whisper" and os.environ.get("ADAPTER_WHISPER_MEDIA"):
         # The generic benchmark DB normally points at the offline 001DZL
         # source volume.  Audio smoke needs a local, read-only fixture media
         # file; use the existing generated control clip and rewrite only the
         # fresh clone's lineage row.
-        fixture_media = Path(os.environ.get(
-            "ADAPTER_WHISPER_MEDIA",
-            "/Users/horizon/Documents/AI-Local/test-output/media-archive-v0.1/test-fixtures/valid-control.mp4",
-        ))
+        fixture_media = Path(os.environ["ADAPTER_WHISPER_MEDIA"])
         if not fixture_media.is_file():
             raise FileNotFoundError(f"whisper_fixture_media_missing:{fixture_media}")
         with sqlite3.connect(target) as con:

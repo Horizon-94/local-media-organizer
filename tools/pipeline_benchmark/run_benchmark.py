@@ -285,6 +285,13 @@ def main() -> int:
     (output / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    (output / "summary.md").write_text(
+        "# Host workload resource summary\n\n" + "\n".join(
+            f"- {key}: {summary.get(key) if summary.get(key) is not None else 'N/A'}"
+            for key in ("name", "exit_code", "timed_out", "workload_elapsed_seconds",
+                        "monitor_total_elapsed_seconds", "rss_avg", "rss_p95", "rss_peak",
+                        "cpu_avg", "cpu_p95", "cpu_peak", "swap_delta_bytes", "memory_pressure_minimum")
+        ) + "\n\nRSS is process-tree memory. CPU 100% is approximately one logical core. System used derived from free/speculative pages includes reclaimable cache; it is not application memory alone. GPU per-process VRAM is N/A.\n", encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if exit_code == 0 and not timed_out else exit_code or 124
 

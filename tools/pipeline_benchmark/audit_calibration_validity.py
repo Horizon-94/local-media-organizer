@@ -84,6 +84,13 @@ def inspect_result(name, result):
             row['throughput']=count/wall if count and wall>0 else None
             row['frames_per_second']=d.get('total_valid_jpg1280_count_in_report',0)/wall if wall>0 else None
         row.update(validity="INVALID" if result.get("workers",1)>1 and limit=="1" else "SUSPICIOUS", reason="limit_new_1_not_scaling_dataset" if limit=='1' else "awaiting_verified_video_task_overlap")
+        telemetry=output/'stage/telemetry/step02_video_frame_resource_samples_latest.csv'
+        if limit=='10' and count==10 and telemetry.exists():
+            with telemetry.open() as f: samples=list(csv.DictReader(f))
+            effective=max((int(r.get('ffmpeg_pid_count') or 0) for r in samples),default=0)
+            row['effective_concurrency']=effective
+            if effective >= int(result.get('workers',1)):
+                row.update(validity='VALID',reason='fixed_ten_videos_with_simultaneous_ffmpeg_processes')
     elif result.get("workers") == 1 and count:
         row.update(validity="VALID", reason="single_workload_resource_short_baseline", effective_concurrency=1)
     elif count and count < int(result.get("workers",1)):

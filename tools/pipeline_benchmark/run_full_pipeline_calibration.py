@@ -14,6 +14,8 @@ import shutil
 import sqlite3
 import subprocess
 import time
+import csv
+import statistics
 from concurrent.futures import ThreadPoolExecutor
 import shutil as which_module
 from datetime import datetime, timezone
@@ -79,7 +81,7 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
             return False, "formal_stage_report_missing"
         data = json.loads(report.read_text(encoding="utf-8"))
         counts = data.get("counts", {})
-        if data.get("validation_status") != "PASS" or int(counts.get("processed_units", 0)) <= 0:
+        if data.get("validation_status") != "PASS" or int(counts.get("processed_units", 0)) <= 0 or counts.get("processed_units") != counts.get("input_rows") or int(counts.get("failed_units", 0)) != 0:
             return False, f"formal_stage_not_pass:{data.get('validation_status')}"
         return True, None
     if kind == "openclip":
@@ -103,6 +105,8 @@ def formal_stage_result(kind: str, output: Path) -> tuple[bool, str | None]:
             return False, "formal_stage_empty_candidates"
         if completed <= 0 and int(data.get("result_count", 0) or 0) <= 0:
             return False, "formal_stage_no_ocr_results"
+        if completed != candidates or int(data.get("failed_count", 0)) != 0:
+            return False, "formal_stage_incomplete_ocr"
         return True, None
     if kind == "ffmpeg":
         queue_reports = sorted((output / "stage" / "reports").glob("*queue_summary.json"), key=lambda p: p.stat().st_mtime)
@@ -413,7 +417,28 @@ def run_monitored_composite(row: dict[str, object], run_root: Path) -> dict[str,
     metrics_path = run_root / "aggregate" / "summary.json"
     result["metrics"] = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
     result["exit_code"] = completed.returncode
-    result["elapsed_seconds"] = result["metrics"].get("workload_elapsed_seconds")
+    intervals = []
+    for constituent in result.get("constituents", []):
+        events = {e["event"]: e["timestamp_epoch"] for e in constituent.get("metrics", {}).get("events", [])}
+        if "BENCHMARK_START" in events and "PROCESS_EXIT" in events:
+            intervals.append((events["BENCHMARK_START"], events["PROCESS_EXIT"]))
+    if len(intervals) == len(result.get("constituents", [])) and intervals:
+        first, last = min(a for a,b in intervals), max(b for a,b in intervals)
+        result["workload_elapsed_seconds"] = last-first
+        result["all_constituents_overlap_seconds"] = max(0, min(b for a,b in intervals)-max(a for a,b in intervals))
+        result["constituent_intervals"] = intervals
+        sample_path = run_root / "aggregate/resource_samples.csv"
+        with sample_path.open() as handle:
+            rows = [r for r in csv.DictReader(handle) if first <= float(r["timestamp_epoch"]) <= last]
+        for prefix, field, scale in (("rss", "process_rss_kib", 1024), ("cpu", "process_cpu_percent", 1)):
+            values = sorted(float(r[field])*scale for r in rows)
+            if values:
+                result["metrics"].update({prefix+"_avg": statistics.mean(values), prefix+"_p95": values[int((len(values)-1)*.95)], prefix+"_peak": max(values)})
+        result["metrics"]["workload_elapsed_seconds"] = last-first
+        result["metrics"]["peak_process_tree_rss_bytes"] = result["metrics"].get("rss_peak")
+        result["metrics"]["peak_process_tree_cpu_percent"] = result["metrics"].get("cpu_peak")
+        result["metrics"]["scope_note"] = "Synchronized coordinator and descendants, including benchmark monitoring overhead; statistics trimmed to actual constituent execution interval."
+    result["elapsed_seconds"] = result.get("workload_elapsed_seconds")
     return result
 
 
