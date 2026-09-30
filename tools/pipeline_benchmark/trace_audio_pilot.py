@@ -17,7 +17,11 @@ starts={}
 def trace(frame,event,arg):
     if frame.f_code.co_name!='transcribe' or frame.f_globals.get('__name__')!='mlx_whisper.transcribe': return
     key=id(frame)
-    if event=='call': starts[key]=time.time()
+    if event=='call':
+        starts[key]=time.time()
+        output=Path(sys.argv[sys.argv.index('--output-dir')+1])/'benchmark-whisper-events.jsonl'
+        with output.open('a') as f:
+            f.write(json.dumps({'event':'FORMAL_WHISPER_BACKEND_START','timestamp_epoch':starts[key],'pid':os.getpid(),'source':'exact_function_entry'})+'\n')
     elif event=='return' and key in starts:
         output=Path(sys.argv[sys.argv.index('--output-dir')+1])/'benchmark-whisper-timing.jsonl'
         mx=frame.f_globals.get('mx')

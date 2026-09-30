@@ -408,13 +408,28 @@ def run_composite(row: dict[str, object], run_root: Path) -> dict[str, object]:
     kinds = name.split("+")
     rows = [{"id": f"{name}:{kind}", "kind": kind, "mode": "baseline", "workers": 1} for kind in kinds]
     with ThreadPoolExecutor(max_workers=len(rows), thread_name_prefix="campaign-composite") as pool:
-        futures = [pool.submit(run_qwen if item["kind"] == "qwen" else run_formal_adapter, item, run_root / item["kind"]) for item in rows]
-        results = [future.result() for future in futures]
+        futures = {}
+        for item in rows:
+            if 'whisper' not in kinds or item['kind'] in {'whisper','ffmpeg'}:
+                futures[item['kind']]=pool.submit(run_qwen if item['kind']=='qwen' else run_formal_adapter,item,run_root/item['kind'])
+        if 'whisper' in kinds:
+            # Audio preparation can outlast an entire visual stage. Process
+            # overlap alone is not a heavy-model compatibility measurement.
+            deadline=time.monotonic()+600
+            while not list((run_root/'whisper').glob('**/benchmark-whisper-events.jsonl')):
+                if futures['whisper'].done() or time.monotonic()>=deadline:
+                    return {'status':'HARNESS_FAIL','reason_code':'whisper_backend_start_not_observed','constituents':[f.result() for f in futures.values()],'workers':1}
+                time.sleep(.5)
+            for item in rows:
+                if item['kind'] not in futures:
+                    futures[item['kind']]=pool.submit(run_qwen if item['kind']=='qwen' else run_formal_adapter,item,run_root/item['kind'])
+        results = [futures[item['kind']].result() for item in rows]
     statuses = [str(result.get("status")) for result in results]
     status = "PASS" if all(value == "PASS" for value in statuses) else "MODEL_FAIL"
     if any(value == "HARNESS_FAIL" for value in statuses):
         status = "HARNESS_FAIL"
-    return {"status": status, "constituents": results, "workers": 1}
+    return {"status": status, "constituents": results, "workers": 1,
+            "launch_policy":'whisper_backend_start_then_visual_models' if 'whisper' in kinds else 'simultaneous_cold'}
 
 
 def run_monitored_composite(row: dict[str, object], run_root: Path) -> dict[str, object]:

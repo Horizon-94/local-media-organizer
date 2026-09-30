@@ -77,6 +77,18 @@ def concurrency_evidence(name, result):
     return peak if events else None
 
 
+def backend_intervals(name,result):
+    root=Path(result.get('output',''))
+    files=list((root/'stage/items').glob('*/benchmark-whisper-timing.jsonl')) if name=='whisper' else list((root/'stage/benchmark-task-timing').glob('worker-*.jsonl'))
+    if files:
+        return [(r['started_epoch'],r['finished_epoch']) for file in files for line in file.read_text().splitlines() for r in [json.loads(line)]]
+    table={'qwen':'stop03_3_qwenvl_run_items','ocr':'stop03_4_ocr_attempts','embedding':'stop03_5d_text_vectors'}.get(name)
+    path=result.get('fixture')
+    if not table or not path: return []
+    with sqlite3.connect(f'file:{path}?mode=ro&immutable=1',uri=True) as c:
+        return [(datetime.fromisoformat(a).timestamp(),datetime.fromisoformat(b).timestamp()) for a,b in c.execute(f'select started_at,finished_at from {table} where started_at is not null and finished_at is not null')]
+
+
 def inspect_result(name, result):
     m = result.get("metrics", {})
     row = {"case": name, "requested_concurrency": result.get("workers"), "effective_concurrency": None,
@@ -139,6 +151,9 @@ def inspect_result(name, result):
         for key in ("candidate_count", "processed_this_run", "document_count"):
             if key in d: count = d[key]
         if "counts" in d and "processed_units" in d["counts"]: count = d["counts"]["processed_units"]
+        worker_peaks=[w['peak_rss_bytes'] for w in d.get('worker_reports',[]) if w.get('peak_rss_bytes')]
+        if worker_peaks:
+            row['formal_worker_peak_rss_bytes']=worker_peaks
     if name.startswith("qwen"):
         p=output/'qwen-stage/reports/final_report.json'
         if p.exists():
@@ -159,6 +174,10 @@ def inspect_result(name, result):
         if p.exists(): count=json.loads(p.read_text()).get("visual_unit_count")
     row["processed_units"] = count
     row["throughput"] = count/wall if count and wall > 0 else None
+    if row.get('formal_worker_peak_rss_bytes'):
+        row['rss_peak_observed_lower_bound']=max([row.get('rss_peak') or 0]+row['formal_worker_peak_rss_bytes'])
+        row['sampled_peak_below_formal_worker_peak']=max(row['formal_worker_peak_rss_bytes'])>row.get('rss_peak',0)
+        row['peak_scope_note']='Per-worker lifetime ru_maxrss is not a synchronized aggregate peak. A sampled tree peak below any worker lifetime peak is an under-sampled bound; never sum worker lifetime peaks as an observed tree peak.'
     if 'constituents' not in result:
         row['input_evidence_fingerprint']=input_fingerprint(name,result)
     if name.startswith('embedding') and result.get('fixture'):
@@ -175,12 +194,20 @@ def inspect_result(name, result):
         # Constituent result IDs are not guaranteed to be stored, so expose
         # per-constituent counts instead of fabricating a homogeneous rate.
         row['constituent_processed_units']=[r.get('processed_units') for r in constituent_rows]
+        row['requested_concurrency']='+'.join(str(c.get('workers',1)) for c in result['constituents'])
+        row['constituent_workload_metrics']=[{k:r.get(k) for k in ('case','validity','processed_units','workload_wall_time','throughput','effective_concurrency')} for r in constituent_rows]
         row['aggregate_units_are_heterogeneous']=True
         row['overlap_seconds']=result.get('all_constituents_overlap_seconds')
         if any(c['validity']=='INVALID' for c in constituent_rows):
             row.update(validity='INVALID',reason='constituent_semantic_or_measurement_contract_invalid',resource_verdict='HARNESS_INVALID')
         elif row['overlap_seconds'] and all(c.get('status')=='PASS' for c in result['constituents']):
             row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads',effective_concurrency=len(result['constituents']))
+        if 'whisper' in kinds:
+            wi=backend_intervals('whisper',result['constituents'][kinds.index('whisper')])
+            overlaps={kind:sum(max(0,min(b,d)-max(a,c)) for a,b in wi for c,d in backend_intervals(kind,child)) for kind,child in zip(kinds,result['constituents']) if kind not in {'whisper','ffmpeg'}}
+            row['whisper_backend_overlap_seconds']=overlaps
+            if overlaps and any(v<=0 for v in overlaps.values()) and row['validity']=='VALID':
+                row.update(validity='SUSPICIOUS',reason='process_overlap_without_whisper_visual_backend_overlap',resource_verdict='NOT_PROVEN_MODEL_COEXISTENCE')
         return row
     if name == "whisper-resident-x1": row.update(validity="INVALID", reason="fresh_process_not_resident_lifecycle")
     elif name.startswith("ffmpeg"):
@@ -260,21 +287,23 @@ def main():
     fields=sorted(set().union(*(r.keys() for r in rows)))
     with (a.out/"validity-audit.csv").open("w",newline="") as f:
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
-    lines=["# CALIBRATION VALIDITY AUDIT", "", "Wall time excludes post-exit observation. P95 is empirical nearest-rank, recalculated from raw samples. RSS is process memory, not GPU VRAM. CPU 100% represents approximately one logical core; divide by 10 for machine normalization. System used/available estimates include/exclude reclaimable cache and are NOT Activity Monitor application memory. One-second sampling can miss brief peaks.","", "| case | validity | requested / effective | processed units | work sec | units/sec | RSS avg/P95/peak GiB | CPU avg/P95/peak % | pressure free min % | swap delta bytes | reason |", "|---|---|---|---:|---:|---:|---|---|---:|---:|---|"]
+    lines=["# CALIBRATION VALIDITY AUDIT", "", "Wall time excludes post-exit observation. P95 is empirical nearest-rank, recalculated from raw samples. RSS is process memory, not GPU VRAM. CPU 100% represents approximately one logical core; divide by 10 for machine normalization. System used/available estimates include/exclude reclaimable cache and are NOT Activity Monitor application memory. One-second sampling can miss brief peaks.","", "| case | validity | requested / effective | processed units | work sec | units/sec | RSS avg/P95/peak GiB | CPU avg/P95/peak % | compressed peak bytes | pressure free min % | swap delta bytes | active system I/O MiB | resource verdict | reason |", "|---|---|---|---:|---:|---:|---|---|---:|---:|---:|---:|---|---|"]
     for r in rows:
         fmt=lambda k,s: '/'.join(f'{r[k+"_"+t]/s:.2f}' if r.get(k+"_"+t) is not None else 'N/A' for t in ('avg','p95','peak'))
-        lines.append(f"| {r['case']} | {r['validity']} | {r.get('requested_concurrency')} / {r.get('effective_concurrency')} | {r.get('processed_units','N/A')} | {r.get('workload_wall_time', 'N/A')} | {r.get('throughput','N/A')} | {fmt('rss',2**30)} | {fmt('cpu',1)} | {r.get('memory_pressure_minimum','N/A')} | {r.get('swap_delta','N/A')} | {r['reason']} |")
+        lines.append(f"| {r['case']} | {r['validity']} | {r.get('requested_concurrency')} / {r.get('effective_concurrency')} | {r.get('processed_units','N/A')} | {r.get('workload_wall_time', 'N/A')} | {r.get('throughput','N/A')} | {fmt('rss',2**30)} | {fmt('cpu',1)} | {r.get('compressed_peak','N/A')} | {r.get('memory_pressure_minimum','N/A')} | {r.get('swap_delta','N/A')} | {r.get('workload_disk_combined_delta_mib','N/A')} | {r.get('resource_verdict','N/A')} | {r['reason']} |")
     lines += ["", "SAFE profile: NOT PROVEN. MAX_THROUGHPUT profile: NOT PROVEN. Production scheduler resource costs remain pending valid concurrency, aggregate overlap and sustained validation. Disk totals are whole-system combined I/O; separate read/write and GPU utilization are N/A."]
     (a.out/"validity-audit.md").write_text('\n'.join(lines)+'\n')
     proposal=['# Observed admission resource table (NOT a production budget)', '',
               'Only validated x1 rows below. Cold whole-workload RSS peak is an observed reservation reference, not a proven upper bound. MLX allocator snapshots are per worker, not independent VRAM; never add them to RSS. Startup-only allowance is N/A because no exact load/steady-state phase boundary was measured.', '',
-              '| workload | RSS P95 / peak GiB | CPU P95 cores | startup-only allowance | coexistence evidence |',
-              '|---|---:|---:|---|---|']
+              '| workload | sampled RSS P95 / peak GiB | formal max worker RSS peak GiB | CPU P95 cores | startup-only allowance | coexistence evidence |',
+              '|---|---:|---:|---:|---|---|']
     mixes=[r for r in rows if '+' in r['case'] and r['validity']=='VALID']
     for r in rows:
         if r['validity']=='VALID' and r.get('requested_concurrency')==1 and '+' not in r['case']:
             evidence=', '.join(m['case'] for m in mixes if r['case'].split('-')[0] in m['case'].split('+')) or 'N/A'
-            proposal.append(f"| {r['case']} | {r['rss_p95']/2**30:.3f} / {r['rss_peak']/2**30:.3f} | {r['cpu_p95']/100:.3f} | N/A | {evidence} (short cold overlap only) |")
+            worker_peak=max(r.get('formal_worker_peak_rss_bytes') or [0])
+            formal_peak=f'{worker_peak/2**30:.3f}' if worker_peak else 'N/A'
+            proposal.append(f"| {r['case']} | {r['rss_p95']/2**30:.3f} / {r['rss_peak']/2**30:.3f} | {formal_peak} | {r['cpu_p95']/100:.3f} | N/A | {evidence} (short cold overlap only) |")
     proposal += ['', 'SAFE production profile: NOT PROVEN. MAX_THROUGHPUT whole-pipeline profile: NOT PROVEN.',
                  'Measured local combinations are resource coexistence evidence, not an optimal total-media schedule. Different models have heterogeneous units; do not sum units/sec or compare different work mixes as an overall pipeline speedup.',
                  'No production scheduler defaults were changed. Next validation must cover sustained mixed execution, startup/load reserve, background headroom and shared DB writer. HDD limits remain unmeasured without a real HDD fixture.']

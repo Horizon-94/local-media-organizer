@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import os
 import sys
+from unittest.mock import patch
 from pathlib import Path
 import run_full_pipeline_calibration as campaign
 import trace_formal_stage as trace
@@ -16,6 +17,31 @@ def spawned_encode_probe(): encode()
 
 
 class Semantics(unittest.TestCase):
+    def test_whisper_composite_waits_for_backend_not_process_start(self):
+        with tempfile.TemporaryDirectory() as td:
+            seen=[]
+            def fake(row,root):
+                seen.append(row['kind'])
+                return {'status':'PASS'}
+            with patch.object(campaign,'run_formal_adapter',side_effect=fake):
+                result=campaign.run_composite({'id':'whisper+openclip'},Path(td))
+            self.assertEqual(result['reason_code'],'whisper_backend_start_not_observed')
+            self.assertEqual(seen,['whisper'])
+
+    def test_whisper_backend_marker_allows_visual_launch(self):
+        with tempfile.TemporaryDirectory() as td:
+            def fake(row,root):
+                if row['kind']=='whisper':
+                    marker=root/'stage/items/item/benchmark-whisper-events.jsonl'
+                    marker.parent.mkdir(parents=True); marker.write_text('{"event":"FORMAL_WHISPER_BACKEND_START"}\n')
+                else:
+                    self.assertTrue(list((Path(td)/'whisper').glob('**/benchmark-whisper-events.jsonl')))
+                return {'status':'PASS'}
+            with patch.object(campaign,'run_formal_adapter',side_effect=fake):
+                result=campaign.run_composite({'id':'whisper+openclip'},Path(td))
+            self.assertEqual(result['status'],'PASS')
+            self.assertEqual(result['launch_policy'],'whisper_backend_start_then_visual_models')
+
     def test_ffmpeg_fingerprint_checks_content_not_only_count(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); p=root/'stage/manifests/source_video_identity_step01_queue.csv'
