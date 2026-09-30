@@ -208,7 +208,9 @@ def commands(case: str, run_root: Path, db: Path) -> tuple[list[str], dict[str, 
         # The generic stage wrapper injects TEST_OUTPUT_ROOT and the frozen
         # output-path policy.  Directly invoking the frozen script bypasses
         # that policy and falsely rejects a valid benchmark sibling directory.
-        return wrapper("system", script, db=db, out=out, args=["--frame-interval-seconds", "3", "--limit-new", "1", "--concurrency", "1", "--no-open"]), env
+        # Keep enough independent videos in the queue for x1..x5 scaling.
+        # The coordinator rewrites --concurrency for each campaign case.
+        return wrapper("system", script, db=db, out=out, args=["--frame-interval-seconds", "3", "--limit-new", "10", "--concurrency", "1", "--no-open"]), env
     raise ValueError(case)
 
 
