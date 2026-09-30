@@ -45,12 +45,19 @@ def fresh_db(run_root: Path) -> Path:
         "local-database-stage-handoff-sample-v1/library/tasks/"
         "20260728_133201_1.1.2阶段接力小样本/workspace/media_archive.sqlite"
     )
+    ocr_template = Path(
+        "/Users/horizon/Documents/AI-Local/test-output/"
+        "stop03_3g_local_db_fullflow_20260711_191408/database/"
+        "media_archive_stop03_3g_validation.sqlite"
+    )
     default_name = (
         "fixture-yolo/media_archive.sqlite" if case == "person-reid"
         else "fixture-embedding/media_archive.sqlite" if case == "embedding"
         else "fixture/media_archive.sqlite"
     )
-    if case in {"ocr", "ffmpeg"} and "ADAPTER_FIXTURE_DB" not in os.environ:
+    if case == "ocr" and "ADAPTER_FIXTURE_DB" not in os.environ:
+        source = ocr_template
+    elif case == "ffmpeg" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = handoff_template
     elif case == "embedding" and "ADAPTER_FIXTURE_DB" not in os.environ:
         source = Path(
@@ -89,12 +96,9 @@ def fresh_db(run_root: Path) -> Path:
                     con.execute(f"delete from {table}")
             con.commit()
     if case == "ocr":
-        # The handoff fixture contains valid derived visual files but its
-        # frozen rows are tagged for Qwen.  Reclassify only the copied DB's
-        # existing rows as OCR triggers; this creates a real OCR queue without
-        # touching the source project or formal database.
+        # This immutable validation template already contains OCR-trigger
+        # candidates and valid derived files. Clear only copied run history.
         with sqlite3.connect(target) as con:
-            con.execute("UPDATE stop03_2_candidate_queue_frozen_v25 SET queue_type='ocr_trigger' WHERE candidate_id IN (SELECT candidate_id FROM stop03_2_candidate_queue_frozen_v25 ORDER BY candidate_id LIMIT 3)")
             for table in ("stop03_4_ocr_results", "stop03_4_ocr_run_items", "stop03_4_ocr_attempts", "stop03_4_ocr_runs"):
                 if con.execute("select 1 from sqlite_master where type='table' and name=?", (table,)).fetchone():
                     con.execute(f"delete from {table}")
