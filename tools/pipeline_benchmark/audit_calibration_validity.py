@@ -16,7 +16,17 @@ def stats(values):
 
 
 def concurrency_evidence(name, result):
-    table = "stop03_4_ocr_attempts" if name.startswith("ocr") else "stop03_3_qwenvl_run_items" if name.startswith("qwen") else None
+    timing=Path(result.get('output',''))/'stage/benchmark-task-timing'
+    events=[]
+    for file in timing.glob('worker-*.jsonl'):
+        for line in file.read_text().splitlines():
+            record=json.loads(line)
+            events.extend([(record['started_epoch'],1),(record['finished_epoch'],-1)])
+    if events:
+        active=peak=0
+        for _,delta in sorted(events): active+=delta; peak=max(peak,active)
+        return peak
+    table = "stop03_4_ocr_attempts" if name.startswith("ocr") else "stop03_3_qwenvl_run_items" if name.startswith("qwen") else "stop03_5d_text_vectors" if name.startswith("embedding") else "audio_processing_items" if name.startswith("whisper") else None
     path = result.get("fixture")
     if not table or not path: return None
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as c:
@@ -48,10 +58,14 @@ def inspect_result(name, result):
         return row
     with Path(sample).open() as f:
         active = [r for r in csv.DictReader(f) if r.get("phase", "active") == "active"]
+    if result.get('constituent_intervals'):
+        first=min(a for a,b in result['constituent_intervals']); last=max(b for a,b in result['constituent_intervals'])
+        active=[r for r in active if first <= float(r['timestamp_epoch']) <= last]
     for label, key, multiplier in (("rss", "process_rss_kib", 1024), ("cpu", "process_cpu_percent", 1)):
         for stat, value in stats([float(r[key])*multiplier for r in active if r.get(key)]).items(): row[f"{label}_{stat}"] = value
     events = {e["event"]: e["timestamp_epoch"] for e in m.get("events", [])}
     wall = events.get("PROCESS_EXIT", 0)-events.get("BENCHMARK_START", 0)
+    if result.get('constituent_intervals'): wall=result.get('workload_elapsed_seconds',wall)
     row.update(workload_wall_time=wall if wall > 0 else None, monitor_total_elapsed=m.get("elapsed_seconds"),
                compressed_peak=m.get("peak_compressed_memory_bytes"), swap_delta=m.get("swap_delta_bytes"), disk_delta_mib=m.get("system_disk_delta_mib"),
                memory_pressure_minimum=min((float(r["memory_pressure_free_percent"]) for r in active if r.get("memory_pressure_free_percent")),default=None))
@@ -74,6 +88,11 @@ def inspect_result(name, result):
         if p.exists(): count=json.loads(p.read_text()).get("visual_unit_count")
     row["processed_units"] = count
     row["throughput"] = count/wall if count and wall > 0 else None
+    if 'constituents' in result:
+        row['overlap_seconds']=result.get('all_constituents_overlap_seconds')
+        if row['overlap_seconds'] and all(c.get('status')=='PASS' for c in result['constituents']):
+            row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads')
+        return row
     if name == "whisper-resident-x1": row.update(validity="INVALID", reason="fresh_process_not_resident_lifecycle")
     elif name.startswith("ffmpeg"):
         cmd=m.get("command", [])
