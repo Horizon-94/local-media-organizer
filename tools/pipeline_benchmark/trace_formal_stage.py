@@ -36,9 +36,11 @@ def profile(frame, event, arg):
 
 
 def traced_initializer(original, args):
-    sys.setprofile(profile)
     if original:
         original(*args)
+    # Avoid profiling model imports/loading: timing instrumentation is only
+    # needed for task overlap in already-initialized parallel workers.
+    sys.setprofile(profile)
 
 
 class TracedPool(concurrent.futures.ProcessPoolExecutor):
@@ -56,7 +58,6 @@ def main():
     os.environ["BENCHMARK_TRACE_STAGE"] = args.script.name
     os.environ["BENCHMARK_TRACE_DIR"] = str(Path(args.stage_args[args.stage_args.index("--out") + 1]) / "benchmark-task-timing")
     concurrent.futures.ProcessPoolExecutor = TracedPool
-    sys.setprofile(profile)
     stage_args = args.stage_args[1:] if args.stage_args[:1] == ["--"] else args.stage_args
     return module.execute(args.script, args.allowed_output_root, args.allowed_source_root, stage_args)
 

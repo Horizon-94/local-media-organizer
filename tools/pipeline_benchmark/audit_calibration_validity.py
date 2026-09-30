@@ -89,6 +89,12 @@ def inspect_result(name, result):
     row["processed_units"] = count
     row["throughput"] = count/wall if count and wall > 0 else None
     if 'constituents' in result:
+        kinds=name.split('+')
+        constituent_rows=[inspect_result(kinds[i] if i<len(kinds) else 'constituent',c) for i,c in enumerate(result['constituents'])]
+        # Constituent result IDs are not guaranteed to be stored, so expose
+        # per-constituent counts instead of fabricating a homogeneous rate.
+        row['constituent_processed_units']=[r.get('processed_units') for r in constituent_rows]
+        row['aggregate_units_are_heterogeneous']=True
         row['overlap_seconds']=result.get('all_constituents_overlap_seconds')
         if row['overlap_seconds'] and all(c.get('status')=='PASS' for c in result['constituents']):
             row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads')

@@ -348,7 +348,9 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
             out = adapter_root / "stage"
             spec = next(item for item in workload_registry() if item["id"] == kind)
             runtime = APP / "Contents/Helpers/PipelinePython" / ("yolo" if kind == "yoloe" else "visual")
-            args = (["--model", str(spec["model"]), "--device", "mps", "--limit", "5", "--concurrency", str(row["workers"])] if kind == "yoloe" else ["--model", str(spec["model"]), "--model-name", "ViT-B-32", "--device", "mps", "--workers", str(row["workers"]), "--limit", "5"])
+            # Same complete 30-derived-frame short fixture at every worker
+            # level; this is not a sustained safety/soak measurement.
+            args = (["--model", str(spec["model"]), "--device", "mps", "--limit", "30", "--concurrency", str(row["workers"])] if kind == "yoloe" else ["--model", str(spec["model"]), "--model-name", "ViT-B-32", "--device", "mps", "--workers", str(row["workers"]), "--limit", "30"])
             command = smoke_wrapper(str(runtime.name), Path(spec["entrypoint"]), db=db, out=out, args=args)
             env_delta = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "MEDIA_ARCHIVE_MODEL_ROOT": str(MODEL_ROOT)}
         else:
