@@ -94,6 +94,22 @@ def backend_intervals(name,result):
         return [(datetime.fromisoformat(a).timestamp(),datetime.fromisoformat(b).timestamp()) for a,b in c.execute(f'select started_at,finished_at from {table} where started_at is not null and finished_at is not null')]
 
 
+def yoloe_residency_interval(result):
+    """Serial production keeps one model loaded throughout its image loop.
+
+    First/last actual label commits bound observed MODEL RESIDENCY, not GPU
+    kernel duration or an exact predict-call duration. Filter this run only.
+    """
+    report=Path(result.get('output',''))/'stage/reports/stop03_yoloe_full_summary.json'
+    if not report.exists() or not result.get('fixture'): return []
+    run=json.loads(report.read_text()).get('run_id')
+    with sqlite3.connect(f"file:{result['fixture']}?mode=ro&immutable=1",uri=True) as c:
+        a,b=c.execute('select min(created_at),max(created_at) from visual_labels where run_id=?',(run,)).fetchone()
+    if not a or not b: return []
+    a,b=datetime.fromisoformat(a).timestamp(),datetime.fromisoformat(b).timestamp()
+    return [(a,b)] if b>a else []
+
+
 def inspect_result(name, result):
     m = result.get("metrics", {})
     row = {"case": name, "requested_concurrency": result.get("workers"), "effective_concurrency": None,
@@ -213,9 +229,17 @@ def inspect_result(name, result):
             row.update(validity='VALID',reason='synchronized_aggregate_with_overlapping_formal_workloads',effective_concurrency=len(result['constituents']))
         if 'whisper' in kinds:
             wi=backend_intervals('whisper',result['constituents'][kinds.index('whisper')])
-            overlaps={kind:sum(max(0,min(b,d)-max(a,c)) for a,b in wi for c,d in backend_intervals(kind,child)) for kind,child in zip(kinds,result['constituents']) if kind not in {'whisper','ffmpeg'}}
+            overlaps={}
+            residency={}
+            for kind,child in zip(kinds,result['constituents']):
+                if kind in {'whisper','ffmpeg'}: continue
+                intervals=backend_intervals(kind,child)
+                overlaps[kind]=sum(max(0,min(b,d)-max(a,c)) for a,b in wi for c,d in intervals) if intervals else None
+                if kind=='yoloe' and not intervals:
+                    residency[kind]=sum(max(0,min(b,d)-max(a,c)) for a,b in wi for c,d in yoloe_residency_interval(child))
             row['whisper_backend_overlap_seconds']=overlaps
-            if overlaps and any(v<=0 for v in overlaps.values()) and row['validity']=='VALID':
+            row['whisper_visual_residency_overlap_seconds']=residency
+            if overlaps and any((v or 0)<=0 and residency.get(k,0)<=0 for k,v in overlaps.items()) and row['validity']=='VALID':
                 row.update(validity='SUSPICIOUS',reason='process_overlap_without_whisper_visual_backend_overlap',resource_verdict='NOT_PROVEN_MODEL_COEXISTENCE')
         return row
     if name == "whisper-resident-x1": row.update(validity="INVALID", reason="fresh_process_not_resident_lifecycle")

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from pathlib import Path
 import run_full_pipeline_calibration as campaign
 import trace_formal_stage as trace
+import host_resource_monitor as host_monitor
 from audit_calibration_validity import concurrency_evidence, inspect_result, input_fingerprint
 from measurement_stats import p95, post_exit_samples
 
@@ -17,6 +18,13 @@ def spawned_encode_probe(): encode()
 
 
 class Semantics(unittest.TestCase):
+    def test_iostat_transfer_fields_are_not_read_write_bytes(self):
+        with patch.object(host_monitor,'run',return_value=(0,'disk0\nKB/t xfrs MB\n12.1 30 40.2\n','')):
+            sample=host_monitor.disk_snapshot()
+        self.assertIsNone(sample['disk_read_cumulative'])
+        self.assertIsNone(sample['disk_write_cumulative'])
+        self.assertEqual(sample['disk_combined_cumulative_iostat_mb'],40.2)
+
     def test_composite_recovery_uses_last_model_exit_not_coordinator_exit(self):
         rows=[{'timestamp_epoch':str(t),'physical_memory_bytes':'1000','memory_available_approx_bytes':str(f),'process_rss_kib':'1'} for t,f in ((60,200),(80,300),(90,400),(110,500))]
         observations=post_exit_samples(rows,50)

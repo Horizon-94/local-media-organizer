@@ -136,9 +136,11 @@ def disk_snapshot() -> dict[str, Any]:
             nums = [float(x) for x in line.split()]
     if len(nums) < 3:
         return {"disk_read_cumulative": None, "disk_write_cumulative": None, "disk_source": "N/A"}
-    # iostat -Id output is device triplets. On macOS this reports cumulative
-    # read/write bytes in the first two columns for each device when available.
-    return {"disk_read_cumulative": sum(nums[0::3]), "disk_write_cumulative": sum(nums[1::3]), "disk_source": "iostat"}
+    # macOS triplets are KB/transfer, transfer count, combined MB; the first
+    # two fields are NOT separate read/write byte counters.
+    return {"disk_read_cumulative": None, "disk_write_cumulative": None,
+            "disk_combined_cumulative_iostat_mb": sum(nums[2::3]),
+            "disk_source": "iostat combined whole-system MB; read/write separation N/A"}
 
 
 def format_bytes(value: Any) -> str:
