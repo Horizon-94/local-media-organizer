@@ -18,6 +18,17 @@ def spawned_encode_probe(): encode()
 
 
 class Semantics(unittest.TestCase):
+    def test_zero_swap_does_not_hide_pressure_and_compression_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'stage').mkdir()
+            (root/'stage/audio_enrichment_summary.json').write_text(json.dumps({'status':'SUCCESS','source_video_count':3,'transcript_segment_count':10,'vector_count':10,'counts':{'success':1,'no_speech':2}}))
+            sample=root/'samples.csv'
+            sample.write_text('phase,timestamp_epoch,process_rss_kib,process_cpu_percent,memory_pressure_free_percent,memory_compressed_bytes\nactive,0,100,10,80,100\nactive,1,100,10,20,200\nactive,2,100,10,70,150\n')
+            result={'status':'PASS','workers':1,'output':td,'resource_verdict':'SAFE','metrics':{'artifacts':{'samples_csv':str(sample)},'swap_delta_bytes':0,'post_exit_observations':{'post_exit_30s':{'compressed_memory_bytes':150}},'events':[{'event':'BENCHMARK_START','timestamp_epoch':0},{'event':'PROCESS_EXIT','timestamp_epoch':3}]}}
+            row=inspect_result('whisper-cold-x1',result)
+            self.assertEqual(row['validity'],'VALID')
+            self.assertEqual(row['resource_verdict'],'BORDERLINE')
+
     def test_iostat_transfer_fields_are_not_read_write_bytes(self):
         with patch.object(host_monitor,'run',return_value=(0,'disk0\nKB/t xfrs MB\n12.1 30 40.2\n','')):
             sample=host_monitor.disk_snapshot()

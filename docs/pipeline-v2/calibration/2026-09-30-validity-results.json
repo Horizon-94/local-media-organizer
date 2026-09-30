@@ -8,6 +8,7 @@
   "skipped": 2,
   "disk_note": "Whole-system iostat reported MB. Legacy column name contains mib; separate read/write bytes are unavailable.",
   "peak_note": "RSS samples are not an upper bound. Formal worker lifetime peaks and MLX allocator peaks are separate measurements, never summed as an observed aggregate.",
+  "pressure_review_note": "BORDERLINE is a conservative relative-pressure/compression audit warning, not a kernel-critical level or a production admission threshold.",
   "rows": [
     {
       "case": "qwen-cold-x1",
@@ -58,7 +59,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 85,
+      "memory_pressure_end": 86,
+      "resource_review_reason": null
     },
     {
       "case": "qwen-resident-x1",
@@ -103,7 +107,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": null,
+      "memory_pressure_end": null,
+      "resource_review_reason": null
     },
     {
       "case": "qwen-homogeneous-x2",
@@ -111,7 +118,7 @@
       "effective_concurrency": 2,
       "validity": "VALID",
       "reason": "short_baseline_with_measured_formal_work_overlap",
-      "resource_verdict": "SAFE",
+      "resource_verdict": "BORDERLINE",
       "processed_units": 5,
       "constituent_processed_units": null,
       "workload_wall_time": 23.53528618812561,
@@ -159,7 +166,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 86,
+      "memory_pressure_end": 81,
+      "resource_review_reason": "free-percent more than halved relative to baseline and compression remains elevated after 30s; conservative audit warning, not a kernel-critical assertion or production threshold"
     },
     {
       "case": "qwen-homogeneous-x3",
@@ -167,7 +177,7 @@
       "effective_concurrency": 3,
       "validity": "VALID",
       "reason": "short_baseline_with_measured_formal_work_overlap",
-      "resource_verdict": "SAFE_BUT_INEFFICIENT",
+      "resource_verdict": "BORDERLINE",
       "processed_units": 5,
       "constituent_processed_units": null,
       "workload_wall_time": 24.805019855499268,
@@ -220,7 +230,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 76,
+      "resource_review_reason": "free-percent more than halved relative to baseline and compression remains elevated after 30s; conservative audit warning, not a kernel-critical assertion or production threshold"
     },
     {
       "case": "whisper-cold-x1",
@@ -268,7 +281,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "whisper-resident-x1",
@@ -313,7 +329,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": null,
+      "memory_pressure_end": null,
+      "resource_review_reason": null
     },
     {
       "case": "yoloe-x1",
@@ -358,7 +377,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "openclip-x1",
@@ -403,7 +425,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "ocr-x1",
@@ -448,7 +473,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "embedding-x1",
@@ -495,7 +523,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg-stage03-x1",
@@ -540,7 +571,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": 0.702928870292887,
-      "longest_task_fraction_of_wall": 0.5981796863274038
+      "longest_task_fraction_of_wall": 0.5981796863274038,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "person-reid-x1",
@@ -585,7 +619,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "whisper-x2",
@@ -641,7 +678,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "yoloe-x2",
@@ -686,7 +726,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "yoloe-x3",
@@ -731,7 +774,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "openclip-x2",
@@ -776,7 +822,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "openclip-x3",
@@ -821,7 +870,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ocr-x2",
@@ -866,7 +918,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "embedding-x2",
@@ -914,7 +969,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg-stage03-x2",
@@ -959,7 +1017,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": 0.702928870292887,
-      "longest_task_fraction_of_wall": 0.9819277309021158
+      "longest_task_fraction_of_wall": 0.9819277309021158,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg-stage03-x3",
@@ -1004,7 +1065,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": 0.702928870292887,
-      "longest_task_fraction_of_wall": 0.9828359508252135
+      "longest_task_fraction_of_wall": 0.9828359508252135,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg-stage03-x4",
@@ -1049,7 +1113,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": 0.702928870292887,
-      "longest_task_fraction_of_wall": 0.9810337723478233
+      "longest_task_fraction_of_wall": 0.9810337723478233,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg-stage03-x5",
@@ -1094,7 +1161,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": 0.702928870292887,
-      "longest_task_fraction_of_wall": 0.9834250826237424
+      "longest_task_fraction_of_wall": 0.9834250826237424,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg+yoloe",
@@ -1142,7 +1212,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg+openclip",
@@ -1190,7 +1263,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg+ocr",
@@ -1238,7 +1314,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "ffmpeg+qwen",
@@ -1286,7 +1365,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "yoloe+openclip",
@@ -1334,7 +1416,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "yoloe+ocr",
@@ -1382,7 +1467,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "yoloe+qwen",
@@ -1430,7 +1518,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "openclip+qwen",
@@ -1478,7 +1569,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 64,
+      "resource_review_reason": null
     },
     {
       "case": "ocr+qwen",
@@ -1526,7 +1620,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 81,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "embedding+qwen",
@@ -1574,7 +1671,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 64,
+      "resource_review_reason": null
     },
     {
       "case": "qwen+whisper",
@@ -1624,7 +1724,10 @@
       },
       "whisper_visual_residency_overlap_seconds": {},
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "whisper+yoloe",
@@ -1676,7 +1779,10 @@
         "yoloe": 4
       },
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "whisper+openclip",
@@ -1726,7 +1832,10 @@
       },
       "whisper_visual_residency_overlap_seconds": {},
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 79,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "qwen+ffmpeg+yoloe",
@@ -1775,7 +1884,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 77,
+      "memory_pressure_end": 79,
+      "resource_review_reason": null
     },
     {
       "case": "qwen+ffmpeg+ocr",
@@ -1824,7 +1936,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "qwen+openclip+ocr",
@@ -1873,7 +1988,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 80,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "whisper+ffmpeg+yoloe",
@@ -1926,7 +2044,10 @@
         "yoloe": 5
       },
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "qwen+whisper+ffmpeg",
@@ -1977,7 +2098,10 @@
       },
       "whisper_visual_residency_overlap_seconds": {},
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": 78,
+      "memory_pressure_end": 80,
+      "resource_review_reason": null
     },
     {
       "case": "event-driven-mixed-soak",
@@ -2022,14 +2146,17 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": null,
+      "memory_pressure_end": null,
+      "resource_review_reason": null
     },
     {
       "case": "hdd-validation",
       "requested_concurrency": 1,
       "effective_concurrency": null,
       "validity": "SKIPPED",
-      "reason": "composite_harness_not_yet_implemented",
+      "reason": "no_real_hdd_test_environment_available",
       "resource_verdict": "SKIPPED",
       "processed_units": null,
       "constituent_processed_units": null,
@@ -2067,7 +2194,10 @@
       "whisper_backend_overlap_seconds": null,
       "whisper_visual_residency_overlap_seconds": null,
       "largest_video_fraction_of_frames": null,
-      "longest_task_fraction_of_wall": null
+      "longest_task_fraction_of_wall": null,
+      "memory_pressure_baseline": null,
+      "memory_pressure_end": null,
+      "resource_review_reason": null
     }
   ]
 }

@@ -8,6 +8,7 @@
 - 审计另发现两组 Whisper 组合只有进程重叠、没有模型共存证据。随后在独立 fresh fixture/output 中补测；输入指纹一致，正式 backend 或连续正式结果提交证明模型共存，两组均通过。
 - 最终逻辑矩阵：39 VALID、2 NOT_SUPPORTED、2 SKIPPED，无 INVALID/SUSPICIOUS 遗留项。旧组合记录与原始审计保留，不抹掉历史问题。
 - 完整 Campaign 与两组补测退出码均为0；所有已执行 case 的 swap增量均为0，未观察到 Metal timeout、OOM或worker crash。
+- 审计资源分级为33 SAFE短测观测、4 SAFE_BUT_INEFFICIENT、2 BORDERLINE。Qwen x2/x3的pressure free分别从86降至36、从80降至17，压缩内存上升且退出30秒后仍高于基线；不能只因swap未增就称SAFE。BORDERLINE是保守复核，不代表已经发生kernel critical或OOM，也不是生产阈值。
 - FFmpeg每档都处理同一组10视频，生成239帧；实际并行进程峰值分别为1/2/3/4/5。原始视频只读，没有复制或转码原始素材来伪造性能。
 - Whisper各档固定3个视频输入，其中2个实际语音输入、1个无语音输入；x2有真实MLX转写调用重叠，不能把并行VAD当作并行Whisper。
 - YOLOE/OpenCLIP各档固定30个派生视觉输入；Qwen固定5个有效派生JPEG候选；OCR/Embedding/Person有真实非空输出。所有同构档的稳定输入指纹一致。
@@ -29,7 +30,7 @@
 
 | workload | worker档与真实工作秒 | 本样本结论 |
 |---|---|---|
-| Qwen | 1:25.56；2:23.54；3:24.81 | x2仅约8.6%吞吐收益，峰值RSS由3.36升至6.66 GiB；x3更慢且约9.94 GiB。资源平衡候选x1，不推荐凭此推广x3 |
+| Qwen | 1:25.56；2:23.54；3:24.81 | x2仅约8.6%吞吐收益，峰值RSS由3.36升至6.66 GiB；x3更慢且约9.94 GiB。x2/x3压力与压缩残留标BORDERLINE；资源平衡候选x1 |
 | Whisper音频正式链 | 1:232.47；2:182.56 | x2吞吐约提升27.3%；这是完整音频工作负载，不是纯转写kernel计时 |
 | YOLOE | 1:10.65；2:15.96；3:15.97 | x2/x3无收益且吞吐下降；本冷批次候选x1 |
 | OpenCLIP | 1:17.08；2:17.05；3:13.82 | x2几乎持平；x3约23.6%吞吐收益，需重复确认 |

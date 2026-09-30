@@ -168,6 +168,15 @@ def inspect_result(name, result):
     if result.get('constituent_intervals'):
         row['coordinator_post_exit_observations']=m.get('coordinator_post_exit_observations',row['post_exit_observations'])
         row['post_exit_observations']=post_exit_samples(all_samples,max(b for a,b in result['constituent_intervals']))
+    pressures=measured('memory_pressure_free_percent')
+    row['memory_pressure_baseline']=pressures[0] if pressures else None
+    row['memory_pressure_end']=pressures[-1] if pressures else None
+    recovery=(row.get('post_exit_observations') or {}).get('post_exit_30s') or {}
+    if pressures and row.get('compressed_end') is not None and row.get('compressed_baseline') is not None and min(pressures)<=pressures[0]/2 and row['compressed_end']>row['compressed_baseline'] and recovery.get('compressed_memory_bytes',0)>row['compressed_baseline']:
+        if row.get('resource_verdict') in {'SAFE','SAFE_BUT_INEFFICIENT'}:
+            row['resource_verdict_initial']=row['resource_verdict']
+            row['resource_verdict']='BORDERLINE'
+            row['resource_review_reason']='free-percent more than halved relative to baseline and compression remains elevated after 30s; conservative audit warning, not a kernel-critical assertion or production threshold'
     output = Path(result.get("output", ""))
     reports = list(output.glob("stage/reports/*summary*.json"))
     count = None

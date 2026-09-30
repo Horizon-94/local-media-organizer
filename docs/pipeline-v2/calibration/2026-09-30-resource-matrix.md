@@ -8,8 +8,8 @@ RSS单位GiB；CPU约100%=一个逻辑核心。组合吞吐单位异构，保留
 |---|---|---|---:|---:|---|---|---:|---:|---:|---:|---|
 | qwen-cold-x1 | 1 / 1 | 5 | 25.56 | 0.1956 | 2.570/3.362/3.362 | 36.46/98.20/119.20 | 1.820 | 0 | 62 | 3041 | VALID; SAFE |
 | qwen-resident-x1 | 1 / N/A | N/A | N/A | N/A | N/A/N/A/N/A | N/A/N/A/N/A | N/A | N/A | N/A | N/A | NOT_SUPPORTED; NOT_SUPPORTED |
-| qwen-homogeneous-x2 | 2 / 2 | 5 | 23.54 | 0.2124 | 4.590/6.656/6.656 | 60.80/200.50/416.70 | 3.562 | 0 | 36 | 63 | VALID; SAFE |
-| qwen-homogeneous-x3 | 3 / 3 | 5 | 24.81 | 0.2016 | 5.318/9.547/9.943 | 83.74/277.60/483.70 | 5.023 | 0 | 17 | 1991 | VALID; SAFE_BUT_INEFFICIENT |
+| qwen-homogeneous-x2 | 2 / 2 | 5 | 23.54 | 0.2124 | 4.590/6.656/6.656 | 60.80/200.50/416.70 | 3.562 | 0 | 36 | 63 | VALID; BORDERLINE |
+| qwen-homogeneous-x3 | 3 / 3 | 5 | 24.81 | 0.2016 | 5.318/9.547/9.943 | 83.74/277.60/483.70 | 5.023 | 0 | 17 | 1991 | VALID; BORDERLINE |
 | whisper-cold-x1 | 1 / 1 | 3 | 232.47 | 0.0129 | 1.351/2.132/2.716 | 52.14/158.50/620.50 | 4.401 | 0 | 65 | 4143 | VALID; SAFE |
 | whisper-resident-x1 | 1 / N/A | N/A | N/A | N/A | N/A/N/A/N/A | N/A/N/A/N/A | N/A | N/A | N/A | N/A | NOT_SUPPORTED; NOT_SUPPORTED |
 | yoloe-x1 | 1 / 1 | 30 | 10.65 | 2.8166 | 0.530/1.218/1.218 | 67.48/106.60/106.60 | 4.012 | 0 | 72 | 533 | VALID; SAFE |
