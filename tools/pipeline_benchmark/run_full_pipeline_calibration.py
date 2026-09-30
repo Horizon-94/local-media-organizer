@@ -369,7 +369,7 @@ def run_formal_adapter(row: dict[str, object], run_root: Path) -> dict[str, obje
                 if command[pos] == flag:
                     command[pos + 1] = workers
         output = adapter_root
-        if kind in {"yoloe", "openclip"}:
+        if kind in {"yoloe", "openclip", "embedding"}:
             # Add task-level overlap evidence without changing the installed
             # stage, runtime, model, preprocessing or worker count.
             command[1] = str(REPO / "tools/pipeline_benchmark/trace_formal_stage.py")

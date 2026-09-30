@@ -11,7 +11,27 @@ from audit_calibration_validity import concurrency_evidence, inspect_result
 from measurement_stats import p95
 
 
+def encode(): return 42
+def spawned_encode_probe(): encode()
+
+
 class Semantics(unittest.TestCase):
+    def test_spawn_observer_keeps_real_child_pid(self):
+        with tempfile.TemporaryDirectory() as td:
+            keys=('BENCHMARK_TRACE_STAGE','BENCHMARK_TRACE_DIR')
+            previous={k:os.environ.get(k) for k in keys}
+            os.environ.update(BENCHMARK_TRACE_STAGE=Path(__file__).name,BENCHMARK_TRACE_DIR=td)
+            try:
+                process=trace.TracedSpawnProcess(target=spawned_encode_probe)
+                process.start(); process.join(10)
+                self.assertEqual(process.exitcode,0)
+                row=json.loads(next(Path(td).glob('worker-*.jsonl')).read_text())
+                self.assertEqual(row['pid'],process.pid)
+                self.assertNotEqual(row['pid'],os.getpid())
+            finally:
+                for key,value in previous.items():
+                    if value is None: os.environ.pop(key,None)
+                    else: os.environ[key]=value
     def test_p95_short_sample_is_not_zero_when_peak_is_positive(self):
         self.assertEqual(p95([0,0,100]),100)
         self.assertIsNone(p95([]))

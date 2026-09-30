@@ -93,6 +93,17 @@ def inspect_result(name, result):
     row['disk_write_bytes']=None
     row['gpu_memory_process']=None
     row['measurement_note']='RSS is not unified GPU allocation. System disk is combined whole-machine I/O. Process CPU is ps sampling, not exact CPU-time integration.'
+    def measured(key): return [float(r[key]) for r in active if r.get(key) not in (None,'')]
+    for prefix,key in (('compressed','memory_compressed_bytes'),('swap','swap_used_bytes')):
+        values=measured(key)
+        row.update({prefix+'_baseline':values[0] if values else None,prefix+'_end':values[-1] if values else None,prefix+'_peak':max(values) if values else None})
+    used=[float(r['physical_memory_bytes'])-float(r['memory_available_approx_bytes']) for r in active if r.get('physical_memory_bytes') and r.get('memory_available_approx_bytes')]
+    row['system_memory_including_cache_baseline']=used[0] if used else None
+    row['system_memory_including_cache_peak']=max(used) if used else None
+    row['system_memory_including_cache_end']=used[-1] if used else None
+    disks=measured('disk_cumulative_mib')
+    row['workload_disk_combined_delta_mib']=disks[-1]-disks[0] if len(disks)>1 else None
+    row['post_exit_observations']=m.get('post_exit_observations')
     output = Path(result.get("output", ""))
     reports = list(output.glob("stage/reports/*summary*.json"))
     count = None

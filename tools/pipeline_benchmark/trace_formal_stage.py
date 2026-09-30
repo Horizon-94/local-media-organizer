@@ -5,6 +5,7 @@ Uses the bundled generic runner and its safety contract. No model/backend or
 task parameters are changed. Each spawned worker writes its own timing file.
 """
 import concurrent.futures
+import multiprocessing
 import importlib.util
 import json
 import os
@@ -12,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-TARGETS = {"worker_predict_one", "infer_one"}
+TARGETS = {"worker_predict_one", "infer_one", "encode"}
 _starts = {}
 
 
@@ -49,6 +50,17 @@ class TracedPool(concurrent.futures.ProcessPoolExecutor):
                          initargs=(initializer, initargs), **kwargs)
 
 
+def traced_process_target(original,args,kwargs):
+    sys.setprofile(profile)
+    original(*args,**kwargs)
+
+
+class TracedSpawnProcess(multiprocessing.get_context('spawn').Process):
+    def __init__(self,group=None,target=None,name=None,args=(),kwargs=None,*,daemon=None):
+        super().__init__(group=group,target=traced_process_target,name=name,
+                         args=(target,args,kwargs or {}),daemon=daemon)
+
+
 def main():
     official = Path("/Applications/本地数据库 1.2.8.app/Contents/Resources/Pipeline/scripts/04_media_archive_app/run_generic_pipeline_stage.py")
     spec = importlib.util.spec_from_file_location("bundled_generic_benchmark_runner", official)
@@ -58,6 +70,8 @@ def main():
     os.environ["BENCHMARK_TRACE_STAGE"] = args.script.name
     os.environ["BENCHMARK_TRACE_DIR"] = str(Path(args.stage_args[args.stage_args.index("--out") + 1]) / "benchmark-task-timing")
     concurrent.futures.ProcessPoolExecutor = TracedPool
+    if 'text_embedding_db_orchestrator' in args.script.name:
+        multiprocessing.get_context('spawn').Process=TracedSpawnProcess
     stage_args = args.stage_args[1:] if args.stage_args[:1] == ["--"] else args.stage_args
     return module.execute(args.script, args.allowed_output_root, args.allowed_source_root, stage_args)
 
