@@ -22,11 +22,11 @@
 
 ### 新建任务
 
-![本地数据库 BUILD160 新建任务](docs/images/build160/new-task.png)
+![本地数据库 BUILD160 新建任务](docs/images/build160/new-task.jpg)
 
 ### 关于软件
 
-![本地数据库 BUILD160 关于软件](docs/images/build160/about.png)
+![本地数据库 BUILD160 关于软件](docs/images/build160/about.jpg)
 
 ## 从源码验证与构建
 
