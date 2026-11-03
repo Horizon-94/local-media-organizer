@@ -424,7 +424,7 @@ def preflight(
         con.close()
     checks = {
         "queue_audit_pass": queue_audit["status"] == "PASS",
-        "contract_version_v2": output_contract.CONTRACT_VERSION == "qwenvl_output_contract_v2.0",
+        "contract_version_v2": config.get("output_contract_version") == output_contract.CONTRACT_VERSION,
         "default_or_requested_tokens_valid": max_tokens >= 384 or (
             mode == "smoke" and allow_low_token_debug
         ) or mode in {"preflight", "dry-run"},

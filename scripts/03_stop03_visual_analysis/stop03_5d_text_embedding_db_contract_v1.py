@@ -195,64 +195,8 @@ def compose_embedding_text(
     return "\n\n".join(sections)
 
 
-def build_documents(
-    db: Path, config_path: Path
-) -> tuple[
-    dict[str, Any],
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-]:
-    config = load_config(config_path)
-    inventory_sha, model_config_sha, inventory = model_inventory(config)
-    required = (
-        "v_stop03_5_latest_unified_evidence",
-        "v_stop03_5c_latest_propagation",
-        "stop03_5_unified_evidence_runs",
-        "stop03_5c_propagation_runs",
-        "derived_assets",
-        "source_assets",
-        "visual_units",
-    )
-    with connect_ro(db) as con:
-        missing = [name for name in required if not object_exists(con, name)]
-        if missing:
-            raise RuntimeError(f"stop03_5d_database_objects_missing:{missing}")
-        staging = latest_run(
-            con, "stop03_5_unified_evidence_runs", "staging_run_id"
-        )
-        propagation_run = latest_run(
-            con, "stop03_5c_propagation_runs", "propagation_run_id"
-        )
-        direct_rows = [
-            dict(row)
-            for row in con.execute(
-                """SELECT e.*,d.derived_type,d.frame_index,d.time_position_ms,
-                          s.media_type,s.relative_path
-                   FROM v_stop03_5_latest_unified_evidence e
-                   JOIN derived_assets d ON d.derived_id=e.derived_id
-                   JOIN source_assets s
-                     ON s.source_content_id=e.source_content_id
-                   WHERE e.modality IN ('qwenvl','ocr')
-                   ORDER BY e.derived_id,e.modality,e.evidence_id"""
-            )
-        ]
-        propagation_rows = [
-            dict(row)
-            for row in con.execute(
-                """SELECT p.*,d.derived_type,s.media_type,s.relative_path
-                   FROM v_stop03_5c_latest_propagation p
-                   JOIN derived_assets d
-                     ON d.derived_id=p.target_derived_id
-                   JOIN source_assets s
-                     ON s.source_content_id=p.source_content_id
-                   ORDER BY p.target_derived_id,p.propagated_label,
-                            p.propagation_id"""
-            )
-        ]
-        integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
-        foreign_keys = len(list(con.execute("PRAGMA foreign_key_check")))
-
+def aggregate_documents(direct_rows, propagation_rows, staging, propagation_run, config):
+    """Pure legacy final projection; shared by batch and event-driven callers."""
     included_quality = set(config["included_direct_quality_statuses"])
     groups: dict[str, dict[str, Any]] = {}
     excluded: list[dict[str, Any]] = []
@@ -428,6 +372,70 @@ def build_documents(
                 "quality_status": "PASS",
             }
         )
+
+    return documents, excluded
+
+
+def build_documents(
+    db: Path, config_path: Path
+) -> tuple[
+    dict[str, Any],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    config = load_config(config_path)
+    inventory_sha, model_config_sha, inventory = model_inventory(config)
+    required = (
+        "v_stop03_5_latest_unified_evidence",
+        "v_stop03_5c_latest_propagation",
+        "stop03_5_unified_evidence_runs",
+        "stop03_5c_propagation_runs",
+        "derived_assets",
+        "source_assets",
+        "visual_units",
+    )
+    with connect_ro(db) as con:
+        missing = [name for name in required if not object_exists(con, name)]
+        if missing:
+            raise RuntimeError(f"stop03_5d_database_objects_missing:{missing}")
+        staging = latest_run(
+            con, "stop03_5_unified_evidence_runs", "staging_run_id"
+        )
+        propagation_run = latest_run(
+            con, "stop03_5c_propagation_runs", "propagation_run_id"
+        )
+        direct_rows = [
+            dict(row)
+            for row in con.execute(
+                """SELECT e.*,d.derived_type,d.frame_index,d.time_position_ms,
+                          s.media_type,s.relative_path
+                   FROM v_stop03_5_latest_unified_evidence e
+                   JOIN derived_assets d ON d.derived_id=e.derived_id
+                   JOIN source_assets s
+                     ON s.source_content_id=e.source_content_id
+                   WHERE e.modality IN ('qwenvl','ocr')
+                   ORDER BY e.derived_id,e.modality,e.evidence_id"""
+            )
+        ]
+        propagation_rows = [
+            dict(row)
+            for row in con.execute(
+                """SELECT p.*,d.derived_type,s.media_type,s.relative_path
+                   FROM v_stop03_5c_latest_propagation p
+                   JOIN derived_assets d
+                     ON d.derived_id=p.target_derived_id
+                   JOIN source_assets s
+                     ON s.source_content_id=p.source_content_id
+                   ORDER BY p.target_derived_id,p.propagated_label,
+                            p.propagation_id"""
+            )
+        ]
+        integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
+        foreign_keys = len(list(con.execute("PRAGMA foreign_key_check")))
+
+    documents, excluded = aggregate_documents(direct_rows, propagation_rows, staging, propagation_run, config)
+    included_quality = set(config["included_direct_quality_statuses"])
 
     text_jobs_by_sha: dict[str, dict[str, Any]] = {}
     job_documents: dict[str, list[str]] = defaultdict(list)

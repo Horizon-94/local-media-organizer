@@ -22,6 +22,7 @@ ADAPTER_VERSION = "step02_video_frame_generic_interval_v1"
 SUPPORTED_INTERVAL_SECONDS = (1, 2, 3, 4, 5)
 AUDIO_COEXTRACT_CONTRACT = "media_archive_stage03_audio_coextract_v1"
 AUDIO_FILENAME = "audio_16k_mono.flac"
+STREAM_FRAME_READY_FLAG = "--stream-frame-ready"
 
 
 def apply_runtime_safety_roots(module: Any) -> None:
@@ -51,10 +52,14 @@ def load_frozen_extractor(project_root: Path) -> Any:
     return module
 
 
-def configure_sampling_contract(module: Any, interval_seconds: int) -> dict[str, Any]:
+def configure_sampling_contract(module: Any, interval_seconds: int, offset_ms: int | None = None) -> dict[str, Any]:
     if interval_seconds not in SUPPORTED_INTERVAL_SECONDS:
         raise ValueError("frame_interval_seconds_must_be_one_of_1_2_3_4_5")
     interval_ms = interval_seconds * 1000
+    if offset_ms is not None:
+        if offset_ms < 0:
+            raise ValueError("sampling_offset_must_be_nonnegative")
+        module.SAMPLING_OFFSET_MS = offset_ms
     module.SAMPLING_INTERVAL_MS = interval_ms
     module.SCRIPT_SCHEME = (
         "step02_video_frame_generic_interval_"
@@ -228,6 +233,15 @@ def configure_audio_coextraction(module: Any, enabled: bool) -> None:
     module.process_one = process_one
 
 
+def configure_stream_frame_ready(module: Any, db_path: Path | None) -> None:
+    """Add publication around legacy attempts; never modify media algorithms."""
+    if db_path is None:raise ValueError("stream_frame_ready_requires_db")
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:sys.path.insert(0, root)
+    from apps.media_archive_image_video_ui.v2_legacy_producer import install
+    install(module, db_path)
+
+
 def parse_adapter_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
@@ -237,6 +251,9 @@ def parse_adapter_args(argv: Sequence[str] | None = None) -> tuple[argparse.Name
         required=True,
     )
     parser.add_argument("--coextract-audio", action="store_true")
+    parser.add_argument("--stream-frame-ready", action="store_true")
+    parser.add_argument("--stream-frame-ready-db", type=Path)
+    parser.add_argument("--sample-offset-ms", type=int)
     return parser.parse_known_args(argv)
 
 
@@ -245,8 +262,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     project_root = Path(__file__).resolve().parents[2]
     frozen = load_frozen_extractor(project_root)
     apply_runtime_safety_roots(frozen)
-    contract = configure_sampling_contract(frozen, args.frame_interval_seconds)
+    contract = configure_sampling_contract(frozen, args.frame_interval_seconds, args.sample_offset_ms)
     configure_audio_coextraction(frozen, args.coextract_audio)
+    if args.stream_frame_ready:
+        configure_stream_frame_ready(frozen, args.stream_frame_ready_db)
     print(
         json.dumps(
             {

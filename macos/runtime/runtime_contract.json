@@ -1,0 +1,141 @@
+{
+  "contract_version": "media_archive_app_runtime_contract_v1",
+  "project_root": "$APP_RESOURCES/Pipeline",
+  "python": {
+    "system": "$APP_CONTENTS/Helpers/PipelinePython/system",
+    "visual": "$APP_CONTENTS/Helpers/PipelinePython/visual",
+    "yolo": "$APP_CONTENTS/Helpers/PipelinePython/yolo",
+    "person_reid": "$APP_CONTENTS/Helpers/PipelinePython/person_reid",
+    "qwen": "$APP_CONTENTS/Helpers/PipelinePython/qwen",
+    "ocr": "$APP_CONTENTS/Helpers/PipelinePython/ocr",
+    "embedding": "$APP_CONTENTS/Helpers/PipelinePython/embedding",
+    "whisper": "$APP_CONTENTS/Helpers/PipelinePython/whisper",
+    "vad": "$APP_CONTENTS/Helpers/PipelinePython/vad"
+  },
+  "tools": {
+    "ffmpeg": "/opt/homebrew/bin/ffmpeg",
+    "ffprobe": "/opt/homebrew/bin/ffprobe",
+    "sips": "/usr/bin/sips",
+    "deep_filter": "$APP_RESOURCES/Pipeline/tools/deep-filter/deep-filter"
+  },
+  "models": {
+    "yoloe": {
+      "path": "$MODEL_ROOT/yoloe26-l-seg/weights/yoloe26-l-seg.pt",
+      "kind": "file"
+    },
+    "yoloe_mobileclip": {
+      "path": "$MODEL_ROOT/yoloe26-l-seg/mobileclip2_b.ts",
+      "kind": "file"
+    },
+    "openclip": {
+      "path": "$MODEL_ROOT/openclip-vit-b-32-laion2b-s34b-b79k/open_clip_model.safetensors",
+      "kind": "file"
+    },
+    "person_reid": {
+      "path": "$MODEL_ROOT/insightface/buffalo_l",
+      "kind": "directory"
+    },
+    "qwen": {
+      "path": "$MODEL_ROOT/Qwen3.5-9B-4bit",
+      "kind": "directory"
+    },
+    "ocr_detection": {
+      "path": "$MODEL_ROOT/ocr/PP-OCRv6_medium_det",
+      "kind": "directory"
+    },
+    "ocr_recognition": {
+      "path": "$MODEL_ROOT/ocr/PP-OCRv6_medium_rec",
+      "kind": "directory"
+    },
+    "text_embedding": {
+      "path": "$MODEL_ROOT/Qwen3-Embedding-0.6B",
+      "kind": "directory"
+    },
+    "silero_vad": {
+      "path": "$MODEL_ROOT/silero-vad",
+      "kind": "directory"
+    },
+    "whisper": {
+      "path": "$MODEL_ROOT/whisper-large-v3-turbo",
+      "kind": "directory"
+    },
+    "deep_filter": {
+      "path": "$MODEL_ROOT/DeepFilterNet3_onnx.tar.gz",
+      "kind": "file"
+    }
+  },
+  "scripts": {
+    "stage_runner": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/run_generic_pipeline_stage.py",
+    "source_scan": "$APP_RESOURCES/Pipeline/scripts/02_step01_step02_pipeline/step01_source_scan_lineage_dedup_db_safe_v7_20260709_175400.py",
+    "image_preview": "$APP_RESOURCES/Pipeline/scripts/02_step01_step02_pipeline/step02_2_image_preview_from_db_safe_v6_20260709_182200.py",
+    "video_frames": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/step02_video_frame_generic_interval_v1.py",
+    "prepare_visual_schema": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/prepare_visual_analysis_schema_v1.py",
+    "yoloe": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_yoloe_full_from_db_safe_v6_20260709_170200.py",
+    "openclip": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_1b_openclip_visual_embedding_db_safe_v4_20260709_161500.py",
+    "dedup": "$APP_RESOURCES/Pipeline/scripts/source_frame_dedup_central_db.py",
+    "person_reid": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_1c_person_reid_db_orchestrator_v1.py",
+    "candidate_snapshot": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_2_v25_dynamic_snapshot_v1.py",
+    "candidate_select": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_2_candidate_queues_generic_library_v1.py",
+    "optional_stage": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/run_optional_enrichment_stage_v1.py",
+    "qwen": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_3f_qwenvl_dynamic_db_orchestrator_v1.py",
+    "ocr": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_4_ocr_db_orchestrator_v1.py",
+    "evidence": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_5b_unified_evidence_staging_v1.py",
+    "propagation": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_5c_qwenvl_yolo_propagation_v1.py",
+    "embedding": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_5d_text_embedding_db_orchestrator_v1.py",
+    "search_adapter": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_5e_hybrid_search_app_adapter_v1.py",
+    "search_engine": "$APP_RESOURCES/Pipeline/scripts/03_stop03_visual_analysis/stop03_5e_hybrid_visual_text_search_v2.py",
+    "search_rebuild": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/rebuild_search_index_from_database_v1.py",
+    "finder_tag_refresh": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/refresh_existing_library_finder_tags_v1.py",
+    "supplement_contract": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_contract_v1.py",
+    "supplement_qwen": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_3_qwenvl_supplement_orchestrator_v1.py",
+    "supplement_evidence_merge": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/stop03_5b_merge_qwenvl_supplement_v1.py",
+    "audio_enrichment": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/run_audio_enrichment_from_database_v1.py",
+    "audio_pilot": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/run_audio_search_pilot_v1.py",
+    "audio_embedding_commit": "$APP_RESOURCES/Pipeline/scripts/04_media_archive_app/run_audio_embedding_commit_v1.py"
+  },
+  "configs": {
+    "candidate": "$APP_RESOURCES/Pipeline/configs/stop03_2_high_value_policy_v25.json",
+    "person_reid": "$APP_RESOURCES/Pipeline/configs/stop03_1c_person_reid_db_v1.json",
+    "qwen": "$APP_RESOURCES/Pipeline/configs/stop03_3_qwenvl_db_v1.json",
+    "qwen_prompt": "$APP_RESOURCES/Pipeline/configs/qwenvl_prompt_raw_media_v3_384.txt",
+    "ocr": "$APP_RESOURCES/Pipeline/configs/stop03_4_ocr_db_v1.json",
+    "evidence": "$APP_RESOURCES/Pipeline/configs/stop03_5b_unified_evidence_staging_v1.json",
+    "propagation": "$APP_RESOURCES/Pipeline/configs/stop03_5c_qwenvl_yolo_propagation_v1.json",
+    "embedding_contract": "$APP_RESOURCES/Pipeline/configs/stop03_5d_text_embedding_db_contract_v1.json",
+    "embedding_runtime": "$APP_RESOURCES/Pipeline/configs/stop03_5d_text_embedding_db_orchestrator_v1.json",
+    "hybrid_search": "$APP_RESOURCES/Pipeline/configs/stop03_5e_hybrid_visual_text_search_v2.json",
+    "yoloe_registry": "$APP_RESOURCES/Pipeline/configs/yoloe_keyword_registry_default_v1.json",
+    "static_shot": "$APP_RESOURCES/Pipeline/configs/static_shot_representative_policy_v1.json"
+  },
+  "migrations": {
+    "person_reid": "$APP_RESOURCES/Pipeline/migrations/20260726_stop03_1c_person_reid_db_v1.sql",
+    "ocr": "$APP_RESOURCES/Pipeline/migrations/20260716_stop03_4_ocr_db_v1.sql",
+    "evidence": "$APP_RESOURCES/Pipeline/migrations/20260716_stop03_5b_unified_evidence_staging_v1.sql",
+    "propagation": "$APP_RESOURCES/Pipeline/migrations/20260717_stop03_5c_qwenvl_yolo_propagation_v1.sql",
+    "embedding": "$APP_RESOURCES/Pipeline/migrations/20260717_stop03_5d_text_embedding_db_contract_v1.sql",
+    "supplement": "$APP_RESOURCES/Pipeline/migrations/20260720_stop03_3_qwenvl_supplement_v1.sql",
+    "audio": "$APP_RESOURCES/Pipeline/migrations/20260809_audio_speech_search_v1.sql",
+    "pipeline_v2_1_3_0": "$APP_RESOURCES/Pipeline/migrations/20261002_pipeline_v2_1_3_0.sql"
+  },
+  "documents": {
+    "model_registry": "$APP_RESOURCES/Pipeline/docs/model_registry/LOCAL_MODEL_REGISTRY.md",
+    "runtime_model_script_inventory": "$APP_RESOURCES/Pipeline/docs/model_registry/LOCAL_RUNTIME_MODEL_SCRIPT_INVENTORY.md"
+  },
+  "policies": {
+    "original_media_access": "read_only",
+    "model_directory_access": "read_only",
+    "network": "disabled",
+    "download": "disabled",
+    "output_scope": "selected_library_workspace_only",
+    "fixed_dataset_counts": false,
+    "scheduler_default": "stage_serial",
+    "pipeline_async_status": "NOT_IMPLEMENTED"
+  },
+  "deployment": {
+    "ffmpeg": "external_declared_dependency",
+    "ffprobe": "external_declared_dependency",
+    "deep_filter": "bundled_immutable_asset",
+    "models": "external_read_only"
+  },
+  "config_path_policy": "materialize_effective_runtime_configs_v1"
+}

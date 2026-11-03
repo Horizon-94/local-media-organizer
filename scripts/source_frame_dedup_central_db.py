@@ -30,6 +30,10 @@ DEFAULT_QUICK_BYTES = 65536
 DEFAULT_VISUAL_HASH_THRESHOLD = 6
 DEFAULT_OPENCLIP_COSINE_THRESHOLD = 0.98
 DEFAULT_VIDEO_TIME_WINDOW_SEC = 30
+DEFAULT_STATIC_POLICY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "configs/static_shot_representative_policy_v1.json"
+)
 
 
 SCHEMA_STATEMENTS = [
@@ -637,6 +641,80 @@ def cosine_similarity(left: list[float] | None, right: list[float] | None) -> fl
     return dot / (left_norm * right_norm)
 
 
+def load_static_shot_policy(path: Path | None) -> dict[str, Any]:
+    policy_path = path or DEFAULT_STATIC_POLICY_PATH
+    payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    if payload.get("contract") != "static_shot_representative_policy_v1":
+        raise ValueError("static_shot_policy_contract_mismatch")
+    return payload
+
+
+def detect_static_video_sources(
+    fingerprinted: Sequence[dict[str, Any]],
+    openclip_vectors: dict[str, list[float]],
+    policy: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Detect stable video sources from existing hashes and vectors.
+
+    This is deliberately content-agnostic: a tripod interview, lecture or
+    static landscape can qualify.  It never deletes frames; it only selects a
+    longer comparison window for visually stable sources.
+    """
+    if not bool(policy.get("enabled", True)):
+        return {}
+    by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in fingerprinted:
+        if row.get("media_type") == "video" and not row.get("decode_error"):
+            by_source[str(row.get("source_content_id") or "")].append(row)
+
+    minimum_frames = max(2, int(policy.get("min_video_frames") or 20))
+    minimum_pairs = max(1, int(policy.get("min_adjacent_pairs") or 12))
+    maximum_gap_ms = max(1000, int(policy.get("adjacent_max_gap_seconds") or 12) * 1000)
+    relaxed_hash = max(0, int(policy.get("stable_pair_dhash_threshold") or 12))
+    cosine_floor = float(policy.get("stable_pair_openclip_cosine_threshold") or 0.985)
+    ratio_floor = float(policy.get("min_stable_pair_ratio") or 0.75)
+    require_vector = bool(policy.get("require_openclip_for_relaxed_hash", True))
+    results: dict[str, dict[str, Any]] = {}
+
+    for source_id, source_rows in sorted(by_source.items()):
+        ordered = sorted(source_rows, key=lambda row: (
+            int(row.get("time_position_ms") or -1),
+            str(row.get("visual_unit_id") or ""),
+        ))
+        if len(ordered) < minimum_frames:
+            continue
+        eligible_pairs = 0
+        stable_pairs = 0
+        for left, right in zip(ordered, ordered[1:]):
+            left_ms = int(left.get("time_position_ms") or -1)
+            right_ms = int(right.get("time_position_ms") or -1)
+            if left_ms < 0 or right_ms <= left_ms or right_ms - left_ms > maximum_gap_ms:
+                continue
+            left_hash = str(left.get("dhash") or "")
+            right_hash = str(right.get("dhash") or "")
+            if not left_hash or not right_hash:
+                continue
+            eligible_pairs += 1
+            distance = hamming_hex(left_hash, right_hash)
+            left_id = str(left.get("visual_unit_id") or "")
+            right_id = str(right.get("visual_unit_id") or "")
+            cosine = cosine_similarity(
+                openclip_vectors.get(left_id), openclip_vectors.get(right_id)
+            )
+            vector_ok = cosine is not None and cosine >= cosine_floor
+            if distance <= relaxed_hash and (vector_ok or not require_vector):
+                stable_pairs += 1
+        ratio = stable_pairs / max(1, eligible_pairs)
+        results[source_id] = {
+            "frame_count": len(ordered),
+            "eligible_adjacent_pair_count": eligible_pairs,
+            "stable_adjacent_pair_count": stable_pairs,
+            "stable_pair_ratio": round(ratio, 6),
+            "is_static": eligible_pairs >= minimum_pairs and ratio >= ratio_floor,
+        }
+    return results
+
+
 def visual_representative_key(row: dict[str, Any]) -> tuple[float, int, str, str]:
     sharpness = row.get("sharpness_score")
     return (
@@ -667,16 +745,42 @@ def compute_visual_identity(
     video_time_window_sec: int,
     openclip_vectors: dict[str, list[float]],
     openclip_cosine_threshold: float,
+    static_policy: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
         fingerprinted = list(pool.map(lambda row: dhash_and_sharpness(row, decode_backend), rows))
     fingerprinted.sort(key=lambda row: str(row["visual_unit_id"]))
+    static_sources = detect_static_video_sources(
+        fingerprinted, openclip_vectors, static_policy
+    )
     clusters: list[list[dict[str, Any]]] = []
     assigned: dict[str, tuple[str, int | None, float | None]] = {}
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in fingerprinted:
         by_source[str(row["source_content_id"])].append(row)
     for source_id in sorted(by_source):
+        static_source = bool(static_sources.get(source_id, {}).get("is_static"))
+        source_time_window_sec = (
+            max(
+                video_time_window_sec,
+                int(static_policy.get("extended_duplicate_window_seconds") or 120),
+            )
+            if static_source else video_time_window_sec
+        )
+        source_dhash_threshold = (
+            max(
+                dhash_threshold,
+                int(static_policy.get("stable_pair_dhash_threshold") or 12),
+            )
+            if static_source else dhash_threshold
+        )
+        source_cosine_threshold = (
+            max(
+                openclip_cosine_threshold,
+                float(static_policy.get("stable_pair_openclip_cosine_threshold") or 0.985),
+            )
+            if static_source else openclip_cosine_threshold
+        )
         source_clusters: list[list[dict[str, Any]]] = []
         for row in sorted(by_source[source_id], key=visual_representative_key):
             visual_id = str(row["visual_unit_id"])
@@ -687,14 +791,14 @@ def compute_visual_identity(
             matched: tuple[list[dict[str, Any]], dict[str, Any], int, float | None] | None = None
             for cluster in source_clusters:
                 representative = cluster[0]
-                if representative["decode_error"] or not within_visual_scope(row, representative, video_time_window_sec):
+                if representative["decode_error"] or not within_visual_scope(row, representative, source_time_window_sec):
                     continue
                 exact_bytes = bool(row.get("derived_sha256")) and row.get("derived_sha256") == representative.get("derived_sha256")
                 distance = hamming_hex(str(row["dhash"]), str(representative["dhash"]))
-                if not exact_bytes and distance > dhash_threshold:
+                if not exact_bytes and distance > source_dhash_threshold:
                     continue
                 cosine = cosine_similarity(openclip_vectors.get(visual_id), openclip_vectors.get(str(representative["visual_unit_id"])))
-                if not exact_bytes and cosine is not None and cosine < openclip_cosine_threshold:
+                if not exact_bytes and cosine is not None and cosine < source_cosine_threshold:
                     continue
                 matched = (cluster, representative, distance, cosine)
                 break
@@ -762,6 +866,8 @@ def compute_visual_identity(
             eligible = True
             blocked_reason = None
             reasons = ["VISUAL_DUPLICATE_GROUP_REPRESENTATIVE", "REPRESENTATIVE_STABLE_ORDER"]
+            if static_sources.get(str(row["source_content_id"]), {}).get("is_static"):
+                reasons.append("STATIC_VISUAL_SOURCE_REPRESENTATIVE_AUTO")
         else:
             representative = row_by_id[canonical_id]
             exact = bool(row.get("derived_sha256")) and row.get("derived_sha256") == representative.get("derived_sha256")
@@ -769,6 +875,8 @@ def compute_visual_identity(
             eligible = False
             blocked_reason = None
             reasons = ["EXACT_DERIVED_SHA256_MATCH"] if exact else ["DHash_NEAR_DUPLICATE", "OPENCLIP_READONLY_AUDIT_PASS" if cosine is not None else "OPENCLIP_VECTOR_UNAVAILABLE"]
+            if static_sources.get(str(row["source_content_id"]), {}).get("is_static"):
+                reasons.append("STATIC_VISUAL_SOURCE_REDUNDANT_AUTO")
         identities.append(
             {
                 "visual_identity_id": stable_id("vid", visual_id),
@@ -816,6 +924,14 @@ def compute_visual_identity(
         "video_time_window_sec": video_time_window_sec,
         "max_workers": max_workers,
         "blocked_decoder_conservative_passthrough": True,
+        "static_shot_auto_detection": {
+            "policy": static_policy,
+            "evaluated_source_count": len(static_sources),
+            "detected_static_source_count": sum(
+                1 for row in static_sources.values() if row.get("is_static")
+            ),
+            "sources": static_sources,
+        },
     }
     return identities, groups, summary
 
@@ -1248,6 +1364,10 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     source_rows = load_source_rows(db_path)
     visual_rows = load_visual_rows(db_path)
     vectors, vector_errors = load_openclip_vectors(db_path)
+    static_policy = load_static_shot_policy(
+        Path(getattr(args, "static_policy", "")).expanduser().resolve()
+        if getattr(args, "static_policy", "") else None
+    )
     source_ids, source_groups, source_summary = compute_source_identity(
         source_rows, run_id=run_id, max_workers=args.max_workers, quick_bytes=args.quick_bytes
     )
@@ -1260,6 +1380,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         video_time_window_sec=args.video_time_window_sec,
         openclip_vectors=vectors,
         openclip_cosine_threshold=args.openclip_cosine_threshold,
+        static_policy=static_policy,
     )
     deterministic: bool | None = None
     if args.determinism_check:
@@ -1273,6 +1394,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             video_time_window_sec=args.video_time_window_sec,
             openclip_vectors=vectors,
             openclip_cosine_threshold=args.openclip_cosine_threshold,
+            static_policy=static_policy,
         )
         digest_1 = semantic_digest(source_ids_1, source_groups_1, visual_ids_1, visual_groups_1)
         digest_configured = semantic_digest(source_ids, source_groups, visual_ids, visual_groups)
@@ -1322,6 +1444,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "visual_hash_threshold": args.visual_hash_threshold,
             "openclip_cosine_threshold": args.openclip_cosine_threshold,
             "video_time_window_sec": args.video_time_window_sec,
+            "static_shot_policy": static_policy,
             "decode_backend": args.decode_backend,
             "determinism_check": args.determinism_check,
         },
@@ -1416,6 +1539,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--visual-hash-threshold", type=int, default=DEFAULT_VISUAL_HASH_THRESHOLD)
     parser.add_argument("--openclip-cosine-threshold", type=float, default=DEFAULT_OPENCLIP_COSINE_THRESHOLD)
     parser.add_argument("--video-time-window-sec", type=int, default=DEFAULT_VIDEO_TIME_WINDOW_SEC)
+    parser.add_argument("--static-policy", default=str(DEFAULT_STATIC_POLICY_PATH))
     parser.add_argument("--decode-backend", choices=["pillow", "blocked"], default="pillow")
     parser.add_argument("--determinism-check", action="store_true")
     parser.add_argument("--force-commit-review", action="store_true", help="Explicitly commit a conservative REVIEW result.")
@@ -1434,23 +1558,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(json.dumps({"status": "BLOCKED" if str(exc).startswith("BLOCKED") else "FAIL", "error": str(exc)}, ensure_ascii=False, sort_keys=True))
         return 2
-    visual_total = int(result.get("visual_input_count") or 0)
-    failed = int(result.get("failed_count") or 0)
-    blocked = int(result.get("blocked_decoder_count") or 0)
-    print(json.dumps({
-        "contract": "media_archive_stage_runtime_contract_v1",
-        "event": "stage_progress",
-        "completed": visual_total,
-        "total": visual_total,
-        "success": max(0, visual_total - failed - blocked),
-        "skipped": blocked,
-        "failed": failed,
-        "remaining": 0,
-        "input_files": int(result.get("source_input_count") or 0),
-        "input_sources": int(result.get("source_input_count") or 0),
-        "output_records": int(result.get("visual_identity_row_count") or 0),
-        "configured_workers": int(args.max_workers),
-    }, ensure_ascii=False, sort_keys=True))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result.get("status") in {"PASS", "PASS_WITH_BACKLOG"} else 2
 

@@ -30,6 +30,7 @@ from .local_person_annotations import (
     name_identity, remove_visual_membership, resolve_clusters,
 )
 from .central_database import (
+    connect,
     asset_annotations,
     ensure_schema as ensure_central_schema,
     list_saved_searches,
@@ -57,7 +58,7 @@ from .runtime_contract import (
     task_runtime_from_contract,
     validate_runtime_contract,
 )
-from .search_jobs import SearchJobManager, offline_search_environment
+from .search_jobs import SearchJob, SearchJobManager, offline_search_environment
 from .storage_audit import (
     apply_cleanup_plan,
     audit_task_storage,
@@ -66,15 +67,55 @@ from .storage_audit import (
 )
 
 
+
+
 APP_NAME = "本地数据库"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.3.2"
 _RESOURCE_CACHE: tuple[float, int | None, dict[str, Any]] = (0.0, None, {})
+
+
+def bundled_search_runtime(
+    config: Mapping[str, Any], *, module_file: Path | None = None,
+) -> tuple[Path, Path] | None:
+    """Return the App-owned search entry and config when they are packaged.
+
+    Models, virtual environments and the selected library remain external
+    read-only resources.  The executable search policy itself must not depend
+    on a developer checkout being present beside the App.
+    """
+    configured = str(config.get("search_runtime_path") or "").strip()
+    if configured:
+        root = Path(configured).expanduser().absolute()
+    else:
+        source = Path(module_file or __file__).resolve()
+        root = source.parents[1] / "SearchRuntime"
+    script = (
+        root / "scripts/04_media_archive_app/"
+        "stop03_5e_hybrid_search_app_adapter_v1.py"
+    )
+    search_config = root / "configs/stop03_5e_hybrid_visual_text_search_v2.json"
+    if script.is_file() and search_config.is_file():
+        return script, search_config
+    return None
+
+
+def system_memory_snapshot() -> dict[str, Any]:
+    """System-wide used memory estimate, never confused with process RSS."""
+    try:
+        total=int(subprocess.run(['/usr/sbin/sysctl','-n','hw.memsize'],capture_output=True,text=True,timeout=2,check=True).stdout.strip())
+        stats=subprocess.run(['/usr/bin/vm_stat'],capture_output=True,text=True,timeout=2,check=True).stdout
+        page=int(re.search(r'page size of (\d+) bytes',stats).group(1))
+        counts={key:int(value) for key,value in re.findall(r'^([^:\n]+):\s+(\d+)\.',stats,re.M)}
+        available=sum(counts.get(key,0) for key in ('Pages free','Pages inactive','Pages speculative','Pages purgeable'))*page
+        return {'system_memory_total_bytes':total,'system_memory_used_bytes':max(0,min(total,total-available))}
+    except (OSError,ValueError,AttributeError,subprocess.SubprocessError):
+        return {'system_memory_total_bytes':None,'system_memory_used_bytes':None}
 
 
 def live_resource_snapshot(current_task: Mapping[str, Any] | None) -> dict[str, Any]:
     """Small, read-only process sample for the run page (never scans source)."""
     global _RESOURCE_CACHE
-    pid = int((current_task or {}).get("current_child_pid") or 0) or None
+    pid = int((current_task or {}).get("current_child_pid") or (current_task or {}).get('worker_pid') or 0) or None
     now = time.monotonic()
     cached_at, cached_pid, cached = _RESOURCE_CACHE
     if cached and pid == cached_pid and now - cached_at < 2.0:
@@ -84,22 +125,26 @@ def live_resource_snapshot(current_task: Mapping[str, Any] | None) -> dict[str, 
         "memory_bytes": 0, "process_count": 0, "swap_used_bytes": None,
         "sample_error": "",
         "source_scanned": False,
+        "workers": [],
     }
+    report.update(system_memory_snapshot())
     if pid:
         try:
             sample = subprocess.run(
-                ["/bin/ps", "-axo", "pid=,ppid=,%cpu=,rss=,state="],
+                [str(Path(__file__).resolve().parents[4]/'Helpers/ps-readonly'), "-axo", "pid=,ppid=,%cpu=,rss=,state=,command="],
                 capture_output=True, text=True, timeout=2.0, check=False,
             )
             rows: dict[int, tuple[int, float, int, str]] = {}
+            commands = {}
             for line in sample.stdout.splitlines():
-                fields = line.split(None, 4)
-                if len(fields) != 5:
+                fields = line.split(None, 5)
+                if len(fields) not in (5,6):
                     continue
                 child_pid, parent_pid = int(fields[0]), int(fields[1])
                 rows[child_pid] = (
                     parent_pid, float(fields[2]), int(fields[3]), fields[4],
                 )
+                commands[child_pid]=fields[5] if len(fields)>5 else ''
             process_ids = {pid}
             changed = True
             while changed:
@@ -109,6 +154,12 @@ def live_resource_snapshot(current_task: Mapping[str, Any] | None) -> dict[str, 
                         process_ids.add(child_pid)
                         changed = True
             live_rows = [rows[item] for item in process_ids if item in rows]
+            from .runtime_dashboard import LABELS
+            for item in sorted(process_ids):
+                if item not in rows:continue
+                command=commands.get(item,'');match=re.search(r'--stage\s+(\w+)',command)
+                stage=match.group(1) if match else 'ffmpeg' if 'ffmpeg' in command else 'scheduler'
+                report['workers'].append({'pid':item,'purpose':LABELS.get(stage,'音视频解码' if stage=='ffmpeg' else '任务调度 / 辅助处理'),'cpu_percent':rows[item][1],'memory_bytes':rows[item][2]*1024})
             if sample.returncode == 0 and live_rows:
                 report.update({
                     "process_alive": True,
@@ -138,10 +189,13 @@ def runtime_output_root(config: dict[str, Any]) -> Path:
     configured = str(config.get("output_root") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return (Path.home() / "Library" / "Application Support" / "素材大整理").resolve()
+    return application_state_root()
 
 
 def application_state_root() -> Path:
+    configured = os.environ.get("MEDIA_ARCHIVE_APP_STATE_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
     return (Path.home() / "Library" / "Application Support" / "素材大整理").resolve()
 
 
@@ -227,6 +281,13 @@ def _controlled_library_task_paths(candidates: Sequence[Path]) -> list[Path]:
         except OSError:
             continue
         tasks_root = resolved.parent.parent if resolved.parent.parent.name == "tasks" else None
+        if tasks_root is None:
+            try:
+                known = load_json(resolved)
+                if known.get('task_directory_layout') == 'direct_v1':
+                    tasks_root = resolved.parent.parent
+            except (OSError, ValueError):
+                pass
         if tasks_root is None or not tasks_root.is_dir():
             continue
         for child in sorted(tasks_root.iterdir()):
@@ -243,12 +304,28 @@ def _existing_library_record(task_path: Path) -> dict[str, Any] | None:
         state_path = Path(str(task.get("state_path") or "")).expanduser()
         state = load_json(state_path) if state_path.is_file() else {}
         with ReadonlyMediaRepository(database).connect() as con:
+            tables={r[0] for r in con.execute('SELECT name FROM sqlite_master')}
+            if task.get('scheduler_mode')=='event_driven_v2' and 'scheduler_runs' in tables:
+                cols={r[1] for r in con.execute('PRAGMA table_info(scheduler_runs)')}
+                if {'task_id','execution_epoch','status','started_at','finished_at'}<=cols:
+                    header=con.execute('SELECT status,started_at,finished_at FROM scheduler_runs WHERE task_id=? ORDER BY execution_epoch DESC LIMIT 1',(task.get('task_id'),)).fetchone()
+                    if header:
+                        status={'RUNNING':'running','STARTING':'queued','STOPPING':'stopping','RECOVERABLE':'recoverable','COMPLETED':'success'}.get(header[0],str(header[0]).lower())
+                        # Inventory is a header, not a new result acceptance.
+                        if header[0]=='COMPLETED' and state.get('status')=='failed':status='failed'
+                        state={**state,'status':status,'started_at_epoch':header[1],'finished_at_epoch':header[2]}
+            if 'v2_product_sources' in tables and task.get('scheduler_run_id'):
+                count_rows=con.execute('''SELECT COALESCE(json_extract(source_json,'$.media_kind'),json_extract(source_json,'$.media_type')),COUNT(*)
+                    FROM v2_product_sources WHERE scheduler_run_id=? GROUP BY 1''',(task['scheduler_run_id'],))
+            elif {'v2_active_sources','v2_source_metadata'} <= tables:
+                count_rows=con.execute('''SELECT COALESCE(json_extract(m.metadata,'$.media_type'),json_extract(m.metadata,'$.media_kind')) kind,
+                    COUNT(DISTINCT m.source_id) FROM v2_active_sources a JOIN v2_source_metadata m
+                    ON m.source_id=a.source_id AND m.source_revision=a.source_revision GROUP BY kind''')
+            else:
+                count_rows=con.execute("SELECT media_type,COUNT(*) FROM source_assets WHERE media_type IN ('image','video') GROUP BY media_type")
             source_counts = {
                 str(media_type): int(count)
-                for media_type, count in con.execute(
-                    "SELECT media_type,COUNT(*) FROM source_assets "
-                    "WHERE media_type IN ('image','video') GROUP BY media_type"
-                )
+                for media_type, count in count_rows
             }
         return {
             "task_id": str(task.get("task_id") or task_path.parent.name),
@@ -288,7 +365,11 @@ def existing_libraries(config: dict[str, Any]) -> list[dict[str, Any]]:
     active_task_path = _library_task_path_from_config(config)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_paths:set[str]=set()
     for candidate in candidates:
+        key=str(candidate.expanduser().resolve())
+        if key in seen_paths:continue
+        seen_paths.add(key)
         row = _existing_library_record(candidate)
         if row is None or row["database"] in seen:
             continue
@@ -310,6 +391,8 @@ def task_detail(task_path: Path) -> dict[str, Any]:
         raise RuntimeError("该历史任务缺少 pipeline_state.json")
     state = load_json(state_path)
     # Older app builds did not persist the explicit failed-stage fields.
+    if task.get('scheduler_mode') == 'event_driven_v2':
+        state = _project_v2_task_state(state, task)
     # Preserve their history, but infer enough information for the current UI
     # to expose a useful, copyable failure report.
     if str(state.get("status") or task.get("status") or "") == "failed":
@@ -473,19 +556,35 @@ def load_runtime(
         validate_runtime_contract(Path(contract_text), model_root=model_root)
         if contract_text else {"ready": False}
     )
-    if contract_text and not contract_report["ready"]:
-        return config, repository, None
     contract = (
         load_runtime_contract(Path(contract_text), model_root=model_root)
         if contract_report["ready"] else None
     )
+    packaged = bundled_search_runtime(config)
+    search_script = (
+        packaged[0] if packaged else
+        Path(contract["scripts"]["search_adapter"] if contract else config.get("search_script") or "")
+    )
+    search_config = (
+        packaged[1] if packaged else
+        Path(contract["configs"]["hybrid_search"] if contract else config.get("search_config") or "")
+    )
+    python_config = contract.get("python", {}) if contract else {}
+    embedding_python = str(
+        python_config.get("embedding") or config.get("embedding_python") or ""
+    ).strip()
+    openclip_python = str(
+        python_config.get("visual") or config.get("openclip_python") or ""
+    ).strip()
+    if not embedding_python or not openclip_python:
+        return config, repository, None
     manager = SearchJobManager(
         db_path=Path(database_text),
         output_root=runtime_output_root(config),
-        search_script=Path(contract["scripts"]["search_adapter"] if contract else config["search_script"]),
-        search_config=Path(contract["configs"]["hybrid_search"] if contract else config["search_config"]),
-        embedding_python=Path(contract["python"]["embedding"] if contract else config["embedding_python"]),
-        openclip_python=Path(contract["python"]["visual"] if contract else config["openclip_python"]),
+        search_script=search_script,
+        search_config=search_config,
+        embedding_python=Path(embedding_python),
+        openclip_python=Path(openclip_python),
     )
     return config, repository, manager
 
@@ -497,6 +596,16 @@ def task_state(config: dict[str, Any]) -> dict[str, Any] | None:
         return None
     try:
         state = load_json(path)
+        task_path = Path(str(config.get('task_path') or ''))
+        if task_path.is_file():
+            task = load_json(task_path)
+            if task.get('database'):
+                state = _project_v2_task_state(state, task)
+            if state.get('scheduler_mode') == 'event_driven_v2' and task.get('database'):
+                from .v2_progress_reads import read_lifecycle_summary
+                lifecycle = read_lifecycle_summary(Path(task['database']), task.get('scheduler_run_id'))
+                if lifecycle:
+                    state['lifecycle'] = lifecycle
         if state.get("status") in {"queued", "running"}:
             pid = int(state.get("worker_pid") or 0)
             if pid > 1 and not process_is_alive(pid):
@@ -513,6 +622,390 @@ def task_state(config: dict[str, Any]) -> dict[str, Any] | None:
     except (OSError, ValueError, json.JSONDecodeError):
         return None
 
+
+def _current_v2_recognition(c, authority, *, lineage_prepared=False):
+    objects = {r[0] for r in c.execute('SELECT name FROM sqlite_master')}
+    if not {'v2_vectors', 'v2_searchable_documents'} <= objects:
+        return None
+    if {'v2_jobs', 'v2_job_dependencies'} <= objects and not lineage_prepared:
+        # Prove ancestry once, not once per document for each joined job.
+        # This changes TEMP reader state only; main stays mode=ro.
+        from .v2_current_jobs_cache import install_readonly_snapshot_view
+        if not c.in_transaction:
+            c.execute('BEGIN')
+        install_readonly_snapshot_view(c)
+    text_count = c.execute('''SELECT COUNT(DISTINCT d.document_id)
+        FROM v2_searchable_documents d
+        JOIN v2_active_sources a ON a.source_id=d.source_id AND a.source_revision=d.source_revision
+        JOIN v2_vectors v ON v.entity_id=d.document_id AND v.namespace LIKE 'text:%'
+        JOIN v2_current_jobs raw ON raw.execution_key=d.raw_result_ref AND raw.status='DONE'
+        JOIN v2_current_jobs embedding ON embedding.execution_key=d.embedding_ref
+            AND embedding.status='DONE' AND embedding.result_sha=v.input_digest
+        WHERE d.status='EMBEDDED' ''').fetchone()[0]
+    def done(stage):
+        return int(authority['stages'].get(stage, {}).get('job_done', 0))
+    return dict(text_vectors=int(text_count), openclip_visual_units=done('openclip'),
+                yoloe_detected_visual_units=done('yoloe'), qwen_success=done('qwen'),
+                ocr_completed=done('ocr'))
+
+
+def _project_v2_task_state(state: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    """Project the current V2 run into the historical stage vocabulary.
+
+    The scheduler owns execution; this function only reads its durable current
+    run and translates it for the UI. Empty downstream queues are explicitly
+    represented as not-triggered/waiting instead of completed.
+    """
+    database = Path(str(task.get("database") or "")).expanduser()
+    if not database.is_file():
+        return state
+    try:
+        with connect(database, readonly=True) as c:
+            run = c.execute(
+                "SELECT task_id, scheduler_run_id, execution_epoch, scheduler_mode, status, started_at, finished_at "
+                "FROM scheduler_runs WHERE task_id=? ORDER BY execution_epoch DESC LIMIT 1",
+                (task.get("task_id"),),
+            ).fetchone()
+            if not run or str(run["scheduler_mode"]) != "event_driven_v2":
+                return state
+            run_id = str(run["scheduler_run_id"])
+            epoch = int(run["execution_epoch"])
+            # Normal status is execution progress, not a full integrity audit.
+            # Pending/runnable jobs keep their exact root-scoped predicate;
+            # completed-result coverage is audited at terminal/recovery only.
+            lineage_prepared=False
+            terminal_audit=str(run['status'])=='COMPLETED'
+            if terminal_audit and c.execute("SELECT 1 FROM sqlite_master WHERE name='v2_job_dependencies'").fetchone():
+                from .v2_current_jobs_cache import install_readonly_snapshot_view
+                if not c.in_transaction:c.execute('BEGIN')
+                install_readonly_snapshot_view(c)
+                lineage_prepared=True
+            from .visual_progress_authority import project_visual_progress
+            repair_presentation=bool(task.get('candidate_repair'))
+            authority = project_visual_progress(c, run_id, epoch, task.get('v2_contracts'),task_id=task.get('task_id') if repair_presentation else None)
+            jobs = list(c.execute(
+                "SELECT stage, status, COUNT(*) AS count FROM v2_jobs "
+                "WHERE scheduler_run_id=? AND execution_epoch=? AND status <> 'SUPERSEDED' "
+                "GROUP BY stage,status",
+                (run_id, epoch),
+            ))
+            if authority['modern']:
+                counts = {}
+                for job in authority['jobs']:
+                    if job['status'] != 'SUPERSEDED':
+                        pair=(job['stage'],job['status']);counts[pair]=counts.get(pair,0)+1
+                jobs=[{'stage':st,'status':status,'count':n} for (st,status),n in counts.items()]
+            lifecycle = c.execute(
+                "SELECT worker_pid, stop_requested FROM v2_product_lifecycle "
+                "WHERE scheduler_run_id=?", (run_id,),
+            ).fetchone() if c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v2_product_lifecycle'"
+            ).fetchone() else None
+            tables = {str(row[0]) for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            source_rows = list(c.execute(
+                "SELECT * FROM v2_product_sources WHERE scheduler_run_id=?",
+                (run_id,),
+            )) if "v2_product_sources" in tables else []
+            if repair_presentation and 'v2_product_sources' in tables:
+                from .runtime_dashboard import project_source_rows
+                source_rows=project_source_rows(c,task)
+            source_counts = {"image": 0, "video": 0}
+            source_kinds = {}
+            source_done = {"image": 0, "video": 0}
+            source_materialized = {"image": 0, "video": 0}
+            source_running = {"image": 0, "video": 0}
+            source_failed = {"image": 0, "video": 0}
+            raw_visual_skipped = set()
+            timelapse_covered = set()
+            a9t_planned = 'v2_a9t_plans' in tables
+            source_recovering = {"image": 0, "video": 0}
+            source_errors = {"image": [], "video": []}
+            source_ids = []
+            for row in source_rows:
+                source_ids.append(str(row["source_id"]))
+                try:
+                    payload = json.loads(row["source_json"] or "{}")
+                    kind = str(payload.get("media_type") or payload.get("media_kind") or "")
+                    if kind in source_counts:
+                        source_counts[kind] += 1
+                        source_kinds[str(row['source_id'])] = kind
+                        if 'state' in row.keys() and row['state'] == 'INGESTING':
+                            source_running[kind] += 1
+                        if 'state' in row.keys() and row['state']=='FAILED_FINAL':
+                            source_failed[kind]+=1
+                            source_errors[kind].append(str((row['error'] if 'error' in row.keys() else '') or 'producer_failed'))
+                        if 'error' in row.keys() and row['error']=='producer_aborted_recovery_pending' and row['state']=='NEW':
+                            source_recovering[kind]+=1
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            if {'v2_raw_visual_skips','v2_sources','v2_active_sources'} <= tables:
+                raw_visual_skipped={r[0] for r in c.execute('''SELECT r.source_id
+                    FROM v2_raw_visual_skips r JOIN v2_sources s
+                      ON s.source_id=r.source_id AND s.revision=r.source_revision
+                    JOIN v2_active_sources a ON a.source_id=s.source_id AND a.source_revision=s.revision
+                    WHERE r.scheduler_run_id=? AND r.execution_epoch=?
+                      AND r.status IN ('ACTIVE','COMPLETE') AND s.eos='VISUAL_SKIPPED' ''',(run_id,epoch))}
+                if repair_presentation:
+                    raw_visual_skipped={r[0] for r in c.execute('''SELECT x.source_id FROM v2_raw_visual_skips x
+                        JOIN scheduler_runs sr ON sr.scheduler_run_id=x.scheduler_run_id
+                        JOIN v2_sources s ON s.source_id=x.source_id AND s.revision=x.source_revision
+                        JOIN v2_active_sources a ON a.source_id=s.source_id AND a.source_revision=s.revision
+                        WHERE sr.task_id=? AND x.status IN ('ACTIVE','COMPLETE') AND s.eos='VISUAL_SKIPPED' ''',(task['task_id'],))}
+            if {'v2_timelapse_coverage','v2_active_sources'} <= tables:
+                timelapse_covered = {r[0] for r in c.execute('''SELECT r.source_id
+                    FROM v2_timelapse_coverage r JOIN v2_active_sources a
+                    ON a.source_id=r.source_id AND a.source_revision=r.source_revision
+                    WHERE r.scheduler_run_id=?''', (run_id,))}
+                if repair_presentation:
+                    timelapse_covered={r[0] for r in c.execute('''SELECT x.source_id FROM v2_timelapse_coverage x
+                        JOIN scheduler_runs sr ON sr.scheduler_run_id=x.scheduler_run_id
+                        JOIN v2_active_sources a ON a.source_id=x.source_id AND a.source_revision=x.source_revision
+                        WHERE sr.task_id=? AND x.status='COMPLETE' ''',(task['task_id'],))}
+            if source_ids and {"v2_sources", "v2_active_sources"} <= tables:
+                active = list(c.execute(
+                    "SELECT s.source_id,s.eos FROM v2_sources s JOIN v2_active_sources a "
+                    "ON a.source_id=s.source_id AND a.source_revision=s.revision"))
+                for item in active:
+                    kind = source_kinds.get(str(item['source_id']))
+                    if kind:
+                        source_materialized[kind] += 1
+                        source_done[kind] += int(item['eos'] == 'EOS')
+            visual_units = 0
+            if source_ids and "v2_artifacts" in tables:
+                marks = ",".join("?" for _ in source_ids)
+                has_revision = 'revision' in {r[1] for r in c.execute('PRAGMA table_info(v2_artifacts)')}
+                visual_units = int(c.execute(
+                    (f"SELECT COUNT(*) FROM v2_artifacts v JOIN v2_active_sources a ON a.source_id=v.source_id AND a.source_revision=v.revision WHERE v.status='READY' AND v.source_id IN ({marks})"
+                     if has_revision else f"SELECT COUNT(*) FROM v2_artifacts WHERE status='READY' AND source_id IN ({marks})"),
+                    source_ids,
+                ).fetchone()[0])
+            source_states = {
+                str(row["state"] or "").upper()
+                for row in source_rows
+                if "state" in row.keys()
+            }
+            source_producer_sealed = bool(source_states) and source_states.issubset(
+                {"COMPLETE", "FAILED_FINAL", "FAILED"}
+            )
+            table_names = tables
+            candidate_counts = {"done": 0, "total": 0}
+            snapshot_counts = {"done": 0, "total": 0}
+            evaluated_sources = 0
+            if "v2_selected_candidates" in table_names:
+                candidate_counts["done"], candidate_counts["total"] = [int(v or 0) for v in c.execute(
+                    "SELECT SUM(status='DONE'), COUNT(*) FROM v2_selected_candidates WHERE status<>'SUPERSEDED'"
+                ).fetchone()]
+            if "v2_selection_snapshots" in table_names:
+                snapshot_counts["done"], snapshot_counts["total"] = [int(v or 0) for v in c.execute(
+                    "SELECT SUM(status='DONE'), COUNT(*) FROM v2_selection_snapshots WHERE status<>'SUPERSEDED'"
+                ).fetchone()]
+                snapshot_columns = {r[1] for r in c.execute('PRAGMA table_info(v2_selection_snapshots)')}
+                if 'source_id' in snapshot_columns:
+                    scoped = (" JOIN v2_active_sources a ON a.source_id=s.source_id AND a.source_revision=s.source_revision"
+                              if 'source_revision' in snapshot_columns and 'v2_active_sources' in tables else '')
+                    evaluated_sources = int(c.execute(
+                        "SELECT COUNT(DISTINCT s.source_id) FROM v2_selection_snapshots s" + scoped + " WHERE s.status='DONE'"
+                    ).fetchone()[0])
+                else:
+                    evaluated_sources = snapshot_counts['done']
+            from .runtime_dashboard import build_dashboard
+            dashboard=build_dashboard(c,task,run,source_rows,authority,timelapse_covered,raw_visual_skipped)
+            current_recognition = (_current_v2_recognition(c, authority, lineage_prepared=lineage_prepared)
+                                   if terminal_audit else None)
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return state
+
+    labels = {
+        "scan": "素材扫描并建立清单", "image_preview": "图片处理与预览",
+        "video_frames": "视频抽帧", "audio_search_enrichment": "音频抽取与搜索准备",
+        "visual_schema_v3": "准备画面分析", "yoloe": "识别画面中的物体（YOLOE）",
+        "openclip": "理解画面内容（OpenCLIP）", "dedup": "检查相似画面",
+        "person_reid_optional_v1": "可见人物归并（InsightFace）",
+        "candidate_schema": "准备画面筛选", "candidates_generic_v2": "挑选值得描述或识别文字的画面",
+        "candidate_snapshot": "本轮处理清单", "qwen_optional_v2": "画面描述（Qwen3.5-9B）",
+        "ocr_optional_v2": "画面文字识别（OCR）", "evidence_optional_v2": "整理搜索内容",
+        "propagation_optional_v2": "最终清单与语义传播", "embedding_optional_v2": "文本搜索向量",
+    }
+    aliases = {
+        "image_preview": ("geometry", "quality"), "dedup": ("dhash",),
+        "audio_search_enrichment": ("audio_extract", "vad", "whisper"),
+        "yoloe": ("yoloe",), "openclip": ("openclip",),
+        "qwen_optional_v2": ("qwen",), "ocr_optional_v2": ("ocr",),
+        "embedding_optional_v2": ("embedding",), "evidence_optional_v2": ("final_projection",),
+        "propagation_optional_v2": ("final_manifest",),
+    }
+    grouped: dict[str, dict[str, int]] = {}
+    for row in jobs:
+        bucket = grouped.setdefault(str(row["stage"]), {})
+        bucket[str(row["status"])] = int(row["count"])
+    run_status = str(run["status"] or "").upper()
+    raw_stages = list(state.get("stages") or [])
+    if not raw_stages:
+        raw_stages = [{"key": key} for key in ("yoloe", "openclip", "qwen_optional_v2", "ocr_optional_v2", "embedding_optional_v2")]
+    rows = []
+    for raw in raw_stages:
+        key = str(raw.get("key") or "stage")
+        bucket: dict[str, int] = {}
+        for source_key in aliases.get(key, ()):
+            for status, count in grouped.get(source_key, {}).items():
+                bucket[status] = bucket.get(status, 0) + count
+        done = bucket.get("DONE", 0); running = bucket.get("RUNNING", 0)
+        pending = bucket.get("PENDING", 0); retryable = bucket.get("FAILED_RETRYABLE", 0)
+        failed_final = bucket.get("FAILED_FINAL", 0) + bucket.get("FAILED", 0)
+        skipped = 0
+        total = done + running + pending + retryable + failed_final
+        if key == "scan" and source_counts["image"] + source_counts["video"]:
+            done = total = source_counts["image"] + source_counts["video"]
+        elif key == "video_frames":
+            done, total = source_done['video'], source_counts['video']
+            running = source_running['video']
+            skipped=len(raw_visual_skipped)
+            failed_final=sum(r['state']=='FAILED_FINAL' and source_kinds.get(str(r['source_id']))=='video'
+                             and str(r['source_id']) not in raw_visual_skipped for r in source_rows)
+            pending = max(0, total - done - running - failed_final - skipped)
+            retryable = 0
+        elif key == "image_preview":
+            # A9T may choose representative images dynamically. Current work
+            # and the raw source inventory are separate from final workload.
+            done, total = source_done['image'], source_counts['image'] - len(timelapse_covered) if a9t_planned else 0
+            running = source_running['image']
+            failed_final = source_failed['image']
+            pending = max(0, (total if a9t_planned else source_counts['image']) - done - running - failed_final)
+            retryable = 0
+        elif key == "candidates_generic_v2":
+            # Candidate selection is source-scoped, not Qwen/OCR execution.
+            # Counting candidate DONE here falsely showed 51/261 after all
+            # published snapshots had already completed their selection.
+            done, total = evaluated_sources, sum(source_counts.values())-len(raw_visual_skipped)-len(timelapse_covered)
+            failed_final = sum(source_failed.values())
+            pending = max(0, total - done - failed_final)
+        elif key == "candidate_snapshot":
+            done, total = snapshot_counts["done"], snapshot_counts["total"]
+        # Dynamic V2 stages remain open until their upstream producer is sealed.
+        # A COMPLETED scheduler run is the durable global seal; schema setup is
+        # independently sealed once its table exists.
+        if key in {"visual_schema_v3", "candidate_schema"}:
+            producer_sealed = True
+        elif key == "video_frames":
+            producer_sealed = done + failed_final + skipped == total
+        elif key == 'image_preview' and a9t_planned:
+            producer_sealed = done + failed_final == total
+        elif key in {"scan"}:
+            producer_sealed = source_producer_sealed
+        else:
+            producer_sealed = run_status == "COMPLETED"
+        if failed_final and not pending and not running: status = "failed"
+        elif retryable and not pending and not running: status = "retryable"
+        elif run_status in {"RUNNING", "STARTING"} and running: status = "running"
+        elif run_status in {"RUNNING", "STARTING"} and pending:
+            status = 'waiting_scheduler' if any(authority['stages'].get(st,{}).get('runnable',0) for st in aliases.get(key,())) or key in ('video_frames','image_preview') else 'waiting_dependency'
+        elif total and not pending and not running and not retryable and not failed_final:
+            status = "success" if producer_sealed else "drained_open"
+        elif run_status in {"STOPPING", "RECOVERABLE"} and raw.get("status") in {"cancelled", "running"}: status = "stopping"
+        elif str(raw.get("status") or "").lower() == "failed": status = "failed"
+        elif total == 0 and producer_sealed: status = "success"
+        elif total == 0: status = "waiting_dependency" if any(grouped.values()) else "not_triggered"
+        else: status = "waiting_dependency"
+        reason = {
+            "not_triggered": "尚未触发", "waiting_dependency": "等待依赖；下游任务会在上游结果发布后生成",
+            "running": "进行中", "success": "已完成", "retryable": "等待重试",
+            "failed": "失败", "stopping": "正在安全停止",
+            "drained_open": "当前队列已处理完，等待更多上游结果",
+            "waiting_scheduler": "等待调度",
+        }[status]
+        if key in ('yoloe','openclip','dedup'):
+            from .storage_compute_scheduler import workload_class
+            st=aliases[key][0]
+            reason=f"{reason}；当前运行 {running}；待处理 {pending}；失败 {failed_final}；workload class {workload_class(st)}"
+            block=authority['blocks'].get(st)
+            if block:reason+=f"；阻塞原因 {block['blocking_reason']}"
+        if key == 'image_preview':
+            if a9t_planned:
+                reason = (f"预处理完成 {done} / {total}；原始图片 {source_counts['image']}；"
+                          f"延时摄影代表帧覆盖 {len(timelapse_covered)}；覆盖完成仍等待代表帧下游完成")
+            else:
+                reason = (f"已完成 {done} 个图片 source；当前已生成 {source_materialized['image']}；"
+                          f"原始图片 source {source_counts['image']}；最终处理量仍在生成")
+        elif key == 'candidates_generic_v2':
+            reason = (f"已筛选 {done} / {total} 个 source；已生成 {candidate_counts['total']} 个候选；"
+                      f"候选模型执行完成 {candidate_counts['done']}；source 失败 {failed_final}；其余等待各自证据齐全")
+        elif key == 'evidence_optional_v2':
+            reason += '；将已完成模型结果写入可查询的正式结果结构，不是再次模型推理'
+        elif key == 'video_frames':
+            reason = f"{done} / {total} 个视频 extraction EOS；正在抽帧 {running}；失败 {failed_final}"
+            if skipped:reason+=f"；RAW 视频仅跳过视觉 {skipped}，音频仍必须完成"
+            if source_recovering['video']:reason+=f"；上次处理异常，等待恢复 {source_recovering['video']}"
+            if source_errors['video']:reason+='；'+','.join(sorted(set(source_errors['video'])))
+        rows.append({
+            "key": key, "name": labels.get(key, str(raw.get("name") or key)),
+            "status": status, "state_reason": reason, "done": done, "total": total,
+            "live_completed": done, "live_total": total, "live_success": done,
+            "success_count": done, "failed_count": failed_final,
+            "live_skipped": skipped, "skipped_count": skipped,
+            "queue_pending": pending, "queue_running": running,
+            "retryable_count": retryable, "failed_final_count": failed_final,
+            "superseded_count": sum(authority['stages'].get(st,{}).get('job_superseded',0) for st in aliases.get(key,())),
+            "description": reason, "error_summary": str(raw.get("error_summary") or ""),
+            "current_item": str(raw.get("current_item") or ""),
+            "producer_sealed": producer_sealed,
+        })
+    buckets = {"DONE": 0, "RUNNING": 0, "PENDING": 0, "FAILED_RETRYABLE": 0, "FAILED_FINAL": 0}
+    for bucket in grouped.values():
+        for status in buckets: buckets[status] += bucket.get(status, 0)
+    if run_status=='COMPLETED':
+        from .scheduler_task_state import current_task_failure_count
+        from .v2_current_jobs_cache import install_readonly_snapshot_view
+        with connect(Path(task['database']),readonly=True) as failure_connection:
+            failure_connection.execute('BEGIN')
+            columns = {r[1] for r in failure_connection.execute('PRAGMA table_info(v2_jobs)')}
+            if {'source_id','source_revision','execution_key','status'} <= columns:
+                install_readonly_snapshot_view(failure_connection)
+                buckets['FAILED_FINAL']=current_task_failure_count(failure_connection,dict(run))
+    total_jobs = sum(buckets.values())
+    projected = dict(state)
+    projected.update({
+        "runtime_dashboard": dashboard,
+        "visual": authority['visual'],
+        "stage_authority": authority['stages'],
+        "status": ("stopping" if lifecycle and lifecycle["stop_requested"] and run_status in {"RUNNING", "STARTING"}
+                    else "running" if run_status in {"RUNNING", "STARTING"}
+                    else ("failed" if buckets["FAILED_FINAL"] else "success") if run_status == "COMPLETED"
+                    else "recoverable" if run_status == "RECOVERABLE"
+                    else run_status.lower() if run_status else state.get("status", "unknown")),
+        "scheduler_mode": "event_driven_v2", "scheduler_run_id": run_id, "execution_epoch": epoch,
+        "worker_pid": int(lifecycle["worker_pid"]) if lifecycle and lifecycle["worker_pid"] else None,
+        "started_at_epoch": run["started_at"], "finished_at_epoch": run["finished_at"],
+        "current_stage_name": "、".join(row["name"] for row in rows if row["status"] == "running") or (
+            (f"处理结束，{buckets['FAILED_FINAL']}项失败" if buckets['FAILED_FINAL'] else "处理完成")
+            if run_status == 'COMPLETED' else "等待调度" if run_status=='RUNNING' else "准备启动"),
+        "stage_count": len(rows), "completed_stage_count": sum(row["status"] == "success" for row in rows),
+        "stages": rows,
+        "v2_overview": {"source": {"image": {"count": source_counts["image"], "bytes": 0},
+                                     "video": {"count": source_counts["video"], "bytes": 0}},
+                        "source_total_count": sum(source_counts.values()), "visual_unit_total_count": visual_units,
+                        **({'recognition': current_recognition} if current_recognition is not None else {})},
+    })
+    projected["v2_live_progress"] = {
+        "current_jobs_total": total_jobs, "current_jobs_done": buckets["DONE"],
+        "current_jobs_running": buckets["RUNNING"], "current_jobs_pending": buckets["PENDING"],
+        "source_total": sum(source_counts.values()),
+        "source_complete": sum(row['state'] == 'COMPLETE' for row in source_rows
+                               if str(row['source_id']) in source_kinds),
+        "source_failed": sum(source_failed.values()),
+    }
+    if run_status=='RUNNING' and any(s.get('runnable',0) for s in authority['stages'].values()):
+        try:
+            with sqlite3.connect(Path(task['database']).as_uri()+'?mode=ro',uri=True) as timing:
+                timing.execute('PRAGMA query_only=ON')
+                recent=timing.execute('SELECT MAX(run_finished_at) FROM v2_job_timing WHERE scheduler_run_id=? AND execution_epoch=?',(run_id,epoch)).fetchone()[0]
+            if recent is not None and time.time()-recent>60:
+                projected['current_stage_name']='疑似停滞：有可运行任务，最近60秒无完成'
+        except (sqlite3.Error,KeyError,TypeError):pass
+    if buckets["FAILED_RETRYABLE"]:
+        projected["v2_live_progress"]["current_jobs_retryable"] = buckets["FAILED_RETRYABLE"]
+    if buckets["FAILED_FINAL"]:
+        projected["v2_live_progress"]["current_jobs_failed_final"] = buckets["FAILED_FINAL"]
+    return projected
 
 def process_is_alive(pid: int) -> bool:
     if pid <= 1:
@@ -551,6 +1044,9 @@ def human_duration(value: Any) -> str:
 
 def _state_elapsed_seconds(state: dict[str, Any]) -> float:
     """Return a truthful task duration from timestamps or recorded stages."""
+    timer = (state.get('runtime_dashboard') or {}).get('timer') or {}
+    if timer.get('total_elapsed') is not None:
+        return round(max(0.0, float(timer['total_elapsed'])), 1)
     try:
         started = float(state.get("started_at_epoch"))
         finished_value = state.get("finished_at_epoch")
@@ -604,20 +1100,20 @@ def task_pipeline(
         "scan": "素材扫描",
         "image_preview": "图片预览与延时摄影分组",
         "video_frames": "视频抽帧",
-        "visual_schema_v3": "初始化视觉分析数据库结构",
-        "yoloe": "物体识别（YOLOE）",
-        "openclip": "全量视觉向量（OpenCLIP）",
-        "dedup": "来源与画面去重",
+        "visual_schema_v3": "准备画面分析",
+        "yoloe": "识别画面中的物体（YOLOE）",
+        "openclip": "理解画面内容（OpenCLIP）",
+        "dedup": "检查相似画面",
         "person_reid_optional_v1": "可见人脸待确认人物组（InsightFace，本地匿名）",
-        "candidate_schema": "初始化候选队列数据库结构",
-        "candidates_generic_v2": "高价值画面与 OCR 候选筛选",
-        "candidate_snapshot": "冻结当前候选快照",
+        "candidate_schema": "准备画面筛选",
+        "candidates_generic_v2": "挑选值得描述或识别文字的画面",
+        "candidate_snapshot": "本轮处理清单",
         "qwen_optional_v2": "高价值画面描述（Qwen-VL）",
         "all_image_supplement_contract": "准备全部图片补充队列",
         "all_image_supplement_qwen": "补充其余图片描述（Qwen-VL）",
         "all_image_evidence_merge": "合并全部图片搜索证据",
         "ocr_optional_v2": "画面文字识别（OCR）",
-        "evidence_optional_v2": "合并语义与文字证据",
+        "evidence_optional_v2": "整理搜索内容",
         "propagation_optional_v2": "相邻画面语义传播",
         "embedding_optional_v2": "文本搜索向量（Qwen3-Embedding）",
         "repair_finder_tags": "补读图片 Finder 标签",
@@ -641,7 +1137,9 @@ def task_pipeline(
         status = "failed" if key in acceptance_errors else str(stage.get("status") or "pending")
         metric = metrics.get(key, {})
         live_total = int(stage.get("live_total") or 0)
-        use_live = status == "running" and live_total > 0
+        use_live = (
+            state.get("scheduler_mode") in ("event_driven_v2","build150_streaming") and "live_total" in stage
+        ) or (status in {"running", "stopping"} and live_total > 0)
         done = int(stage.get("live_completed") or 0) if use_live else int(metric.get("done") or 0)
         total_items = live_total if use_live else int(metric.get("total") or 0)
         detail = str(metric.get("description") or "").strip()
@@ -649,18 +1147,23 @@ def task_pipeline(
             f"用时 {human_duration(stage.get('elapsed_seconds'))}"
             if stage.get("elapsed_seconds") is not None else ""
         )
-        report_paths = dict(stage.get("report_paths") or {})
-        report_summary: dict[str, Any] = {}
-        summary_path = Path(str(report_paths.get("summary") or "")).expanduser()
+        description = "；".join(part for part in (detail, duration) if part)
+        report_metrics: dict[str, Any] = {}
+        summary_path = Path(str((stage.get("report_paths") or {}).get("summary") or ""))
         if summary_path.is_file():
             try:
-                report_summary = load_json(summary_path)
-            except (OSError, ValueError, json.JSONDecodeError):
-                report_summary = {}
-        description = "；".join(part for part in (detail, duration) if part)
+                report = load_json(summary_path)
+                report_metrics = {
+                    "stage_output_bytes": int(report.get("output_bytes") or 0),
+                    "database_delta_bytes": int(report.get("database_delta_bytes") or 0),
+                }
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                report_metrics = {}
         rows.append({
             "key": key,
-            "name": names.get(key, str(stage.get("name") or "处理阶段")),
+            "name": (str(stage.get("name") or names.get(key, "处理阶段"))
+                     if state.get("scheduler_mode") == "event_driven_v2"
+                     else names.get(key, str(stage.get("name") or "处理阶段"))),
             "status": status,
             "done": done,
             "total": total_items,
@@ -668,14 +1171,16 @@ def task_pipeline(
             "description": (
                 f"产物验收失败：{acceptance_errors[key]}"
                 if key in acceptance_errors else
-                description or "等待上一步完成后确定数量"
+                (str(stage.get("description") or stage.get("state_reason") or "等待依赖")
+                 if state.get("scheduler_mode") == "event_driven_v2"
+                 else description or "等待上一步完成后确定数量")
             ),
             "error_summary": str(stage.get("error_summary") or ""),
             "log_path": str(stage.get("log_path") or state.get("error_log_path") or ""),
             "current_item": str(stage.get("current_item") or ""),
             "success_count": int(stage.get("live_success") or 0),
             "skipped_count": int(stage.get("live_skipped") or 0),
-            "failed_count": int(stage.get("live_failed") or 0),
+            "failed_count": int(stage.get("failed_final_count") or stage.get("live_failed") or 0),
             "eta_seconds": stage.get("eta_seconds"),
             "eta_basis": str(stage.get("eta_basis") or ""),
             "configured_workers": stage.get("configured_workers"),
@@ -683,23 +1188,65 @@ def task_pipeline(
             "ffmpeg_processes": stage.get("ffmpeg_processes"),
             "model_workers": stage.get("model_workers"),
             "bytes_processed": int(stage.get("bytes_processed") or 0),
-            "output_files": int(
-                stage.get("output_files")
-                or report_summary.get("output_file_count")
-                or 0
-            ),
-            "stage_output_bytes": int(report_summary.get("output_bytes") or 0),
-            "database_delta_bytes": int(report_summary.get("database_delta_bytes") or 0),
-            "actual_script": str(report_summary.get("actual_script") or ""),
-            "items_per_second": report_summary.get("items_per_second"),
-            "report_paths": report_paths,
+            "output_files": int(stage.get("output_files") or 0),
+            "stage_output_bytes": report_metrics.get("stage_output_bytes", 0),
+            "database_delta_bytes": report_metrics.get("database_delta_bytes", 0),
+            "report_paths": dict(stage.get("report_paths") or {}),
         })
-    total = int(state.get("stage_count") or len(rows))
-    completed = sum(row["status"] == "success" for row in rows)
+    live_progress = state.get('v2_live_progress') or {}
+    if live_progress:
+        total = int(live_progress.get('current_jobs_total') or 0)
+        completed = int(live_progress.get('current_jobs_done') or 0)
+        overall_percent = round(completed / total * 100.0, 2) if total else 0.0
+        if state.get('status') != 'success':
+            overall_percent = min(overall_percent, 99.9)
+        overall_basis = f"当前已生成任务完成率：{completed} / {total}；下游任务会随处理动态生成"
+        source_total = int(live_progress.get('source_total') or 0)
+        if source_total:
+            source_complete = int(live_progress.get('source_complete') or 0)
+            source_failed = int(live_progress.get('source_failed') or 0)
+            terminal = source_complete + source_failed
+            overall_percent = round(source_complete / source_total * 100.0, 2)
+            # Only a durable completed run may advertise project completion.
+            if state.get('status') != 'success':
+                overall_percent = min(overall_percent, 99.9)
+            overall_basis = (f"素材成功进度：{source_complete} / {source_total}；已结束处理 {terminal}，"
+                             f"明确失败 {source_failed}。已生成任务计数不是整个项目完成度。")
+    else:
+        total = int(state.get("stage_count") or len(rows))
+        completed = sum(row["status"] == "success" for row in rows)
+        overall_percent = round(completed / total * 100.0, 2) if total else 0.0
+        overall_basis = "等待产生可计数的模型任务"
+    dashboard = state.get('runtime_dashboard')
+    if dashboard:
+        dashboard = dict(dashboard)
+        dashboard['visual_coverage_status'] = (
+            '有效画面覆盖验收失败：' + acceptance_errors['openclip']
+            if 'openclip' in acceptance_errors else
+            '有效画面覆盖验收通过（当前来源版本、正式向量结果与冻结契约均通过检查）'
+            if state.get('status') == 'success' else
+            '有效画面覆盖尚未完成终态验收；任务完成数不能代替有效覆盖'
+        )
     result = {
         "stages": rows,
-        "overall_percent": round(completed / total * 100.0, 2) if total else 0.0,
-        "failed_record_count": len(acceptance_errors) or (1 if state.get("status") == "failed" else 0),
+        "runtime_dashboard": dashboard,
+        "visual": state.get('visual', {}),
+        "stage_authority": state.get('stage_authority', {}),
+        "lifecycle": state.get('lifecycle'),
+        "scheduler_mode": state.get("scheduler_mode"),
+        "current_jobs_total": total,
+        "current_jobs_done": completed,
+        "current_jobs_running": int(live_progress.get("current_jobs_running") or 0),
+        "current_jobs_pending": int(live_progress.get("current_jobs_pending") or 0),
+        "current_jobs_retryable": int(live_progress.get("current_jobs_retryable") or 0),
+        "current_jobs_failed_final": int(live_progress.get("current_jobs_failed_final") or 0),
+        "overall_percent": overall_percent,
+        "failed_record_count": (
+            len(acceptance_errors)
+            or int(live_progress.get("current_jobs_retryable") or 0)
+            + int(live_progress.get("current_jobs_failed_final") or 0)
+            or (1 if state.get("status") == "failed" else 0)
+        ),
         "search_ready": state.get("status") == "success" and not acceptance_errors,
         "full_pipeline_launcher_status": (
             "FAILED_OUTPUT_ACCEPTANCE" if acceptance_errors else str(state.get("status") or "ready").upper()
@@ -712,8 +1259,20 @@ def task_pipeline(
     }
     result.update(overall_eta or {
         "overall_eta_seconds": None,
-        "overall_eta_basis": "等待产生可计数的模型任务",
+        "overall_eta_basis": overall_basis,
     })
+    if int(live_progress.get('source_total') or 0):
+        result['overall_eta_basis'] = overall_basis + (' ' + str((overall_eta or {}).get('overall_eta_basis') or '')).rstrip()
+    if state.get('status') == 'running' and (state.get('lifecycle') or {}).get('current_pass') in ('SWEEP_1','SWEEP_2'):
+        result['overall_eta_seconds'] = None
+        result['overall_eta_basis'] = '正在重新处理失败项，正在重新估算'
+    if (state.get('status') == 'success' and live_progress
+            and int(live_progress.get('source_complete') or 0) < int(live_progress.get('source_total') or 0)):
+        result['full_pipeline_launcher_status'] = 'FAILED_OUTPUT_ACCEPTANCE'
+        result['search_ready'] = False
+        result['error_summary'] = '处理已结束，但仍有来源未成功；不能当作全部完成。'
+        result['overall_eta_seconds'] = None
+        result['overall_eta_basis'] = '本轮已结束，未成功项目需要修复后继续；暂无剩余时间预测。'
     return result
 
 
@@ -727,6 +1286,8 @@ def estimate_task_remaining(
     stage runner now waits for a minimum live sample before publishing an ETA.
     Unknown future stages are deliberately not guessed.
     """
+    if str(state.get('status') or '').lower() in ('success', 'completed', 'complete'):
+        return {'overall_eta_seconds': 0.0, 'overall_eta_basis': '已完成'}
     running = next(
         (row for row in state.get("stages", []) if row.get("status") == "running"),
         None,
@@ -877,18 +1438,22 @@ def snapshot(
             database_read_error = str(exc)
             return default
 
+    from .build151_integrity_session import read_report
     database = read_or(
-        {"integrity_check": "temporarily_unavailable", "foreign_key_error_count": 0},
-        repository.integrity if repository else None,
+        {"integrity_check": "temporarily_unavailable", "foreign_key_error_count": None},
+        (lambda: read_report(repository.db_path)) if repository and current_task and current_task.get("processing_engine") == "BUILD150_ONLY"
+        else repository.integrity if repository else None,
     )
     readiness = read_or(
         {"ready": False, "checks": {"library_configured": repository is not None}},
+        # An unfinished task cannot expose search below. Do not first run the
+        # expensive full search audit merely to discard its result afterwards.
         manager.readiness if manager else None,
     )
-    if current_task and current_task.get("status") != "success":
+    if current_task and current_task.get("processing_engine") != "BUILD150_ONLY" and current_task.get("status") != "success":
         readiness["ready"] = False
         readiness.setdefault("checks", {})["pipeline_complete"] = False
-    elif current_task:
+    elif current_task and current_task.get("processing_engine") != "BUILD150_ONLY":
         readiness.setdefault("checks", {})["pipeline_complete"] = True
     if database.get("integrity_check") != "ok" or int(database.get("foreign_key_error_count") or 0) != 0:
         readiness["ready"] = False
@@ -957,7 +1522,12 @@ def snapshot(
             "configured" if configured else
             ("processing" if current_task and current_task.get("status") in {"queued", "running"} else "first_run_clean")
         ),
-        "overview": read_or(empty_overview, repository.overview if repository else None),
+        "overview": (
+            {**(read_or(empty_overview, repository.overview if repository else None) or {}),
+             **(current_task.get("v2_overview") or {})}
+            if current_task and current_task.get("v2_overview")
+            else read_or(empty_overview, repository.overview if repository else None)
+        ),
         "pipeline": pipeline,
         "database": database,
         "search_runtime": readiness,
@@ -1081,24 +1651,80 @@ def _load_or_default_profile(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _helper_command(config_path: Path, command: str, *arguments: str) -> list[str]:
+    configured_contents = os.environ.get("MEDIA_ARCHIVE_APP_CONTENTS", "").strip()
     package = Path(__file__).resolve()
-    bundled = package.parents[2] / "Helpers" / "素材大整理Python"
+    contents = (
+        Path(configured_contents).expanduser().resolve()
+        if configured_contents else package.parents[2]
+    )
+    # The native bridge itself is deliberately dependency-light.  A V2 product
+    # worker owns image ingestion, and therefore must run in the declared
+    # system pipeline role rather than the base bridge launcher.  The system
+    # role is the bundled visual environment and owns Pillow/PIL.
+    if command == "product-worker":
+        product_worker = contents / "Helpers" / "PipelinePython" / "system"
+        bridge = contents / "Resources" / "python_bridge.py"
+        if product_worker.is_file() and bridge.is_file():
+            return [str(product_worker), str(bridge),
+                    "--config", str(config_path), command, *arguments]
+    bundled = (
+        Path(configured_contents).expanduser().resolve() / "Helpers" / "素材大整理Python"
+        if configured_contents else package.parents[2] / "Helpers" / "素材大整理Python"
+    )
     if bundled.is_file():
         return [str(bundled), "--config", str(config_path), command, *arguments]
     return [sys.executable, "-m", "media_archive_image_video_ui.native_bridge", "--config", str(config_path), command, *arguments]
 
 
-def _launch_task_worker(config_path: Path, task_path: Path, log_path: Path, *, resume: bool) -> int:
+def _task_worker_environment(config: dict[str, Any], inherited: dict[str, str]) -> dict[str, str]:
+    """Resolve declared media tools for GUI-launched legacy subprocess calls.
+
+    Finder does not inherit the interactive shell's Homebrew PATH. Child model
+    workers inherit this environment too; no model or result contract changes.
+    """
+    environment = inherited.copy()
+    directories: list[str] = []
+    for name in ("ffmpeg", "ffprobe"):
+        configured = (config.get("tools") or {}).get(name)
+        if not configured:
+            continue
+        tool = Path(configured).expanduser()
+        if not tool.is_absolute() or not tool.is_file() or not os.access(tool, os.X_OK):
+            raise RuntimeError(f"runtime_tool_unavailable:{name}:{tool}")
+        directory = str(tool.parent)
+        if directory not in directories:
+            directories.append(directory)
+    existing = environment.get("PATH", os.defpath).split(os.pathsep)
+    environment["PATH"] = os.pathsep.join(dict.fromkeys(directories + existing))
+    return environment
+
+
+def _launch_task_worker(
+    config_path: Path, task_path: Path, log_path: Path, *, resume: bool, product_entry: bool = False,
+    repair_media_tools_request_id: str | None = None,
+) -> int:
     arguments = ["--task", str(task_path)]
     if resume:
         arguments.append("--resume")
-    command = _helper_command(config_path, "pipeline-worker", *arguments)
-    environment = os.environ.copy()
+    if repair_media_tools_request_id:
+        if not resume or not product_entry:
+            raise RuntimeError('media_tool_recovery_requires_product_resume')
+        arguments.extend(["--repair-media-tools-request-id", repair_media_tools_request_id])
+    worker_command = "product-worker" if product_entry else "pipeline-worker"
+    command = _helper_command(config_path, worker_command, *arguments)
+    launch_config = load_json(config_path)
+    contract_path = launch_config.get('runtime_contract_path')
+    if contract_path:
+        resources = config_path.resolve().parent
+        contract_path = str(contract_path).replace('$APP_RESOURCES', str(resources)).replace('$APP_CONTENTS', str(resources.parent))
+        launch_config = {**launch_config, 'tools': load_json(Path(contract_path)).get('tools', {})}
+    environment = _task_worker_environment(launch_config, os.environ.copy())
     environment.update({
         "PYTHONUNBUFFERED": "1",
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
         "HF_DATASETS_OFFLINE": "1",
+        "MEDIA_ARCHIVE_MODEL_ROOT": str(selected_model_root()),
     })
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("ab")
@@ -1303,13 +1929,16 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
     if policy.get("image_scope") not in {"frozen_current_policy", "all_images"}:
         raise ValueError("图片分析范围配置无效，请重新保存处理设置")
     requested_scheduler = str(profile.get("scheduler", {}).get("mode") or "auto")
-    profile["execution_scheduler_mode"] = "stage_serial"
+    # All new 1.3.0 product tasks use the durable event-driven scheduler.  The
+    # processing profile still controls resource caps and sampling, but must
+    # never silently route a new task back to the legacy stage barrier.
+    profile["execution_scheduler_mode"] = "event_driven_v2"
     created_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     directory_time = time.strftime("%Y%m%d_%H%M%S")
     safe_name = re.sub(r"[^\w.-]+", "_", name, flags=re.UNICODE).strip("._")[:60] or "素材整理"
     semantic = f"{source}\0{library_root}\0{name}\0{time.time_ns()}"
     task_id = "task_" + hashlib.sha256(semantic.encode("utf-8")).hexdigest()[:20]
-    task_base = library_root / "tasks" / f"{directory_time}_{safe_name}"
+    task_base = library_root / f"{directory_time}_{safe_name}"
     task_dir = task_base
     suffix = 2
     while task_dir.exists():
@@ -1326,7 +1955,11 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
         contract,
         ocr_workers=int(hardware["recommendation"]["ocr_workers"]),
         embedding_workers=int(hardware["recommendation"]["embedding_workers"]),
-        requested_scheduler_mode=requested_scheduler,
+        # Full 1.3.0 product tasks always use the durable event-driven
+        # scheduler.  The profile controls resource policy only; carrying its
+        # legacy display value into the runtime contract could silently route
+        # a new task back to the stage barrier.
+        requested_scheduler_mode="event_driven_v2",
         effective_config_dir=task_dir / "runtime_configs",
     )
     _materialise_task_yoloe_registry(config, runtime, profile, task_dir / "runtime_configs")
@@ -1334,6 +1967,7 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
         "task_contract": "media_archive_image_video_task_v1",
         "task_id": task_id,
         "task_directory_name": task_dir.name,
+        "task_directory_layout": "direct_v1",
         "name": name,
         "source_root": str(source),
         "source_access": "read_only",
@@ -1352,6 +1986,20 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
     }
     task_path = task_dir / "task.json"
     task_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    requested_product_mode = "event_driven_v2"
+    run = create_product_run(task_path, requested_mode=requested_product_mode)
+    payload.update({
+        "scheduler_mode": run["scheduler_mode"],
+        "scheduler_run_id": run["scheduler_run_id"],
+        "execution_epoch": run["execution_epoch"],
+        "pipeline_contract_version": run["pipeline_contract_version"],
+        "product_schema_version": run["product_schema_version"],
+    })
+    # Persist the authoritative run identity before the worker is launched.
+    # Without this write, the newly created task file had no scheduler mode
+    # even though the database run was V2, leaving the formal worker boundary
+    # to infer the legacy route from incomplete task metadata.
+    atomic_json(task_path, payload)
     active = {
         "database": payload["database"],
         "output_root": str(workspace),
@@ -1366,7 +2014,7 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
     active_path.parent.mkdir(parents=True, exist_ok=True)
     active_path.write_text(json.dumps(active, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     register_library(task_path)
-    pid = _launch_task_worker(config_path, task_path, log_path, resume=False)
+    pid = _launch_task_worker(config_path, task_path, log_path, resume=False, product_entry=True)
     (task_dir / "pipeline.pid").write_text(f"{pid}\n", encoding="utf-8")
     return {
         "status": "PASS",
@@ -1381,12 +2029,17 @@ def _start_task_locked(config: dict[str, Any], config_path: Path, args: argparse
     }
 
 
-def resume_active_task(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
+def resume_active_task(config: dict[str, Any], config_path: Path, *, repair_media_tools_request_id: str | None = None) -> dict[str, Any]:
     task_path_text = str(config.get("task_path") or "").strip()
     if not task_path_text:
         raise RuntimeError("没有可以继续的任务")
     task_path = Path(task_path_text).expanduser().resolve(strict=True)
     task = load_json(task_path)
+    if task.get('scheduler_mode') == 'event_driven_v2':
+        from .scheduler_identity import load_scheduler_run
+        run = load_scheduler_run(Path(task['database']), task['scheduler_run_id'])
+        if run['status'] == 'COMPLETED' and not repair_media_tools_request_id:
+            return {'status':'PASS','message':'任务已经完成；成功项与最终失败项不会自动重跑'}
     state_path = Path(task["state_path"])
     if not state_path.is_file():
         raise RuntimeError("任务尚未留下可恢复的阶段状态")
@@ -1395,7 +2048,7 @@ def resume_active_task(config: dict[str, Any], config_path: Path) -> dict[str, A
         pid = int(state.get("worker_pid") or 0)
         if process_is_alive(pid):
             raise RuntimeError("任务仍在运行，不需要重复启动")
-    if state.get("status") == "success":
+    if state.get("status") == "success" and not repair_media_tools_request_id:
         records = {
             str(row.get("key") or ""): row
             for row in state.get("stages", [])
@@ -1410,7 +2063,11 @@ def resume_active_task(config: dict[str, Any], config_path: Path) -> dict[str, A
         if plan_is_complete:
             return {"status": "PASS", "message": "任务已经全部完成，不需要续跑"}
     log_path = Path(task["log_path"])
-    pid = _launch_task_worker(config_path, task_path, log_path, resume=True)
+    pid = _launch_task_worker(
+        config_path, task_path, log_path, resume=True,
+        product_entry=bool(task.get("scheduler_run_id")),
+        repair_media_tools_request_id=repair_media_tools_request_id,
+    )
     task["status"] = "queued"
     task.pop("finished_at_epoch", None)
     task.pop("error", None)
@@ -1429,10 +2086,45 @@ def resume_active_task(config: dict[str, Any], config_path: Path) -> dict[str, A
 
 
 def stop_active_task(config: dict[str, Any]) -> dict[str, Any]:
+    task_path = Path(str(config.get('task_path') or ''))
+    if task_path.is_file():
+        task = load_json(task_path)
+        if task.get('scheduler_mode') == 'event_driven_v2' and task.get('scheduler_run_id'):
+            from .v2_product_lifecycle import request_handoff
+            return request_handoff(Path(task['database']), task['scheduler_run_id'], task['execution_epoch'])
     state = task_state(config)
     if not state:
         return {"status": "PASS", "message": "当前没有运行中的任务"}
     return stop_pipeline(Path(str(config["task_state_path"])))
+
+
+def quit_handoff(config: dict[str, Any], *, timeout_seconds=30.0) -> dict[str, Any]:
+    response = stop_active_task(config)
+    task_path = Path(str(config.get('task_path') or ''))
+    if not task_path.is_file():
+        return response
+    task = load_json(task_path)
+    if task.get('scheduler_mode') != 'event_driven_v2':
+        return response
+    from .central_database import connect
+    deadline = time.monotonic() + timeout_seconds
+    row, worker_pid = None, 0
+    while time.monotonic() < deadline:
+        with connect(Path(task['database']), readonly=True) as c:
+            row = c.execute('SELECT status FROM scheduler_runs WHERE scheduler_run_id=?', (task['scheduler_run_id'],)).fetchone()
+            worker = (c.execute('SELECT worker_pid FROM v2_product_lifecycle WHERE scheduler_run_id=?', (task['scheduler_run_id'],)).fetchone()
+                      if c.execute("SELECT 1 FROM sqlite_master WHERE name='v2_product_lifecycle'").fetchone() else None)
+            worker_pid = int(worker[0] or 0) if worker else 0
+        if (row and row[0] in ('RECOVERABLE','COMPLETED','FAILED','ABORTED','CANCELLED')
+                and (worker_pid == os.getpid() or not process_is_alive(worker_pid))):
+            return {'status':'PASS','message':'任务已安全收尾，可以退出','scheduler_run_status':row[0]}
+        time.sleep(0.1)
+    return {'status':'FAIL','reason_code':'HANDOFF_TIMEOUT',
+            'error':'工作仍在安全收尾；保留应用，不强制终止。',
+            'blocking_run':task['scheduler_run_id'],
+            'blocking_process':{'pid':worker_pid,'role':'product-worker','state':row[0] if row else 'UNKNOWN'},
+            'wait_result':'TIMEOUT', 'timeout_reason':'OWNED_PRODUCT_HANDOFF_NOT_CONFIRMED',
+            'timeout_seconds':timeout_seconds}
 
 
 SEARCH_RESULT_CONTRACT_VERSION = "media_archive_search_result_v1"
@@ -1763,6 +2455,7 @@ def run_source_frame_search(
             "preview_path": str(row.get("preview_path") or ""),
             "source_path": str(row.get("source_path") or ""),
             "source_online": bool(row.get("source_online")),
+            "source_availability": row.get("source_availability", "unchecked"),
             "can_open_original": bool(row.get("can_open_original")),
             "score": 1.0,
             "hybrid_score": None,
@@ -1848,6 +2541,7 @@ def run_person_cluster_search(
         person_name = str(identity.get("display_name") or "").strip() or "同一匿名人物"
         items.append({
             "result_id": f"person5e_{cluster_id}_{visual_id}",
+            "person_bbox": row.get("person_bbox"),
             "visual_unit_id": visual_id,
             "source_content_id": str(row["source_content_id"]),
             "source_frame_count": int(row.get("source_frame_count") or 1),
@@ -1863,6 +2557,7 @@ def run_person_cluster_search(
             "preview_path": str(row.get("preview_path") or ""),
             "source_path": str(row.get("source_path") or ""),
             "source_online": bool(row.get("source_online")),
+            "source_availability": row.get("source_availability", "unchecked"),
             "can_open_original": bool(row.get("can_open_original")),
             "score": float(row.get("similarity_to_representative") or 0.0),
             "hybrid_score": None,
@@ -1976,6 +2671,7 @@ def run_person_track_suggestions(
             "preview_path": str(row.get("preview_path") or ""),
             "source_path": str(row.get("source_path") or ""),
             "source_online": bool(row.get("source_online")),
+            "source_availability": row.get("source_availability", "unchecked"),
             "can_open_original": bool(row.get("can_open_original")),
             "score": suggestion.score,
             "hybrid_score": None,
@@ -2128,9 +2824,9 @@ def run_favorite_collection(
                 "preview_segment_start_timecode": _media_timecode(max(0, position - half_window)),
                 "preview_segment_end_timecode": _media_timecode(position + half_window),
                 "preview_path": str(preview_path) if preview_path and preview_path.is_file() else "",
-                "source_path": str(source_path) if source_path.is_file() else "",
-                "source_online": source_path.is_file(),
-                "can_open_original": source_path.is_file(),
+                "source_path": str(source_path),
+                "source_online": False, "source_availability": "unchecked",
+                "can_open_original": str(source_path) not in ("", "."),
                 "score": 1.0,
                 "hybrid_score": None,
                 "openclip_cosine": None,
@@ -2187,6 +2883,8 @@ def run_person_cluster_catalog(
     """Expose reliable anonymous-person groups as a query-only UI catalog."""
     requested_limit = max(1, min(int(limit), 200))
     page = repository.person_cluster_catalog(0, requested_limit)
+    health_reader = getattr(repository, "person_reid_health", None)
+    person_health = health_reader() if callable(health_reader) else {"state": "unknown"}
     repository_db = getattr(repository, "db_path", None)
     annotations = _load_person_annotation_payload(Path(repository_db))[0] if repository_db else {
         "contract": "media_archive_local_person_annotations_v1", "identities": {},
@@ -2246,12 +2944,17 @@ def run_person_cluster_catalog(
     items = []
     for index, row in enumerate(page["items"], start=int(page["offset"]) + 1):
         stored_name = str(row.get("display_name") or row.get("anonymous_display_name") or "").strip()
+        confidence = str(row.get("cluster_confidence") or "")
+        fallback_name = (
+            f"人物 {index:02d}" if confidence == "review"
+            else f"匿名人物 {index:02d}"
+        )
         items.append({
             "person_cluster_id": str(row["person_cluster_id"]),
-            "display_name": stored_name or f"匿名人物 {index:02d}",
+            "display_name": stored_name or fallback_name,
             "member_count": int(row.get("member_count") or 0),
             "distinct_source_count": int(row.get("distinct_source_count") or 0),
-            "cluster_confidence": str(row.get("cluster_confidence") or ""),
+            "cluster_confidence": confidence,
             "human_review_status": str(row.get("human_review_status") or ""),
             "preview_path": str(row.get("preview_path") or ""),
             "media_type": str(row.get("media_type") or ""),
@@ -2259,7 +2962,35 @@ def run_person_cluster_catalog(
             "tags": list(row.get("tags") or []),
             "merged_cluster_count": int(row.get("merged_cluster_count") or 1),
             "is_local_identity": bool(row.get("is_local_identity")),
+            "person_bbox": row.get("person_bbox"),
         })
+    health_state = str(person_health.get("state") or "unknown")
+    if items:
+        capability_note = (
+            "人物列表同时显示高置信度分组和素材量较大的待确认分组；“待确认人物”需要人工核对，"
+            "避免把只出现在一个采访视频中的真实人物直接隐藏。"
+        )
+    elif health_state == "running":
+        capability_note = f"人物识别仍在处理，剩余 {int(person_health.get('pending_count') or 0)} 个画面；当前结果不代表最终人物数量。"
+    elif health_state == "implausible_zero_faces":
+        capability_note = (
+            "人物识别阶段结果异常：已有画面分析在 "
+            f"{int(person_health.get('independent_face_visual_unit_count') or 0)} 个画面中发现人脸，"
+            "但人物识别结果为 0。请重新运行人物识别阶段；这不是素材库里没有人物。"
+        )
+    elif health_state == "failed":
+        capability_note = "人物识别阶段未成功完成，请回到任务阶段查看失败原因后重试。"
+    elif health_state == "empty":
+        detected = int(person_health.get("face_count") or 0)
+        capability_note = (
+            f"人物识别已完成并找到 {detected} 张人脸，但尚未形成可确认的人物分组。"
+            if detected else
+            "人物识别已完成，但现有结果没有检测到可用人脸。"
+        )
+    elif health_state == "not_run":
+        capability_note = "当前素材库尚未运行人物识别阶段。普通画面搜索不受影响。"
+    else:
+        capability_note = "当前素材库暂时没有可读取的人物分组。"
     return {
         "status": "PASS",
         "total": int(page["total"]),
@@ -2270,10 +3001,8 @@ def run_person_cluster_catalog(
         "model_run": False,
         "network_used": False,
         "original_media_read": False,
-        "capability_note": (
-            "机器分组只依据可见人脸；你可以把背影、遮挡或漏检画面人工加入自建人物，"
-            "人工结果独立保存且不会改写机器识别。"
-        ),
+        "person_reid_health": person_health,
+        "capability_note": capability_note,
     }
 
 
@@ -2418,10 +3147,35 @@ def run_search(
     source_mtime_max: int | None = None,
     has_ocr: bool = False,
     has_person: bool = False,
+    record_history: bool = True,
+    search_intent: str = "visual",
 ) -> dict[str, Any]:
+    search_started = time.monotonic()
     clean_query = " ".join(query.split())
     if not (1 <= len(clean_query) <= 512):
         raise ValueError("搜索文字长度必须在 1 到 512 个字符之间")
+    from .search_jobs import fast_filename_preview
+    try:
+        early=fast_filename_preview(manager.db_path,clean_query,{'search_intent':search_intent,'media_type':media_type,'path_prefix':path_prefix.strip(),
+            'source_mtime_min':source_mtime_min,'source_mtime_max':source_mtime_max,'has_ocr':has_ocr,'has_person':has_person,'offset':result_offset})
+    except (OSError,sqlite3.Error,ValueError,KeyError):
+        early=[]  # The normal authoritative readiness/query below reports failures.
+    for item in early:
+        print('SEARCH_PROGRESS_JSON='+json.dumps({'contract':'media_archive_search_progress_v1','stage':'filename_results',
+            'stage_index':1,'total_stages':7,'message':'已找到文件名对应的已发布素材','detail':'部分结果；继续核对和补充其他通道',
+            'elapsed_seconds':time.monotonic()-search_started,'result_items':[item],'ordering':'provisional','update_mode':'merge_by_source'},ensure_ascii=False),file=sys.stderr,flush=True)
+    from .search_jobs import fast_text_preview
+    try:
+        text_early=fast_text_preview(manager,clean_query,{'search_intent':search_intent,'media_type':media_type,
+            'path_prefix':path_prefix.strip(),'source_mtime_min':source_mtime_min,'source_mtime_max':source_mtime_max,
+            'has_ocr':has_ocr,'has_person':has_person,'offset':result_offset})
+    except (OSError,sqlite3.Error,ValueError,KeyError,RuntimeError):
+        text_early=[]  # Regular readiness and final query remain authoritative.
+    if text_early:
+        print('SEARCH_PROGRESS_JSON='+json.dumps({'contract':'media_archive_search_progress_v1','stage':'lexical_results',
+            'stage_index':2,'total_stages':7,'message':'已找到已发布的文字命中，继续检索语义线索',
+            'detail':'部分结果；完整查询仍在校验与排序','elapsed_seconds':time.monotonic()-search_started,
+            'result_items':text_early,'ordering':'provisional','update_mode':'merge_by_source'},ensure_ascii=False),file=sys.stderr,flush=True)
     readiness = manager.readiness()
     if not readiness["ready"]:
         preflight = dict(readiness.get("database_preflight") or {})
@@ -2447,10 +3201,11 @@ def run_search(
     stable_log_path = current_root / "search.log"
     request = {
         "media_type": media_type,
+        "search_intent": search_intent,
         "preview_window_ms": preview_window_ms,
         "temporal_dedup_ms": 5000,
         "offset": max(0, int(result_offset)),
-        "limit": max(1, min(int(result_limit), 200)),
+        "limit": 30,
         "device": "auto",
         "path_prefix": path_prefix.strip(),
         "source_mtime_min": source_mtime_min,
@@ -2458,6 +3213,61 @@ def run_search(
         "has_ocr": bool(has_ocr),
         "has_person": bool(has_person),
     }
+    if readiness.get('search_mode') in {'V2_CURRENT_TEXT','V2_CURRENT_HYBRID'}:
+        # Never launch the legacy visual_units/embeddings worker for a V2
+        # library. Its readiness and result authority are different.
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory(prefix='material-organizer-v2-search-') as temp:
+            root = Path(temp)
+            job = SearchJob(job_id=job_id, query_sha256='', status='running',
+                            created_at=time.time(), output_dir=root, log_path=root/'search.log')
+            if not manager._run_v2_current_search(job, clean_query, request):
+                return {'status': 'FAIL', 'error': 'V2_SEARCH_FAILED',
+                        'error_reason': job.error, **getattr(job,'failure',{}), 'database_write': False, 'model_run': False}
+            payload = json.loads(job.response_json.read_text(encoding='utf-8'))
+        items = payload['result_items']
+        # Text hits do not imply identity, but verified current face groups
+        # must remain selectable from the hit just like from the person picker.
+        person_reader=getattr(repository,'person_clusters_for_visual_units',None)
+        person_links={}
+        if callable(person_reader):
+            visual_ids=[str(item.get('visual_unit_id') or '') for item in items]
+            person_links=_merge_person_links(person_reader(visual_ids),
+                _manual_person_links(getattr(repository,'db_path',None),visual_ids))
+        for item in items:
+            position = max(0, int(item.get('time_position_ms') or 0))
+            original = str(item.get('source_path') or '')
+            available = False  # Original availability is checked only by an explicit open/play action.
+            item.update(time_position_ms=position, timecode=_media_timecode(position),
+                        source_online=available, source_availability="unchecked", can_open_original=bool(original),
+                        original_path=original, representative_thumbnail=item.get('preview_path') or '',
+                        hit_reason='current_semantic_match' if any(r.get('authority')=='v2_current_vector' for r in item.get('match_reasons',[])) else 'current_text_match', hit_field='text_or_visual' if payload.get('semantic_vector_search_ready') else 'text',
+                        relevance_reasons=[r.get('type') for r in item.get('match_reasons',[])],
+                        person_clusters=person_links.get(str(item.get('visual_unit_id') or ''),[]))
+        final = {**payload, 'contract_version': SEARCH_RESULT_CONTRACT_VERSION,
+                 'query': clean_query, 'result_count': len(items),
+                 'elapsed_seconds': round(time.monotonic()-search_started, 3),
+                 'database_write': False, 'model_run': bool(payload.get('model_run')), 'network_used': False,
+                 'original_media_read': False, 'search_mode': payload.get('search_mode','V2_CURRENT_TEXT'),
+                 'semantic_vector_search_ready': bool(payload.get('semantic_vector_search_ready'))}
+        _validate_search_result_contract(final, clean_query)
+        history_recorded = False
+        database_path = getattr(repository, 'db_path', None)
+        if database_path and record_history:
+            try:
+                record_search_history(Path(database_path), task_id=task_id_for_database(Path(database_path)),
+                    query_text=clean_query, filters=request,
+                    result_count=int(final['result_total_count']), elapsed_seconds=final['elapsed_seconds'])
+                history_recorded = True
+            except (OSError, RuntimeError, sqlite3.Error):
+                pass
+        final['history_recorded'] = history_recorded
+        final['user_metadata_write'] = history_recorded
+        _atomic_search_json(stable_result_path, final)
+        _atomic_search_json(stable_summary_path, {'status': 'PASS', 'search_mode': final['search_mode'],
+            'elapsed_seconds': final['elapsed_seconds'], 'model_run': final['model_run']})
+        stable_log_path.write_text('V2 当前结果搜索完成；未调用旧版数据库搜索入口。\n', encoding='utf-8')
+        return final
     environment = _search_environment(shared_cache_root)
     disk_before = _search_file_snapshot(shared_cache_root)
     started = time.monotonic()
@@ -2563,17 +3373,24 @@ def run_search(
     public_results = []
     for row in result_rows:
         derived_path = repository.derived_path(str(row.get("derived_id") or ""))
-        source = repository.source_media(str(row.get("source_content_id") or ""))
+        source = repository.source_media(str(row.get("source_content_id") or ""), probe_original=False)
         item = dict(row)
         item.update({
             "preview_path": str(derived_path) if derived_path else "",
-            "source_path": str(source.get("resolved_path")) if source and source.get("available") else "",
+            "source_path": str(source.get("resolved_path")) if source else "",
+            "original_path": str(source.get("resolved_path")) if source else item.get("original_path", ""),
+            "representative_thumbnail": str(derived_path) if derived_path else "",
             "source_online": bool(source and source.get("available")),
-            "can_open_original": bool(source and source.get("available")),
+            "can_open_original": bool(source and source.get("can_open_original")),
+            "source_availability": "unchecked",
             "person_clusters": cluster_links.get(
                 str(row.get("visual_unit_id") or ""), [],
             ),
         })
+        for cluster in item.get("match_clusters") or []:
+            representative = cluster.get("representative_frame") or {}
+            preview = repository.derived_path(str(representative.get("derived_id") or ""))
+            representative["preview_path"] = str(preview) if preview else ""
         public_results.append(item)
     annotations: dict[str, dict[str, Any]] = {}
     database_path = getattr(repository, "db_path", None)
@@ -2618,7 +3435,7 @@ def run_search(
     elapsed_seconds = round(time.monotonic() - started, 3)
     history_recorded = False
     database_path = getattr(repository, "db_path", None)
-    if database_path:
+    if database_path and record_history:
         try:
             history_task_id = task_id_for_database(Path(database_path))
             record_search_history(
@@ -2641,6 +3458,10 @@ def run_search(
     return {
         "status": "PASS",
         "job_id": job_id,
+        "search_result_contract": "media_archive_source_search_v2",
+        "search_state": "COMPLETE",
+        "filter_contract": payload.get("filter_contract", {}),
+        "search_snapshot_version": payload.get("search_snapshot_version"),
         "query": clean_query,
         "elapsed_seconds": elapsed_seconds,
         "coverage": {
@@ -2673,6 +3494,40 @@ def run_search(
         "network_used": False,
         "original_media_read": False,
     }
+
+
+def run_federated_search(config, manager, task_paths, query, media_type, preview_window_ms,
+                         result_offset=0, result_limit=30, **filters):
+    from .federated_search import search_libraries
+    registered = {str(Path(row['task_path']).resolve()): row for row in existing_libraries(config)}
+    selected = []
+    for path in dict.fromkeys(task_paths):
+        normalized = str(Path(path).expanduser().resolve())
+        if normalized not in registered:
+            raise ValueError('所选素材库未登记，请先连接该素材库')
+        selected.append(registered[normalized])
+    if not selected:
+        raise ValueError('请至少选择一个素材库')
+    # Request-local only: reuse encodings across libraries with the exact
+    # frozen model config. Each namespace still verifies weights and lineage.
+    query_cache = {}
+    def execute(library, offset):
+        namespace = hashlib.sha256(library['database'].encode()).hexdigest()[:24]
+        local_config = {**config, 'database': library['database'],
+                        'search_cache_root': str(search_runtime_cache_root(config)/'libraries'/namespace)}
+        local_manager = SearchJobManager(db_path=Path(library['database']),
+            output_root=manager.output_root/'federated'/namespace,
+            search_script=manager.search_script, search_config=manager.search_config,
+            embedding_python=manager.embedding_python, openclip_python=manager.openclip_python)
+        local_manager.request_query_cache = query_cache
+        return run_search(local_config, ReadonlyMediaRepository(Path(library['database'])),
+            local_manager, query, media_type, preview_window_ms, offset, 30,
+            record_history=False, **filters)
+    started = time.monotonic()
+    report = search_libraries(selected, execute, offset=result_offset, limit=result_limit)
+    report.update(query=query, elapsed_seconds=time.monotonic()-started,
+                  search_scope='selected_libraries', database_write=False)
+    return report
 
 
 def run_search_prewarm(
@@ -2809,11 +3664,53 @@ def save_asset_annotation(
     }
 
 
+def retry_one_failed_qwen(config):
+    """User action: one failed candidate only, preserving the task's model contract."""
+    import uuid
+    from .central_database import connect
+    from .v2_current_jobs_cache import install_readonly_view
+    from .v2_producer import fingerprint
+    from .product_execution import ProductExecutionEntrypoint
+    task_path = Path(config.get('task_path') or '').expanduser().resolve(strict=True)
+    task = load_json(task_path)
+    from .scheduler_identity import load_scheduler_run
+    if load_scheduler_run(Path(task['database']),task['scheduler_run_id'])['status'] != 'COMPLETED':
+        raise RuntimeError('请先安全结束或恢复当前任务；单项定向重试用于已结束任务')
+    with connect(Path(task['database']), readonly=True) as c:
+        install_readonly_view(c)
+        row = c.execute("""SELECT j.item_id,j.revision FROM v2_current_jobs j
+            JOIN scheduler_runs r ON r.scheduler_run_id=j.scheduler_run_id
+            WHERE r.task_id=? AND j.stage='qwen' AND j.status='FAILED_FINAL'
+              AND COALESCE(j.result_sha,'')=''
+            ORDER BY (j.revision>?),j.item_id LIMIT 1""",
+            (task['task_id'],task['v2_contracts']['qwen']['revision'])).fetchone()
+    if row is None:
+        return {'status':'PASS','message':'没有需要重试的失败画面描述；成功结果不会重做'}
+    old = task['real_handler_configs']['qwen']
+    if row['revision'] > task['v2_contracts']['qwen']['revision']:
+        raise RuntimeError('本项定向重试仍失败；请检查失败原文，不自动增加上限或反复重试')
+    new = dict(old)
+    pin = {**task['v2_contracts']['qwen'], 'revision':task['v2_contracts']['qwen']['revision']+1, 'config':fingerprint(new)}
+    result = ProductExecutionEntrypoint().retry_failed_qwen(task_path, candidate_id=row['item_id'], new_config=new, new_contract=pin, request_id='ui-single-qwen-'+uuid.uuid4().hex, same_parameters=True)
+    return {**result, 'message':'单项画面描述重试结束；其它成功结果保持不变'}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Native macOS UI bridge")
     parser.add_argument("--config", type=Path, required=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("editorial-project-new", "editorial-project-open", "editorial-project-save",
+                    "editorial-candidates-refresh", "editorial-candidate-manual-add",
+                    "editorial-candidate-decision", "editorial-candidate-trim", "editorial-candidate-lock",
+                    "editorial-preview", "editorial-manifest", "editorial-fcpxml", "editorial-import-manifest"):
+        editorial = subparsers.add_parser(command)
+        editorial.add_argument("--request", type=Path, required=True)
     subparsers.add_parser("snapshot")
+    subparsers.add_parser("integrity-audit")
+    subparsers.add_parser("retry-one-failed-qwen")
+    expand = subparsers.add_parser("add-project-folder")
+    expand.add_argument("--folder",type=Path,required=True)
+    expand.add_argument("--project-id",required=True)
     activate = subparsers.add_parser("activate-library")
     activate.add_argument("--task", type=Path, required=True)
     subparsers.add_parser("search-prewarm")
@@ -2852,6 +3749,7 @@ def build_parser() -> argparse.ArgumentParser:
     comparison.add_argument("--right-task", type=Path, required=True)
     search = subparsers.add_parser("search")
     search.add_argument("--query", required=True)
+    search.add_argument("--search-intent", choices=("visual", "text", "all"), default="visual")
     search.add_argument("--media-type", choices=("all", "image", "video", "audio"), default="all")
     search.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
     search.add_argument("--result-offset", type=int, default=0)
@@ -2861,6 +3759,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--source-mtime-max", type=int)
     search.add_argument("--has-ocr", action="store_true")
     search.add_argument("--has-person", action="store_true")
+    search.add_argument("--library-task-path", action="append", default=[])
     favorites = subparsers.add_parser("favorites")
     favorites.add_argument("--result-offset", type=int, default=0)
     favorites.add_argument("--result-limit", type=int, choices=range(1, 501), default=200)
@@ -2869,6 +3768,15 @@ def build_parser() -> argparse.ArgumentParser:
     source_frames.add_argument("--preview-window-ms", type=int, choices=(5000, 10000), default=10000)
     source_frames.add_argument("--result-offset", type=int, default=0)
     source_frames.add_argument("--result-limit", type=int, choices=range(1, 201), default=60)
+    runtime_source=subparsers.add_parser("runtime-source-detail")
+    runtime_source.add_argument("--source-id",required=True)
+    spoken = subparsers.add_parser("spoken-content")
+    spoken.add_argument("--content-kind", choices=("all", "likely_interview", "long_spoken_content"), default="all")
+    spoken.add_argument("--result-offset", type=int, default=0)
+    spoken.add_argument("--cluster-id", default="")
+    video_timeline = subparsers.add_parser("video-content-timeline")
+    video_timeline.add_argument("--source-id", required=True)
+    video_timeline.add_argument("--expected-revision", default=None)
     person = subparsers.add_parser("person-cluster")
     person.add_argument("--cluster-id", required=True)
     person.add_argument("--media-type", choices=("all", "image", "video"), default="all")
@@ -2923,7 +3831,12 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--name", required=True)
     task.add_argument("--task-mode", choices=("full", "incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"), required=True)
     task.add_argument("--workspace-root")
+    preflight = subparsers.add_parser("preflight-task")
+    preflight.add_argument("--source",required=True)
+    preflight.add_argument("--workspace-root",required=True)
+    preflight.add_argument("--name",required=True)
     start = subparsers.add_parser("start-task")
+    start.add_argument("--task-id")
     start.add_argument("--source", required=True)
     start.add_argument("--name", required=True)
     start.add_argument("--task-mode", choices=("full", "incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"), required=True)
@@ -2931,20 +3844,81 @@ def build_parser() -> argparse.ArgumentParser:
     existing = subparsers.add_parser("start-existing-task")
     existing.add_argument("--task", required=True)
     existing.add_argument("--task-mode", choices=("incremental", "repair", "repair_images", "rebuild_search", "audio_enrichment"), required=True)
-    subparsers.add_parser("resume-task")
+    resume = subparsers.add_parser("resume-task")
+    resume.add_argument("--repair-media-tools-request-id")
     subparsers.add_parser("stop-task")
+    subparsers.add_parser("quit-handoff")
     worker = subparsers.add_parser("pipeline-worker")
     worker.add_argument("--task", type=Path, required=True)
     worker.add_argument("--resume", action="store_true")
+    product_worker = subparsers.add_parser("product-worker")
+    product_worker.add_argument("--task", type=Path, required=True)
+    product_worker.add_argument("--resume", action="store_true")
+    product_worker.add_argument("--repair-media-tools-request-id")
+    switch = subparsers.add_parser("switch-scheduler")
+    switch.add_argument("--task", type=Path, required=True)
+    switch.add_argument("--target-mode", choices=("legacy_batch", "event_driven_v2"), required=True)
+    switch.add_argument("--request-id")
     return parser
 
 
+# BUILD150 sole processing boundary; old task migration is out of scope.
+from . import build150_product as _build150
+from .build150_search_adapter import Build150SearchManager
+SearchJobManager = Build150SearchManager
+start_task = _build150.start_task
+_start_task_locked = _build150.blocked_legacy
+start_existing_task = _build150.start_existing_task
+resume_active_task = _build150.resume_active_task
+stop_active_task = _build150.stop_active_task
+quit_handoff = _build150.quit_handoff
+task_state = _build150.task_state
+task_output_acceptance = _build150.task_output_acceptance
+activate_library = _build150.activate_library
+execute_product_task = _build150.execute_product_task
+create_product_run = _build150.blocked_legacy
+execute_pipeline = _build150.blocked_legacy
+switch_scheduler_for_task = _build150.blocked_legacy
+retry_one_failed_qwen = _build150.blocked_legacy
+
+from .build151_library_lifecycle import install as _install_library_lifecycle
+_install_library_lifecycle(globals())
+
+from .build151_search_contract import install as _install_search_contract
+_install_search_contract(globals())
+
+from .build151_task_creation import start_task
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    config, repository, manager = load_runtime(args.config)
+    if args.command in {"add-project-folder","preflight-task","start-task","activate-library","product-worker","start-existing-task","resume-task","stop-task"}:
+        from .build151_task_creation import control_config
+        config=control_config(args.config);repository=manager=None
+    else:
+        config, repository, manager = load_runtime(args.config)
     try:
-        if args.command == "snapshot":
+        if args.command=="preflight-task":
+            from .build151_task_creation import validate
+            source,index,name=validate(args.source,args.workspace_root,args.name)
+            report={'status':'PASS','message':'创建前检查通过：素材可读，索引位置独立且可写','source':str(source),'index_root':str(index),'task_name':name}
+        elif args.command.startswith("editorial-"):
+            from .editorial_board import bridge_command
+            request = json.loads(args.request.read_text(encoding="utf-8"))
+            report = {"status": "PASS", **bridge_command(args.command, config, manager, request)}
+        elif args.command == "integrity-audit":
+            from .build151_integrity_session import audit
+            if repository is None:raise RuntimeError("未连接素材库")
+            report = audit(repository.db_path)
+        elif args.command == "snapshot":
             report = snapshot(config, repository, manager)
+        elif args.command == "runtime-source-detail":
+            from .runtime_dashboard import source_detail
+            task=load_json(Path(config['task_path']))
+            with connect(Path(task['database']),readonly=True) as c:
+                report=source_detail(c,task,args.source_id)
+        elif args.command == "add-project-folder":
+            from .build151_project_expansion import add_folder
+            report = add_folder(config,args.config,args.folder,args.project_id)
         elif args.command == "activate-library":
             report = activate_library(config, args.task)
         elif args.command == "search-prewarm":
@@ -3005,11 +3979,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command == "search":
             if repository is None or manager is None:
                 raise RuntimeError("请先新建或连接一个素材库")
-            report = run_search(
+            if args.library_task_path:
+                report = run_federated_search(config, manager, args.library_task_path,
+                    args.query, args.media_type, args.preview_window_ms,
+                    args.result_offset, args.result_limit, path_prefix=args.path_prefix,
+                    source_mtime_min=args.source_mtime_min, source_mtime_max=args.source_mtime_max,
+                    has_ocr=args.has_ocr, has_person=args.has_person, search_intent=args.search_intent)
+            else:
+                report = run_search(
                 config, repository, manager, args.query, args.media_type, args.preview_window_ms,
                 args.result_offset, args.result_limit, args.path_prefix,
                 args.source_mtime_min, args.source_mtime_max,
-                args.has_ocr, args.has_person,
+                args.has_ocr, args.has_person, search_intent=args.search_intent,
             )
         elif args.command == "favorites":
             if repository is None:
@@ -3024,6 +4005,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 repository, args.source_content_id, args.preview_window_ms,
                 args.result_offset, args.result_limit,
             )
+        elif args.command == "spoken-content":
+            database = Path(str(config.get("database") or "")).expanduser()
+            if not database.is_file() or repository is None:
+                raise RuntimeError("请先新建或连接一个素材库")
+            from .build151_search_contract import library_contract
+            library = library_contract(config)
+            if database.resolve() != Path(library["database"]).resolve() or Path(repository.db_path).resolve() != database.resolve():
+                raise RuntimeError("SPOKEN_LIBRARY_ID_DATABASE_MISMATCH")
+            from .spoken_content_catalog import catalogue
+            source_ids = None
+            if args.cluster_id:
+                # Reuse the existing real cluster/manual identity resolver.
+                annotations = _load_person_annotation_payload(database)[0]
+                clusters = resolve_clusters(annotations, args.cluster_id) or [args.cluster_id]
+                identity_id = args.cluster_id if args.cluster_id in annotations.get("identities", {}) else annotations.get("cluster_to_identity", {}).get(args.cluster_id, "")
+                extra = [str(v.get("visual_unit_id") or "") for v in annotations.get("visual_memberships", {}).get(identity_id, [])]
+                source_ids = set()
+                offset = 0
+                while True:
+                    page = repository.person_cluster_results(clusters, "video", offset, 100, None, extra, identity_id)
+                    source_ids.update(str(r["source_content_id"]) for r in page["items"])
+                    next_offset = page.get("next_offset")
+                    if next_offset is None:break
+                    if next_offset <= offset:raise RuntimeError("person_catalog_pagination_invalid")
+                    offset = next_offset
+            report = catalogue(database, content_kind=args.content_kind, offset=args.result_offset,
+                               source_ids=source_ids, library_name=library["library_name"])
+        elif args.command == "video-content-timeline":
+            database = Path(str(config.get("database") or "")).expanduser()
+            if not database.is_file():
+                raise RuntimeError("请先新建或连接一个素材库")
+            from .video_content_timeline import build_video_content_timeline
+            report = build_video_content_timeline(database, args.source_id, expected_revision=args.expected_revision)
         elif args.command == "person-cluster":
             if repository is None:
                 raise RuntimeError("请先新建或连接一个素材库")
@@ -3092,9 +4106,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command == "start-existing-task":
             report = start_existing_task(config, args.config, args)
         elif args.command == "resume-task":
-            report = resume_active_task(config, args.config)
+            report = resume_active_task(config, args.config, repair_media_tools_request_id=args.repair_media_tools_request_id)
+        elif args.command == "retry-one-failed-qwen":
+            report = retry_one_failed_qwen(config)
+        elif args.command == "quit-handoff":
+            report = quit_handoff(config)
         elif args.command == "stop-task":
             report = stop_active_task(config)
+        elif args.command == "product-worker":
+            report = execute_product_task(args.task, resume=args.resume, repair_media_tools_request_id=args.repair_media_tools_request_id)
+        elif args.command == "switch-scheduler":
+            transition = switch_scheduler_for_task(
+                args.task, args.target_mode, request_id=args.request_id,
+            )
+            report = {"status": "PASS", "transition": transition}
         else:
             state = execute_pipeline(args.task, resume=args.resume)
             report = {
@@ -3123,8 +4148,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report = {"status": "FAIL", "error": str(exc)}
         print(json.dumps(report, ensure_ascii=False))
         return 2
-    print(json.dumps(report, ensure_ascii=False))
-    return 0 if report.get("status") in {"PASS", "FIRST_RUN"} else 2
+    print(json.dumps(_relocate_library_payload(report), ensure_ascii=False))
+    if args.command == "product-worker":
+        return int(report.get("exit_code", 2))
+    return 0 if report.get("status") in {"PASS", "FIRST_RUN", "DISPATCHED"} else 2
 
 
 if __name__ == "__main__":

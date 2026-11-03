@@ -480,9 +480,11 @@ def init_worker(model_path: str, model_name: str, device: str) -> None:
     install_offline_env()
     install_network_guard()
 
-    import torch  # type: ignore
-    import open_clip  # type: ignore
-    from safetensors.torch import load_file  # type: ignore
+    from apps.media_archive_image_video_ui import query_trace as trace
+    with trace.span('openclip_library_import'):
+        import torch  # type: ignore
+        import open_clip  # type: ignore
+        from safetensors.torch import load_file  # type: ignore
 
     if device == "auto":
         DEVICE = "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
@@ -500,15 +502,17 @@ def init_worker(model_path: str, model_name: str, device: str) -> None:
     old_level = root_logger.level
     root_logger.setLevel(logging.ERROR)
     try:
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            model_name,
-            pretrained=None,
-            device=DEVICE,
-        )
+        with trace.span('openclip_construct'):
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                model_name,
+                pretrained=None,
+                device=DEVICE,
+            )
     finally:
         root_logger.setLevel(old_level)
 
-    state = load_file(model_path, device="cpu")
+    with trace.span('openclip_weights_read'):
+        state = load_file(model_path, device="cpu")
     model_state = model.state_dict()
     matched_keys = len(set(state.keys()) & set(model_state.keys()))
     if matched_keys < 100:
@@ -516,7 +520,8 @@ def init_worker(model_path: str, model_name: str, device: str) -> None:
             f"Local OpenCLIP safetensors appears incompatible with {model_name}: "
             f"matched_keys={matched_keys}, state_keys={len(state)}, model_keys={len(model_state)}"
         )
-    missing, unexpected = model.load_state_dict(state, strict=False)
+    with trace.span('openclip_weights_apply'):
+        missing, unexpected = model.load_state_dict(state, strict=False)
     if len(unexpected) > max(20, len(state) // 5):
         raise RuntimeError(
             f"Too many unexpected keys when loading local OpenCLIP safetensors: "

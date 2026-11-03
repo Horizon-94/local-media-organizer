@@ -38,3 +38,15 @@ model/
 
 pipeline.pid
 pipeline_state.json
+
+# Local BUILD160 artifacts and private implementation approvals
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.trace/
+*.sqlite-wal
+*.sqlite-shm
+production_engine/**/approved_*migration*.json
+production_engine/**/approved_workspace_relocation.json
+release_source_identity.json
+standalone_deployment_manifest.json

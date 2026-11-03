@@ -768,6 +768,8 @@ def hard_rejection_reasons(
         reasons.append("missing_or_invalid_derived_frame")
     if frame.get("black_rejected"):
         reasons.append("near_black")
+    if frame.get("candidate_quality_rejected"):
+        reasons.append("low_detail_with_clearer_source_alternative")
     if tail_start is not None and safe_int(frame.get("time_position_ms")) >= tail_start:
         reasons.append("tail_landing")
     if screen_recording:
@@ -1066,6 +1068,7 @@ def select_candidates(
                     frame for frame in pool
                     if frame.get("signature_status") == "PASS"
                     and not frame.get("black_rejected")
+                    and not frame.get("candidate_quality_rejected")
                     and frame.get("identity_status") in {"unique", "canonical", "blocked_decoder"}
                 ]
                 if fallback:

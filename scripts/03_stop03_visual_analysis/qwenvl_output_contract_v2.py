@@ -21,7 +21,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-CONTRACT_VERSION = "qwenvl_output_contract_v2.0"
+CONTRACT_VERSION = "qwenvl_output_contract_v2.1_raw_media_v3_r2_keywords_5_12"
 RECOMMENDED_MAX_TOKENS = 384
 RECOMMENDED_TEMPERATURE = 0.0
 RECOMMENDED_TOP_P = 1.0
@@ -32,15 +32,8 @@ def sha256_text(text: str) -> str:
 
 
 def build_qwenvl_prompt_v2() -> str:
-    """A shorter prompt designed to finish within ~300-384 output tokens."""
-    return (
-        "只输出中文画面分析正文，不要输出文件路径、Prompt、assistant、token、速度、显存、代码块。\n"
-        "按固定结构输出，内容要短而完整：\n"
-        "1）概括：一句话说明画面。\n"
-        "2）元素：人物、物体、场景、动作、环境、文字区域。没有就写“无”。\n"
-        "3）检索价值：说明适合用哪些关键词检索，以及为什么有素材价值。\n"
-        "只基于画面可见信息，不要编造。"
-    )
+    """Compatibility function name; always return the current 13-field prompt."""
+    return (Path(__file__).resolve().parents[2] / 'configs/qwenvl_prompt_raw_media_v3_384.txt').read_text(encoding='utf-8')
 
 
 _METRIC_PATTERNS = {
@@ -252,11 +245,9 @@ Prompt: <|im_start|>user
 <|vision_start|><|image_pad|><|vision_end|>xxx<|im_end|>
 <|im_start|>assistant
 
-1）概括：一辆红色列车经过城市高架桥。
-
-2）元素：人物：无；物体：红色列车、高架桥、汽车；场景：城市道路；动作：列车行驶；环境：晴朗；文字区域：无。
-
-3）检索价值：适合检索“轻轨、城市道路、高架桥、车辆”。
+【内容】
+画面描述：一辆红色列车经过城市高架桥。
+主要主体：红色列车、高架桥。
 ==========
 Prompt: 948 tokens, 99.218 tokens-per-sec
 Generation: 96 tokens, 29.674 tokens-per-sec

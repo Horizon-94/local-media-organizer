@@ -16,6 +16,7 @@ from typing import Any, Optional, Sequence
 from .central_database import (
     append_event,
     central_audit,
+    connect,
     claim_work_item,
     enqueue_work_items,
     ensure_schema as ensure_central_schema,
@@ -59,6 +60,23 @@ def atomic_json(path: Path, payload: Any) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def progress_diagnostic_kind(line: str, progress: dict[str, Any]) -> str | None:
+    """Classify real item diagnostics without treating aggregate counters as errors."""
+    event = str(progress.get("event") or "").strip().lower()
+    if event in {"stage_item_skipped", "item_skipped"}:
+        return "skipped"
+    if event in {"stage_item_failed", "stage_failed", "item_failed"}:
+        return "failure"
+    if event in {"progress", "stage_progress"}:
+        return None
+    lowered = line.lower()
+    if "skip" in lowered:
+        return "skipped"
+    if "failed" in lowered or "error=" in lowered:
+        return "failure"
+    return None
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -357,6 +375,9 @@ def validate_stage_acceptance(task: dict[str, Any], stage_key: str) -> str:
     if not db.is_file():
         return "DATABASE_MISSING_AFTER_STAGE" if stage_key == "scan" else ""
     with _open_acceptance_database(db) as con:
+        if stage_key in {'openclip','rebuild_openclip'} and task.get('scheduler_mode')=='event_driven_v2':
+            from .v2_visual_acceptance import openclip_coverage
+            return openclip_coverage(con,task)['reason']
         def table(name: str) -> bool:
             return con.execute(
                 "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?", (name,)
@@ -394,7 +415,7 @@ def validate_stage_acceptance(task: dict[str, Any], stage_key: str) -> str:
             ):
                 return "PERSON_REID_RESULT_TABLES_MISSING"
             latest = con.execute(
-                """SELECT run_id,status,visual_unit_count
+                """SELECT run_id,status,visual_unit_count,face_count
                    FROM stop03_1c_person_reid_runs
                    ORDER BY created_at DESC,run_id DESC LIMIT 1"""
             ).fetchone()
@@ -409,6 +430,24 @@ def validate_stage_acceptance(task: dict[str, Any], stage_key: str) -> str:
             expected = int(latest[2] or 0)
             if terminal != expected:
                 return f"PERSON_REID_COVERAGE_MISMATCH_{terminal}_OF_{expected}"
+            if int(latest[3] or 0) == 0 and table("visual_labels"):
+                visual_label_columns = {
+                    str(row[1]) for row in con.execute("PRAGMA table_info(visual_labels)")
+                }
+                if {"visual_unit_id", "label"}.issubset(visual_label_columns):
+                    labelled_faces = count(
+                        """SELECT COUNT(DISTINCT vl.visual_unit_id)
+                           FROM visual_labels AS vl
+                           JOIN stop03_1c_person_reid_run_items AS i
+                             ON i.visual_unit_id=vl.visual_unit_id
+                           WHERE i.run_id=(
+                               SELECT run_id FROM stop03_1c_person_reid_runs
+                               ORDER BY created_at DESC,run_id DESC LIMIT 1
+                           )
+                             AND LOWER(TRIM(vl.label))='face'"""
+                    )
+                    if labelled_faces >= 3 and labelled_faces / max(1, expected) >= 0.005:
+                        return "PERSON_REID_IMPLAUSIBLE_ZERO_FACES"
     return ""
 
 
@@ -540,9 +579,10 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
     scripts.update(task["runtime"].get("scripts") or {})
     configs = {
         "candidate": str(project / "configs/stop03_2_high_value_policy_v25.json"),
+        "static_shot": str(project / "configs/static_shot_representative_policy_v1.json"),
         "person_reid": str(project / "configs/stop03_1c_person_reid_db_v1.json"),
         "qwen": str(project / "configs/stop03_3_qwenvl_db_v1.json"),
-        "qwen_prompt": str(project / "configs/qwenvl_prompt_v2_384.txt"),
+        "qwen_prompt": str(project / "configs/qwenvl_prompt_raw_media_v3_384.txt"),
         "ocr": str(project / "configs/stop03_4_ocr_db_v1.json"),
         "evidence": str(project / "configs/stop03_5b_unified_evidence_staging_v1.json"),
         "propagation": str(project / "configs/stop03_5c_qwenvl_yolo_propagation_v1.json"),
@@ -814,7 +854,8 @@ def build_stage_plan(task: dict[str, Any]) -> list[dict[str, Any]]:
                workspace, source,
                ["--db", str(db), "--output-root", str(stages / "07_dedup"),
                 "--mode", "commit", "--max-workers", str(max(1, frame_workers)),
-                "--decode-backend", "pillow", "--force-commit-review"]),
+                "--decode-backend", "pillow", "--force-commit-review",
+                "--static-policy", str(configs["static_shot"])], requires_source=True),
         _stage(
             "person_reid_optional_v1", "归并可见人脸为待确认人物组（InsightFace）",
             runtimes.get("person_reid", runtimes["yolo"]), entry,
@@ -985,8 +1026,6 @@ def initial_state(task: dict[str, Any], plan: Sequence[dict[str, Any]]) -> dict[
              "live_completed": 0, "live_total": 0, "live_success": 0,
              "live_skipped": 0, "live_failed": 0, "eta_seconds": None,
              "eta_basis": "正在估算", "report_paths": {},
-             "input_files": None, "input_sources": None, "input_bytes": None,
-             "output_records": None, "output_files": 0, "output_bytes": None,
              "log_path": str(task.get("log_path") or "")}
             for row in plan
         ],
@@ -999,6 +1038,33 @@ def execute_pipeline(
     plan: Optional[Sequence[dict[str, Any]]] = None,
     resume: bool = False,
 ) -> dict[str, Any]:
+    # Legacy execution is an owner of the scheduler identity captured at
+    # entry.  A switch can retire that identity while this process is inside a
+    # stage; every durable projection must re-check ownership before it can
+    # publish progress or task state.
+    _atomic_json = globals()['atomic_json']
+    def _assert_legacy_owner() -> None:
+        run_id = task.get('scheduler_run_id')
+        if not run_id or not database.exists():
+            return
+        try:
+            with connect(database, readonly=True) as owner_db:
+                row = owner_db.execute(
+                    "SELECT scheduler_mode,scheduler_run_id,execution_epoch,status FROM scheduler_runs WHERE scheduler_run_id=?",
+                    (run_id,),
+                ).fetchone()
+            if row is None or row['scheduler_mode'] != 'legacy_batch' or row['status'] not in ('STARTING','RUNNING','RECOVERABLE'):
+                raise RuntimeError('legacy_scheduler_ownership_lost')
+            if row['execution_epoch'] != task.get('execution_epoch'):
+                raise RuntimeError('legacy_scheduler_epoch_lost')
+        except RuntimeError:
+            raise
+        except Exception:
+            # Projects predating scheduler identity retain their 1.2.8 path.
+            return
+    def atomic_json(path: Path, payload: Any) -> None:
+        _assert_legacy_owner()
+        _atomic_json(path, payload)
     task_path = task_path.expanduser().resolve(strict=True)
     task = load_json(task_path)
     workspace = Path(task["workspace"])
@@ -1050,12 +1116,30 @@ def execute_pipeline(
         state["stages"] = [by_key[row["key"]] for row in plan]
         state["stage_count"] = len(plan)
         invalid_from: int | None = None
+        isolated_invalid_keys: set[str] = set()
         for index, row in enumerate(plan):
             if by_key[row["key"]].get("status") != "success":
                 continue
-            if validate_stage_acceptance(task, row["key"]):
+            acceptance_error = validate_stage_acceptance(task, row["key"])
+            if not acceptance_error:
+                continue
+            if (
+                row["key"] == "person_reid_optional_v1"
+                and acceptance_error == "PERSON_REID_IMPLAUSIBLE_ZERO_FACES"
+            ):
+                isolated_invalid_keys.add(row["key"])
+                continue
+            if acceptance_error:
                 invalid_from = index
                 break
+        for key in isolated_invalid_keys:
+            by_key[key].update({
+                "status": "pending", "exit_code": None,
+                "reason_code": "PERSON_REID_IMPLAUSIBLE_ZERO_FACES",
+                "started_at_epoch": None, "finished_at_epoch": None,
+                "elapsed_seconds": None, "error_summary": "",
+                "error_details": "",
+            })
         if invalid_from is not None:
             for row in state["stages"][invalid_from:]:
                 row.update({
@@ -1137,10 +1221,6 @@ def execute_pipeline(
                 "crashed_workers": 0, "restart_count": 0,
                 "queue_pending": None, "queue_running": None,
                 "output_files": 0,
-                "input_files": None, "input_sources": None, "input_bytes": None,
-                "output_records": None, "output_bytes": None,
-                "items_per_second": None, "frames_per_second": None,
-                "megabytes_per_second": None,
                 "eta_seconds": None, "eta_basis": "正在估算", "report_paths": {},
                 "log_path": str(task.get("log_path") or ""),
             })
@@ -1266,10 +1346,14 @@ def execute_pipeline(
                             ("failed", "live_failed"), ("remaining", "live_remaining"),
                             ("current_item", "current_item"),
                             ("bytes_processed", "bytes_processed"),
+                            ("input_files", "input_files"),
+                            ("input_sources", "input_sources"),
+                            ("input_bytes", "input_bytes"),
+                            ("output_records", "output_records"),
+                            ("output_bytes", "output_bytes"),
                             ("actual_workers", "actual_workers"),
                             ("ffmpeg_processes", "ffmpeg_processes"),
                             ("model_workers", "model_workers"),
-                            ("configured_workers", "configured_workers"),
                             ("started_workers", "started_workers"),
                             ("alive_workers", "alive_workers"),
                             ("active_workers", "active_workers"),
@@ -1279,14 +1363,6 @@ def execute_pipeline(
                             ("queue_pending", "queue_pending"),
                             ("queue_running", "queue_running"),
                             ("output_files", "output_files"),
-                            ("input_files", "input_files"),
-                            ("input_sources", "input_sources"),
-                            ("input_bytes", "input_bytes"),
-                            ("output_records", "output_records"),
-                            ("output_bytes", "output_bytes"),
-                            ("items_per_second", "items_per_second"),
-                            ("frames_per_second", "frames_per_second"),
-                            ("megabytes_per_second", "megabytes_per_second"),
                         ):
                             if source_key in progress:
                                 record[target_key] = progress[source_key]
@@ -1303,21 +1379,13 @@ def execute_pipeline(
                             state["updated_at_epoch"] = time.time()
                             atomic_json(state_path, state)
                             last_progress_write = now
-                    line_lower = line.strip().lower()
-                    if (
-                        progress.get("event") == "stage_item_skipped"
-                        or line_lower.startswith("[skip")
-                        or "status=skipped" in line_lower
-                    ):
+                    diagnostic_kind = progress_diagnostic_kind(line, progress)
+                    if diagnostic_kind == "skipped":
                         skipped_rows.append({
                             "item": str(progress.get("current_item") or ""),
                             "reason": line.strip()[:2000],
                         })
-                    if (
-                        progress.get("event") == "stage_item_failed"
-                        or line_lower.startswith("[failed")
-                        or "status=failed" in line_lower
-                    ):
+                    if diagnostic_kind == "failure":
                         failure_rows.append({
                             "item": str(progress.get("current_item") or ""),
                             "reason": line.strip()[:2000],
@@ -1351,11 +1419,6 @@ def execute_pipeline(
                 error_summary, error_details = summarize_stage_failure(
                     list(output_tail), exit_code,
                 )
-                if not failure_rows:
-                    failure_rows.append({
-                        "item": str(record.get("current_item") or ""),
-                        "reason": error_summary,
-                    })
             record.update({
                 "status": "success" if exit_code == 0 else "failed",
                 "exit_code": exit_code,

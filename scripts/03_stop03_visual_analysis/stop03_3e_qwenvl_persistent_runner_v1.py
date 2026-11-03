@@ -24,17 +24,18 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 import qwenvl_output_contract_v2 as output_contract
+import qwenvl_raw_media_v3 as raw_media_contract
 
 
 SCRIPT_VERSION = "stop03_3e_qwenvl_persistent_runner_v1_20260711"
-PROJECT_ROOT = Path("/Users/yourname/Documents/AI-Local/media-archive-clean")
-TEST_OUTPUT_ROOT = Path("/Users/yourname/Documents/AI-Local/test-output")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TEST_OUTPUT_ROOT = Path(os.environ.get("MEDIA_ARCHIVE_TEST_OUTPUT", str(PROJECT_ROOT / "test-output")))
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_3_qwenvl_db_v1.json"
-DEFAULT_PROMPT = PROJECT_ROOT / "configs/qwenvl_prompt_v2_384.txt"
-DEFAULT_MODEL = Path("/Users/yourname/Documents/model/Qwen3-VL-4B-Instruct-4bit")
+DEFAULT_PROMPT = PROJECT_ROOT / "configs/qwenvl_prompt_raw_media_v3_384.txt"
+DEFAULT_MODEL = Path(os.environ.get("MEDIA_ARCHIVE_MODEL_ROOT", str(Path.home() / "Library/Application Support/LocalMediaOrganizer/Models"))) / "Qwen3.5-9B-4bit"
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "stop03_3e_qwenvl_persistent_candidate_validation"
-REQUIRED_SECTIONS = ("1）概括：", "2）元素：", "3）检索价值：")
+REQUIRED_SECTIONS = raw_media_contract.REQUIRED_SECTIONS
 TERMINAL_STATUSES = {"success", "review", "failed"}
 
 
@@ -95,6 +96,7 @@ class GenerationOutcome:
     cleanup_warnings: str
     missing_required_sections: list[str]
     response_shape: str
+    raw_text: str = ''
 
 
 def stable_json(value: Any) -> str:
@@ -229,6 +231,11 @@ def classify_response(
     issues = output_contract.detect_text_issues(clean, metrics, max_tokens=max_tokens)
     warnings = [item for item in str(issues.get("cleanup_warnings") or "").split("|") if item]
     missing = [section for section in required_sections if section not in clean]
+    if tuple(required_sections) == REQUIRED_SECTIONS:
+        _, missing, schema_issues = raw_media_contract.validate(clean)
+        warnings.extend(schema_issues)
+        if schema_issues:
+            issues['cleanup_status'] = 'review'
     truncated = (
         parsed.inferred_finish_reason == "length"
         or (parsed.generation_tokens is not None and parsed.generation_tokens >= max_tokens)
@@ -313,6 +320,10 @@ class LocalMLXVLMBackend:
     def generate(self, model: Any, processor: Any, formatted_prompt: str, request: RequestState) -> Any:
         if self.generate_fn is None:
             raise InitializationError("generate_api_unavailable")
+        optional={k:request.generation_kwargs[k] for k in ('repetition_penalty','repetition_context_size') if k in request.generation_kwargs}
+        if getattr(self, 'raw_media_schema_constraint', False):
+            from raw_media_schema_constraint import OrderedFieldsProcessor
+            optional['logits_processors'] = [OrderedFieldsProcessor(processor.tokenizer)]
         return self.generate_fn(
             model,
             processor,
@@ -322,6 +333,7 @@ class LocalMLXVLMBackend:
             max_tokens=int(request.generation_kwargs["max_tokens"]),
             temperature=float(request.generation_kwargs["temperature"]),
             top_p=float(request.generation_kwargs["top_p"]),
+            **optional,
         )
 
     def batch_generate_one(self, model: Any, processor: Any, image_path: str, prompt: str, max_tokens: int) -> Any:
@@ -345,11 +357,17 @@ class PersistentQwenGenerationAdapter:
         temperature: float = 0.0, top_p: float = 1.0,
         backend: Optional[Any] = None,
         request_observer: Optional[Callable[[RequestState], None]] = None,
+        repetition_penalty: Optional[float] = None, repetition_context_size: int = 20,
     ) -> None:
         self.model_path = model_path
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.top_p = top_p
+        if repetition_penalty is not None and (not isinstance(repetition_penalty,(int,float)) or not 1.0<repetition_penalty<=1.2):
+            raise ValueError('invalid_repetition_penalty')
+        if type(repetition_context_size) is not int or not 1<=repetition_context_size<=128:
+            raise ValueError('invalid_repetition_context_size')
+        self.repetition_options=({'repetition_penalty':float(repetition_penalty),'repetition_context_size':repetition_context_size} if repetition_penalty is not None else {})
         self.backend = backend or LocalMLXVLMBackend()
         self.request_observer = request_observer
         self.model: Any = None
@@ -369,6 +387,10 @@ class PersistentQwenGenerationAdapter:
         self.model_load_count = 1
 
     def generate_one(self, *, candidate_id: str, image_path: str, prompt: str) -> GenerationOutcome:
+        config_path = self.model_path / 'config.json'
+        model_config = json.loads(config_path.read_text()) if config_path.is_file() else {}
+        if not raw_media_contract.is_raw_media_prompt(prompt):
+            raise ApiContractError('qwen_requires_raw_media_v3_13_fields')
         if self.model_load_count != 1:
             raise InitializationError("model_not_loaded_exactly_once")
         request = RequestState(
@@ -384,6 +406,7 @@ class PersistentQwenGenerationAdapter:
                 "max_tokens": int(self.max_tokens),
                 "temperature": float(self.temperature),
                 "top_p": float(self.top_p),
+                **self.repetition_options,
             },
         )
         if self.request_observer is not None:
@@ -403,7 +426,10 @@ class PersistentQwenGenerationAdapter:
             "generation_tokens": parsed.generation_tokens,
             "raw_finish_reason": parsed.raw_finish_reason,
         }
-        outcome = classify_response(candidate_id, parsed, max_tokens=self.max_tokens)
+        sections = REQUIRED_SECTIONS
+        outcome = classify_response(candidate_id, parsed, max_tokens=self.max_tokens,
+                                    required_sections=sections)
+        outcome.raw_text = parsed.text
         request.cache = None
         request.response = None
         request.stats = None

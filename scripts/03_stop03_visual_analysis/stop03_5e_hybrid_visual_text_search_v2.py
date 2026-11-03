@@ -42,6 +42,11 @@ NATIVE_RESULT_CONTRACT_VERSION = "media_archive_search_result_v1"
 SEARCH_PROGRESS_PREFIX = "SEARCH_PROGRESS_JSON="
 SEARCH_WORKER_PROTOCOL_VERSION = "media_archive_query_worker_v1"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from apps.media_archive_image_video_ui.search_result_contract import (
+    PAGE_SIZE, FILTER_CONTRACT, ProgressiveResults, source_results,
+)
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_5e_hybrid_visual_text_search_v2.json"
 DEFAULT_OUT = text_contract.DEFAULT_OUTPUT_ROOT / CONTRACT_VERSION
@@ -63,6 +68,7 @@ def emit_search_progress(
     total: Optional[int] = None,
     detail: str = "",
     started: Optional[float] = None,
+    search_state: str = "SEARCHING",
 ) -> None:
     """Emit privacy-safe, machine-readable progress for the native UI.
 
@@ -72,6 +78,8 @@ def emit_search_progress(
     """
     payload: dict[str, Any] = {
         "contract": "media_archive_search_progress_v1",
+        "search_state": search_state,
+        "scanned_count": completed, "total_count": total,
         "stage": stage,
         "stage_index": max(1, int(stage_index)),
         "total_stages": max(1, int(total_stages)),
@@ -768,12 +776,18 @@ def score_text_evidence(
                     continue
                 exact_terms = matching_text_terms(query, str(document["embedding_text"]))
                 exact = bool(exact_terms)
+                channels = []
+                if document.get("ocr_text") and (not exact or matching_text_terms(query, str(document["ocr_text"]))):
+                    channels.append("OCR")
+                if document.get("qwen_text") and (not exact or matching_text_terms(query, str(document["qwen_text"]))):
+                    channels.append("QWEN")
                 if visual_id not in scores or score > scores[visual_id]:
                     previous_exact = bool(evidence.get(visual_id, {}).get("text_exact_match"))
                     previous_preview = evidence.get(visual_id, {}).get("text_preview")
                     previous_terms = list(evidence.get(visual_id, {}).get("matched_text_terms") or [])
                     scores[visual_id] = score
                     evidence[visual_id] = {
+                        "text_evidence_channels": sorted(set(channels + list(evidence.get(visual_id, {}).get("text_evidence_channels") or []))),
                         "text_vector_id": row["text_vector_id"],
                         "text_semantic_score": score,
                         "text_exact_match": exact or previous_exact,
@@ -786,6 +800,7 @@ def score_text_evidence(
                 elif exact:
                     # Exact evidence must not be hidden by a different document with a
                     # slightly higher semantic cosine for the same visual unit.
+                    evidence[visual_id]["text_evidence_channels"] = sorted(set(channels + list(evidence[visual_id].get("text_evidence_channels") or [])))
                     evidence[visual_id]["text_exact_match"] = True
                     evidence[visual_id]["matched_text_terms"] = sorted(set(
                         list(evidence[visual_id].get("matched_text_terms") or []) + exact_terms
@@ -926,7 +941,7 @@ def load_yoloe_evidence(
             return {}, {}
         placeholders = ",".join("?" for _ in definitions)
         rows = con.execute(
-            f"""SELECT visual_unit_id,label,confidence FROM visual_labels
+            f"""SELECT visual_unit_id,label,confidence,bbox FROM visual_labels
                  WHERE label IN ({placeholders}) AND confidence>=?
                  ORDER BY visual_unit_id,confidence DESC,label""",
             [*definitions, float(minimum_confidence)],
@@ -940,6 +955,7 @@ def load_yoloe_evidence(
             "label": row["label"], "label_zh": definition["label_zh"],
             "category_zh": definition["category_zh"],
             "confidence": float(row["confidence"]), "query_match": True,
+            "bbox": row["bbox"],
         }
         labels[visual_id].append(item)
         matched[visual_id] = max(matched.get(visual_id, 0.0), float(row["confidence"]))
@@ -955,46 +971,14 @@ def group_visual_results_by_source(
     main visual search shows its best representative; the existing browse-all
     action exposes the timeline. Speech search keeps separate transcript times.
     """
-    enabled = bool(getattr(args, "disable_audio_evidence", False)) and not bool(
-        getattr(args, "audio_evidence_only", False)
+    enabled = bool(getattr(args, "native_app_result_contract", False)) or (
+        bool(getattr(args, "disable_audio_evidence", False))
+        and not bool(getattr(args, "audio_evidence_only", False))
     )
     if not enabled:
         return list(rows), 0
-    grouped: list[dict[str, Any]] = []
-    representative_by_source: dict[str, dict[str, Any]] = {}
-    merged = 0
-    for original in rows:
-        row = dict(original)
-        if row.get("media_type") != "video":
-            row["source_match_count"] = 1
-            grouped.append(row)
-            continue
-        source_id = str(row.get("source_content_id") or row.get("visual_unit_id") or "")
-        point = int(row.get("time_position_ms") or 0)
-        representative = representative_by_source.get(source_id)
-        if representative is None:
-            row["source_match_count"] = 1
-            row["source_match_time_positions_ms"] = [point]
-            row["source_match_time_span_start_ms"] = point
-            row["source_match_time_span_end_ms"] = point
-            representative_by_source[source_id] = row
-            grouped.append(row)
-            continue
-        representative["source_match_count"] = int(
-            representative.get("source_match_count") or 1
-        ) + 1
-        positions = list(representative.get("source_match_time_positions_ms") or [])
-        if len(positions) < 24:
-            positions.append(point)
-            representative["source_match_time_positions_ms"] = sorted(set(positions))
-        representative["source_match_time_span_start_ms"] = min(
-            int(representative.get("source_match_time_span_start_ms") or point), point,
-        )
-        representative["source_match_time_span_end_ms"] = max(
-            int(representative.get("source_match_time_span_end_ms") or point), point,
-        )
-        merged += 1
-    return grouped, merged
+    grouped = source_results(rows)
+    return grouped, len(rows) - len(grouped)
 
 
 def fuse_results(
@@ -1059,7 +1043,9 @@ def fuse_results(
     relevant: list[dict[str, Any]] = []
     rejected = 0
     relevant_by_media: dict[str, int] = defaultdict(int)
-    for row in ordered:
+    native = bool(getattr(args, "native_app_result_contract", False))
+    publish = getattr(args, "result_snapshot_callback", None)
+    for scanned, row in enumerate(ordered, 1):
         visual_score = float(row["openclip_cosine"])
         text_score = row.get("text_semantic_score")
         audio_candidate = bool(row.get("audio_transcript_match"))
@@ -1078,15 +1064,10 @@ def fuse_results(
             rejected += 1
             continue
         object_confidence = float(yoloe_matches.get(str(row["visual_unit_id"]), 0.0))
-        object_supported = (
-            object_confidence >= float(config["minimum_object_label_confidence"])
-            and (
-                visual_score >= float(config["minimum_object_support_visual_cosine"])
-                or (
-                    text_score is not None
-                    and float(text_score) >= float(config["minimum_object_support_text_cosine"])
-                )
-            )
+        # Canonical detector evidence is sufficient for recall. Other models
+        # improve ranking, but must not erase a valid exact object result.
+        object_supported = object_confidence >= float(
+            config["minimum_object_label_confidence"]
         )
         reasons: list[str] = []
         if bool(row.get("text_exact_match")):
@@ -1118,6 +1099,7 @@ def fuse_results(
                 "label": item.get("label"),
                 "label_zh": item.get("label_zh"),
                 "confidence": float(item.get("confidence") or 0.0),
+                "bbox": item.get("bbox"),
             }
             for item in row.get("yoloe_labels", ())
             if item.get("query_match")
@@ -1141,6 +1123,8 @@ def fuse_results(
             max(evidence_scores) + min(0.08, 0.02 * max(0, len(reasons) - 1)),
         )
         relevant.append(row)
+        if native and publish and (len(relevant) == 1 or scanned % 64 == 0):
+            publish(source_results(relevant), False, scanned, len(ordered))
         relevant_by_media[str(row["media_type"])] += 1
     relevant.sort(
         key=lambda row: (
@@ -1162,7 +1146,11 @@ def fuse_results(
     deduped_by_media: dict[str, int] = defaultdict(int)
     for row in deduped:
         deduped_by_media[str(row["media_type"])] += 1
-    source_grouped, source_grouped_count = group_visual_results_by_source(deduped, args)
+    source_grouped, source_grouped_count = group_visual_results_by_source(relevant if native else deduped, args)
+    if native:
+        args.result_limit = PAGE_SIZE
+    if native and publish:
+        publish(source_grouped, False, len(ordered), len(ordered))
     source_grouped_by_media: dict[str, int] = defaultdict(int)
     for row in source_grouped:
         source_grouped_by_media[str(row["media_type"])] += 1
@@ -1179,8 +1167,8 @@ def fuse_results(
         "post_temporal_dedup_result_count": len(deduped),
         "post_temporal_dedup_count_by_media": dict(sorted(deduped_by_media.items())),
         "source_grouping_enabled": bool(
-            getattr(args, "disable_audio_evidence", False)
-            and not getattr(args, "audio_evidence_only", False)
+            native or (getattr(args, "disable_audio_evidence", False)
+            and not getattr(args, "audio_evidence_only", False))
         ),
         "source_grouped_frame_count": source_grouped_count,
         "post_source_group_result_count": len(source_grouped),
@@ -1312,6 +1300,11 @@ def build_native_result_contract(
         if row.get("audio_transcript_match"):
             hit_field = "audio_transcript" + ("," + hit_field if hit_field else "")
         items.append({
+            **{key: row.get(key) for key in (
+                "source_id", "source_type", "original_path", "display_name", "representative_thumbnail",
+                "top_match", "other_match_count", "match_clusters", "other_match_clusters",
+                "match_reasons", "final_score", "search_result_contract",
+            )},
             "result_id": row.get("result_id"),
             "source_content_id": row.get("source_content_id"),
             "visual_unit_id": row.get("visual_unit_id"),
@@ -1371,6 +1364,10 @@ def build_native_result_contract(
         })
     ranking = response.get("ranking") or {}
     return {
+        "search_result_contract": "media_archive_source_search_v2",
+        "search_state": "COMPLETE",
+        "filter_contract": FILTER_CONTRACT,
+        "search_snapshot_version": hashlib.sha256(json.dumps(response.get("central_db_identity_after")).encode()).hexdigest(),
         "contract_version": NATIVE_RESULT_CONTRACT_VERSION,
         "status": response.get("technical_status"),
         "query": query,
@@ -2060,6 +2057,27 @@ def execute_query(
         detail="综合视觉、文本和物体标签证据",
         started=progress_started,
     )
+    progressive = ProgressiveResults()
+    snapshot_path = out / str(preflight["request_id"]) / "reports" / "search_progress_results.json"
+    def publish_snapshot(rows, complete, scanned, total):
+        snapshot = progressive.snapshot(list(progressive.rows.values()) if complete else rows, complete=complete, scanned_count=scanned, total_count=total)
+        snapshot["query"] = query
+        snapshot["query_sha256"] = args.query_sha256
+        snapshot["result_items"] = snapshot["result_items"] if args.result_offset == 0 else list(sorted(progressive.rows.values(), key=lambda row: (-row["final_score"], row["source_id"])))[args.result_offset:args.result_offset + PAGE_SIZE]
+        snapshot["result_offset"] = args.result_offset
+        snapshot["next_result_offset"] = args.result_offset + PAGE_SIZE if len(progressive.rows) > args.result_offset + PAGE_SIZE else None
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = snapshot_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, snapshot_path)
+        print(SEARCH_PROGRESS_PREFIX + json.dumps({
+            "contract": "media_archive_search_progress_v1", "stage": "source_results", "stage_index": 6,
+            "total_stages": 7, "message": "素材结果已更新", "detail": "", "completed": scanned,
+            "total": total, **{key: value for key, value in snapshot.items() if key != "query"}, "contract": "media_archive_search_progress_v1",
+            "search_result_contract": "media_archive_source_search_v2",
+        }, ensure_ascii=False), file=sys.stderr, flush=True)
+    if bool(getattr(args, "native_app_result_contract", False)):
+        args.result_snapshot_callback = publish_snapshot
     results, ranking = fuse_results(
         runtime["visual_rows"], runtime["visual_vectors"], visual_query,
         text_scores, text_evidence, yoloe_matches, yoloe_labels, config, args,
@@ -2135,6 +2153,7 @@ def execute_query(
         })
         text_search.write_json(report_dir / "search_results.json", result_contract)
         text_search.write_json(report_dir / "search_summary.json", summary)
+        publish_snapshot(results, True, int(ranking["scanned_visual_vector_count"]), len(runtime["visual_vectors"]))
     else:
         text_search.write_json(report_dir / "query_response.json", response)
         (report_dir / "query_response.html").write_text(render_html(response), encoding="utf-8")
@@ -2142,7 +2161,7 @@ def execute_query(
         "results", 7, 7, "搜索完成",
         completed=len(results), total=len(results),
         detail="正式结果已就绪",
-        started=progress_started,
+        started=progress_started, search_state="COMPLETE",
     )
     return response, request_out
 

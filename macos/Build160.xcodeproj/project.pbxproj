@@ -1,0 +1,15 @@
+// !$*UTF8*$!
+{archiveVersion=1;classes={};objectVersion=56;objects={
+A1={isa=PBXProject;buildConfigurationList=A2;compatibilityVersion="Xcode 14.0";mainGroup=A3;productRefGroup=A4;targets=(A5);};
+A2={isa=XCConfigurationList;buildConfigurations=(A6);defaultConfigurationIsVisible=0;defaultConfigurationName=Debug;};
+A6={isa=XCBuildConfiguration;name=Debug;buildSettings={};};
+A3={isa=PBXGroup;children=(A7,A4);sourceTree="<group>";};
+A4={isa=PBXGroup;name=Products;children=(A8);sourceTree="<group>";};
+A7={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path="main.swift";sourceTree="<group>";};
+A8={isa=PBXFileReference;explicitFileType="compiled.mach-o.executable";path=Build160Frontend;sourceTree=BUILT_PRODUCTS_DIR;};
+A5={isa=PBXNativeTarget;name=Build160Frontend;productName=Build160Frontend;productReference=A8;productType="com.apple.product-type.tool";buildConfigurationList=A9;buildPhases=(AA);buildRules=();dependencies=();};
+A9={isa=XCConfigurationList;buildConfigurations=(AB);defaultConfigurationIsVisible=0;defaultConfigurationName=Debug;};
+AB={isa=XCBuildConfiguration;name=Debug;buildSettings={ALWAYS_SEARCH_USER_PATHS = NO; ARCHS = arm64; SDKROOT = macosx; MACOSX_DEPLOYMENT_TARGET = 12.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_COMPILATION_MODE = singlefile; CODE_SIGNING_ALLOWED = NO; DEBUG_INFORMATION_FORMAT = dwarf; PRODUCT_NAME = Build160Frontend;};};
+AA={isa=PBXSourcesBuildPhase;buildActionMask=2147483647;files=(AC);runOnlyForDeploymentPostprocessing=0;};
+AC={isa=PBXBuildFile;fileRef=A7;};
+};rootObject=A1;}

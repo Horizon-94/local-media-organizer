@@ -1,0 +1,17 @@
+{
+  "app_bundle_contract": "media_archive_standalone_app_bundle_1_3_0",
+  "configuration_state": "first_run_clean",
+  "project_root": "$APP_RESOURCES/Pipeline",
+  "runtime_contract_path": "$APP_RESOURCES/runtime_contract.json",
+  "search_runtime_path": "$APP_RESOURCES/Pipeline",
+  "database": "",
+  "output_root": "",
+  "models_included": false,
+  "portable_pipeline_runtimes": false,
+  "application_state_namespace": "LocalMediaOrganizer/build160-source",
+  "bundle_identifier": "local.horizon.local-database.source",
+  "supported_architectures": [
+    "arm64"
+  ],
+  "processing_engine": "BUILD150_ONLY"
+}

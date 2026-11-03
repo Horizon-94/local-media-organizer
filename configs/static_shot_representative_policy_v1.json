@@ -1,0 +1,16 @@
+{
+  "contract": "static_shot_representative_policy_v1",
+  "enabled": true,
+  "scope": "per_source_video_auto_detection",
+  "min_video_frames": 20,
+  "min_adjacent_pairs": 12,
+  "adjacent_max_gap_seconds": 12,
+  "stable_pair_dhash_threshold": 12,
+  "stable_pair_openclip_cosine_threshold": 0.985,
+  "min_stable_pair_ratio": 0.75,
+  "extended_duplicate_window_seconds": 120,
+  "require_openclip_for_relaxed_hash": true,
+  "preserve_all_sampled_frames": true,
+  "affects_only_heavy_model_and_candidate_eligibility": true,
+  "notes": "Automatically compresses visually stable tripod/interview segments without deleting frames, ASR, timestamps or source media."
+}

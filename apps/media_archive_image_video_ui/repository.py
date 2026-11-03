@@ -4,6 +4,7 @@ import csv
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,7 @@ class ReadonlyMediaRepository:
         # immutable mode is then safe because this repository is query-only.
         errors: list[str] = []
         for suffix in ("mode=ro", "mode=ro&immutable=1"):
+            con = None
             try:
                 con = sqlite3.connect(
                     f"{self.db_path.as_uri()}?{suffix}", uri=True, timeout=5.0,
@@ -47,6 +49,7 @@ class ReadonlyMediaRepository:
                 con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
                 return con
             except sqlite3.Error as exc:
+                if con is not None:con.close()
                 errors.append(str(exc))
         raise sqlite3.OperationalError("readonly_database_open_failed:" + " | ".join(errors))
 
@@ -67,7 +70,7 @@ class ReadonlyMediaRepository:
         return _int(row[0] if row else 0)
 
     def overview(self) -> dict[str, Any]:
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             source_rows = con.execute(
                 """SELECT media_type,COUNT(*) AS n,COALESCE(SUM(size_bytes),0) AS bytes
                    FROM source_assets WHERE media_type IN ('image','video')
@@ -158,7 +161,7 @@ class ReadonlyMediaRepository:
         }
 
     def pipeline(self) -> dict[str, Any]:
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             def count(table: str, where: str = "", params: tuple[Any, ...] = ()) -> int:
                 if not self._table_exists(con, table):
                     return 0
@@ -229,7 +232,7 @@ class ReadonlyMediaRepository:
         do not process a countable media queue.  The UI displays their state
         without inventing a misleading ``0/1`` or ``1/1`` counter.
         """
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             def count(table: str, where: str = "", params: tuple[Any, ...] = ()) -> int:
                 if not self._table_exists(con, table):
                     return 0
@@ -478,7 +481,7 @@ class ReadonlyMediaRepository:
     def recent_runs(self, limit: int = 40) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
         rows: list[dict[str, Any]] = []
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             if self._table_exists(con, "model_runs"):
                 rows.extend(dict(row) | {"kind": "model_run"} for row in con.execute(
                     """SELECT run_id,stage,status,input_count,output_count,started_at,finished_at,error_message
@@ -508,7 +511,7 @@ class ReadonlyMediaRepository:
         comes from the active run row in the central database.
         """
         active: list[dict[str, Any]] = []
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             if self._table_exists(con, "stop03_3_qwenvl_runs"):
                 workers = "workers" if self._column_exists(con, "stop03_3_qwenvl_runs", "workers") else "1"
                 if self._table_exists(con, "stop03_3_qwenvl_run_items"):
@@ -601,7 +604,7 @@ class ReadonlyMediaRepository:
 
     def duplicate_groups(self, offset: int = 0, limit: int = 30) -> dict[str, Any]:
         offset, limit = max(0, int(offset)), max(1, min(int(limit), 100))
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             if not self._table_exists(con, "source_duplicate_groups"):
                 return {"total": 0, "offset": offset, "limit": limit, "items": []}
             real_group_where = """
@@ -656,7 +659,7 @@ class ReadonlyMediaRepository:
     def timelapse_groups(self, offset: int = 0, limit: int = 30) -> dict[str, Any]:
         offset, limit = max(0, int(offset)), max(1, min(int(limit), 100))
         sequence_metadata = self._timelapse_sequence_metadata()
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             if not self._table_exists(con, "step02_image_timelapse_keyframes"):
                 return self._timelapse_manifest_groups(offset, limit)
             rows = con.execute(
@@ -792,15 +795,15 @@ class ReadonlyMediaRepository:
         }
 
     def derived_path(self, derived_id: str) -> Path | None:
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             row = con.execute("SELECT derived_path FROM derived_assets WHERE derived_id=?", (derived_id,)).fetchone()
         if not row:
             return None
         path = Path(str(row[0])).expanduser().resolve()
         return path if path.is_file() else None
 
-    def source_media(self, source_content_id: str) -> dict[str, Any] | None:
-        with self.connect() as con:
+    def source_media(self, source_content_id: str, *, probe_original: bool = True) -> dict[str, Any] | None:
+        with closing(self.connect()) as con:
             row = con.execute(
                 """SELECT source_content_id,absolute_path,relative_path,file_name,extension,media_type,size_bytes
                    FROM source_assets WHERE source_content_id=? AND media_type IN ('image','video')""",
@@ -809,9 +812,11 @@ class ReadonlyMediaRepository:
         if not row:
             return None
         item = dict(row)
-        path = Path(str(item["absolute_path"])).expanduser().resolve()
+        path = Path(str(item["absolute_path"])).expanduser()
         item["resolved_path"] = str(path)
-        item["available"] = path.is_file()
+        item["available"] = path.is_file() if probe_original else False
+        item["source_availability"] = ("online" if item["available"] else "offline") if probe_original else "unchecked"
+        item["can_open_original"] = bool(item["absolute_path"])
         return item
 
     def visual_frame_results(
@@ -832,7 +837,13 @@ class ReadonlyMediaRepository:
             raise ValueError("visual_frame_media_type_invalid")
         safe_offset = max(0, int(offset))
         safe_limit = max(1, min(int(limit), 5_000))
-        with self.connect() as con:
+        from . import person_library_repair
+        with closing(self.connect()) as con:
+            has_v2_frames = self._table_exists(con, "v2_artifacts")
+        if has_v2_frames or person_library_repair.companion(self.db_path).is_file():
+            return person_library_repair.visual_frames(self.db_path,identifiers,clean_source,
+                media_type,safe_offset,safe_limit)
+        with closing(self.connect()) as con:
             visual_time = "v.time_position_ms" if self._column_exists(
                 con, "visual_units", "time_position_ms"
             ) else "-1"
@@ -872,12 +883,12 @@ class ReadonlyMediaRepository:
         for row in rows:
             item = dict(row)
             preview = Path(str(item.get("derived_path") or "")).expanduser().resolve()
-            source = Path(str(item.get("absolute_path") or "")).expanduser().resolve()
+            source = Path(str(item.get("absolute_path") or "")).expanduser()
             item.update({
                 "preview_path": str(preview) if preview.is_file() else "",
-                "source_path": str(source) if source.is_file() else "",
-                "source_online": source.is_file(),
-                "can_open_original": source.is_file(),
+                "source_path": str(source),
+                "source_online": False, "source_availability": "unchecked",
+                "can_open_original": str(source) not in ("", "."),
                 "source_frame_count": len(rows) if clean_source else 1,
                 "result_level": "frame",
             })
@@ -907,7 +918,44 @@ class ReadonlyMediaRepository:
         identifiers = sorted({str(value) for value in visual_unit_ids if value})
         if not identifiers:
             return {}
-        with self.connect() as con:
+        from . import person_library_repair
+        repaired=person_library_repair.read_frames(self.db_path)
+        if repaired is not None:
+            links=defaultdict(list)
+            for row in repaired:
+                if row['visual_unit_id'] in identifiers:
+                    links[row['visual_unit_id']].append({k:row[k] for k in
+                        ('person_cluster_id','member_count','distinct_source_count',
+                         'cluster_confidence','human_review_status')})
+                    links[row['visual_unit_id']][-1]['display_name']=row.get('anonymous_display_name') or '待确认人物'
+            return dict(links)
+        with closing(self.connect()) as con:
+            from . import v2_person_catalog
+            if v2_person_catalog.enabled(con):
+                # Negative-only search decoration guard, in the same snapshot
+                # as the original current-lineage/cluster authority below.
+                # Historical/uncertain face evidence falls through: it never
+                # authorizes a person link or changes global cluster counts.
+                if not con.in_transaction:
+                    con.execute('BEGIN')
+                possible_faces = True
+                try:
+                    possible_faces = any(json.loads(row[0]) for row in con.execute(
+                        "SELECT face_evidence FROM v2_person_observations "
+                        "WHERE artifact_id IN (SELECT value FROM json_each(?))",
+                        (json.dumps(identifiers),)))
+                except (ValueError, TypeError, sqlite3.Error):
+                    pass  # Preserve the original validator/error path.
+                if not possible_faces:
+                    return {}
+                links=defaultdict(list)
+                for row in v2_person_catalog.frames(con, targeted_lineage=True, links_only=True):
+                    if row['visual_unit_id'] in identifiers:
+                        links[row['visual_unit_id']].append({k:row[k] for k in
+                            ('person_cluster_id','member_count','distinct_source_count',
+                             'cluster_confidence','human_review_status')})
+                        links[row['visual_unit_id']][-1]['display_name']=row.get('anonymous_display_name') or '待确认人物'
+                return dict(links)
             if not self._table_exists(
                 con, "v_stop03_1c_latest_person_cluster_members",
             ):
@@ -976,7 +1024,16 @@ class ReadonlyMediaRepository:
             str(value).strip() for value in extra_visual_unit_ids
             if str(value).strip()
         })
-        with self.connect() as con:
+        from . import person_library_repair
+        repaired=person_library_repair.results(self.db_path,cluster_ids,media_type,max(0,int(offset)),
+            max(1,min(int(limit),100)),source_content_id,extra_ids)
+        if repaired is not None:
+            return repaired
+        with closing(self.connect()) as con:
+            from . import v2_person_catalog
+            if v2_person_catalog.enabled(con):
+                return v2_person_catalog.results(con,cluster_ids,media_type,max(0,int(offset)),
+                    max(1,min(int(limit),100)),source_content_id)
             if not self._table_exists(
                 con, "v_stop03_1c_latest_person_cluster_members",
             ):
@@ -1005,12 +1062,9 @@ class ReadonlyMediaRepository:
                 WHERE p.person_cluster_id IN ({placeholders})
                   AND p.member_count > 1
                   AND (
-                    p.distinct_source_count >= 2
-                    OR p.human_review_status='confirmed'
-                  )
-                  AND (
-                    p.cluster_confidence='high'
-                    OR p.human_review_status='confirmed'
+                    p.human_review_status='confirmed'
+                    OR (p.cluster_confidence='high' AND p.distinct_source_count >= 2)
+                    OR (p.cluster_confidence='review' AND p.member_count >= 10)
                   )
                 ORDER BY p.similarity_to_representative DESC,
                          p.time_position_ms,p.visual_unit_id
@@ -1030,13 +1084,13 @@ class ReadonlyMediaRepository:
                 continue
             count_by_media[row_media_type] += 1
             preview_path = Path(str(row["derived_path"])).expanduser().resolve()
-            source_path = Path(str(row["absolute_path"])).expanduser().resolve()
+            source_path = Path(str(row["absolute_path"])).expanduser()
             unique.append({
                 **dict(row),
                 "preview_path": str(preview_path) if preview_path.is_file() else "",
-                "source_path": str(source_path) if source_path.is_file() else "",
-                "source_online": source_path.is_file(),
-                "can_open_original": source_path.is_file(),
+                "source_path": str(source_path),
+                "source_online": False, "source_availability": "unchecked",
+                "can_open_original": str(source_path) not in ("", "."),
             })
         extras = self.visual_frame_results(
             visual_unit_ids=extra_ids,
@@ -1110,12 +1164,19 @@ class ReadonlyMediaRepository:
         """List reliable anonymous-person clusters for an explicit UI picker.
 
         The representative image is an existing derived asset.  This method is
-        query-only and deliberately excludes singleton/review-only clusters so
-        the UI never presents an uncertain grouping as confirmed.
+        query-only. Singletons stay hidden; substantial review groups remain
+        visible with their unconfirmed status, as in the installed product.
         """
         safe_offset = max(0, int(offset))
         safe_limit = max(1, min(int(limit), 200))
-        with self.connect() as con:
+        from . import person_library_repair
+        repaired=person_library_repair.catalog(self.db_path,safe_offset,safe_limit)
+        if repaired is not None:
+            return repaired
+        with closing(self.connect()) as con:
+            from . import v2_person_catalog
+            if v2_person_catalog.enabled(con):
+                return v2_person_catalog.catalog(con,safe_offset,safe_limit)
             if not self._table_exists(
                 con, "v_stop03_1c_latest_person_cluster_members",
             ):
@@ -1146,12 +1207,9 @@ class ReadonlyMediaRepository:
                 WHERE p.face_id=p.representative_face_id
                   AND p.member_count > 1
                   AND (
-                    p.distinct_source_count >= 2
-                    OR p.human_review_status='confirmed'
-                  )
-                  AND (
-                    p.cluster_confidence='high'
-                    OR p.human_review_status='confirmed'
+                    p.human_review_status='confirmed'
+                    OR (p.cluster_confidence='high' AND p.distinct_source_count >= 2)
+                    OR (p.cluster_confidence='review' AND p.member_count >= 10)
                   )
                 ORDER BY p.member_count DESC,p.distinct_source_count DESC,
                          p.person_cluster_id
@@ -1165,12 +1223,12 @@ class ReadonlyMediaRepository:
                 continue
             seen.add(cluster_id)
             preview = Path(str(row["derived_path"])).expanduser().resolve()
-            source = Path(str(row["absolute_path"])).expanduser().resolve()
+            source = Path(str(row["absolute_path"])).expanduser()
             items.append({
                 **dict(row),
                 "preview_path": str(preview) if preview.is_file() else "",
-                "source_path": str(source) if source.is_file() else "",
-                "source_online": source.is_file(),
+                "source_path": str(source),
+                "source_online": False, "source_availability": "unchecked",
             })
         return {
             "total": len(items),
@@ -1179,8 +1237,80 @@ class ReadonlyMediaRepository:
             "items": items[safe_offset:safe_offset + safe_limit],
         }
 
+    def person_reid_health(self) -> dict[str, Any]:
+        """Explain whether an empty person catalog is valid or a failed stage."""
+        from . import person_library_repair
+        repaired=person_library_repair.health(self.db_path)
+        if repaired is not None:
+            return repaired
+        with closing(self.connect()) as con:
+            from . import v2_person_catalog
+            if v2_person_catalog.enabled(con):
+                catalog=v2_person_catalog.catalog(con,0,200)
+                counts={str(r[0]):int(r[1]) for r in con.execute("SELECT status,count(*) FROM v2_current_jobs WHERE stage='insightface' GROUP BY status")}
+                face_count=int(con.execute("SELECT COALESCE(SUM(json_array_length(result_json,'$.faces')),0) FROM v2_current_jobs WHERE stage='insightface' AND status='DONE'").fetchone()[0])
+                pending=counts.get('PENDING',0)+counts.get('RUNNING',0)
+                state='running' if pending else 'failed' if counts.get('FAILED_FINAL',0) else 'ready' if catalog['total'] else 'empty'
+                return {'state':state,'face_count':face_count,'visual_unit_count':sum(counts.values()),
+                        'pending_count':pending,'cluster_count':catalog['total'],
+                        'authority':'v2_current_face_evidence'}
+            if not self._table_exists(con, "stop03_1c_person_reid_runs"):
+                return {"state": "not_run"}
+            run = con.execute(
+                """SELECT run_id,status,visual_unit_count,face_count,cluster_count,
+                          error_message
+                   FROM stop03_1c_person_reid_runs
+                   ORDER BY created_at DESC,run_id DESC LIMIT 1"""
+            ).fetchone()
+            if run is None:
+                return {"state": "not_run"}
+            face_label_count = 0
+            if (
+                self._table_exists(con, "visual_labels")
+                and self._column_exists(con, "visual_labels", "visual_unit_id")
+                and self._column_exists(con, "visual_labels", "label")
+                and self._table_exists(con, "stop03_1c_person_reid_run_items")
+            ):
+                face_label_count = _int(con.execute(
+                    """SELECT COUNT(DISTINCT vl.visual_unit_id)
+                       FROM visual_labels AS vl
+                       JOIN stop03_1c_person_reid_run_items AS i
+                         ON i.visual_unit_id=vl.visual_unit_id
+                       WHERE i.run_id=? AND LOWER(TRIM(vl.label))='face'""",
+                    (str(run["run_id"]),),
+                ).fetchone()[0])
+        result = dict(run)
+        error_message = str(result.get("error_message") or "")
+        visual_count = _int(result.get("visual_unit_count"))
+        face_count = _int(result.get("face_count"))
+        cluster_count = _int(result.get("cluster_count"))
+        implausible_zero = (
+            face_count == 0
+            and face_label_count >= 3
+            and face_label_count / max(1, visual_count) >= 0.005
+        )
+        if error_message.startswith("PERSON_REID_IMPLAUSIBLE_ZERO_FACES") or implausible_zero:
+            state = "implausible_zero_faces"
+        elif str(result.get("status") or "") == "failed":
+            state = "failed"
+        elif cluster_count > 0:
+            state = "ready"
+        else:
+            state = "empty"
+        return {
+            "state": state,
+            "run_id": str(result.get("run_id") or ""),
+            "run_status": str(result.get("status") or ""),
+            "visual_unit_count": visual_count,
+            "face_count": face_count,
+            "cluster_count": cluster_count,
+            "independent_face_visual_unit_count": face_label_count,
+            "error_message": error_message,
+        }
+
+
     def integrity(self) -> dict[str, Any]:
-        with self.connect() as con:
+        with closing(self.connect()) as con:
             integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
             foreign_keys = len(con.execute("PRAGMA foreign_key_check").fetchall())
         return {"integrity_check": integrity, "foreign_key_error_count": foreign_keys}

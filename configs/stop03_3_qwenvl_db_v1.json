@@ -4,7 +4,7 @@
   "v25_snapshot_contract_version": "stop03_2_v25_candidate_snapshot_v1",
   "qwenvl_queue_view": "v_stop03_2_v25_qwenvl_execution_queue",
   "ocr_queue_view": "v_stop03_2_v25_ocr_execution_queue",
-  "output_contract_version": "qwenvl_output_contract_v2.0",
+  "output_contract_version": "qwenvl_output_contract_v2.1_raw_media_v3_r2_keywords_5_12",
   "default_max_tokens": 384,
   "temperature": 0.0,
   "top_p": 1.0,
@@ -25,7 +25,7 @@
     "chat_template.json"
   ],
   "qwen_python": "$BUNDLED_PIPELINE_ENVS/qwen-vl/bin/python",
-  "prompt_path": "$APP_RESOURCES/Pipeline/configs/qwenvl_prompt_v2_384.txt",
+  "prompt_path": "$APP_RESOURCES/Pipeline/configs/qwenvl_prompt_raw_media_v3_384.txt",
   "production_success_status": "success",
   "non_success_statuses": [
     "truncated",
@@ -44,9 +44,9 @@
     "input_fingerprint_mismatch"
   ],
   "required_output_sections": [
-    "1）概括：",
-    "2）元素：",
-    "3）检索价值："
+    "画面描述：", "主要主体：", "动作/事件：", "场景/环境：",
+    "景别：", "构图/主体位置：", "机位/视角：", "主体可见性：",
+    "技术状态：", "检索关键词：", "可承接主题/对白语义：", "画面功能：", "可能用途："
   ],
   "offline_environment": {
     "HF_HUB_OFFLINE": "1",

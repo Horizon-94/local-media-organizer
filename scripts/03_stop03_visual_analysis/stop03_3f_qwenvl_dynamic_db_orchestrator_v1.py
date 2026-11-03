@@ -35,7 +35,7 @@ PROJECT_ROOT = Path("$APP_RESOURCES/Pipeline")
 TEST_OUTPUT_ROOT = Path("$USER_HOME/Documents/AI-Local/test-output")
 DEFAULT_DB = PROJECT_ROOT / "media_archive.sqlite"
 DEFAULT_CONFIG = PROJECT_ROOT / "configs/stop03_3_qwenvl_db_v1.json"
-DEFAULT_PROMPT = PROJECT_ROOT / "configs/qwenvl_prompt_v2_384.txt"
+DEFAULT_PROMPT = PROJECT_ROOT / "configs/qwenvl_prompt_raw_media_v3_384.txt"
 DEFAULT_MODEL = Path("$MODEL_ROOT/Qwen3-VL-4B-Instruct-4bit")
 DEFAULT_QWEN_PYTHON = Path("$BUNDLED_PIPELINE_ENVS/qwen-vl/bin/python")
 DEFAULT_OUT = TEST_OUTPUT_ROOT / "stop03_3f_qwenvl_dynamic_db_full"
@@ -107,11 +107,9 @@ def effective_prompt(base_prompt: str, attempt_count: int) -> tuple[str, str]:
     retry_instruction = """
 
 【格式恢复约束】
-上一次回答过长、重复或未完成。请重新独立观察图像，并严格只输出以下三段：
-1）概括：一句话，不超过60个中文字符。
-2）元素：一句话，合并同类项，不超过160个中文字符；同一物体不得重复。
-3）检索价值：一句话，不超过80个中文字符。
-禁止重复词组、禁止逐个穷举相似物体；第三段结束后立即停止。
+上一次回答过长、重复或未完成。请重新独立观察图像，严格按原模板输出5组13个字段。
+每个字段只写短内容；不能可靠判断时写“无法可靠判断”，不得编造事实来凑数量。
+禁止重复词组和标题；“可能用途”结束后立即停止。
 """.strip()
     return f"{base_prompt.rstrip()}\n\n{retry_instruction}", COMPACT_RETRY_PROMPT_VERSION
 

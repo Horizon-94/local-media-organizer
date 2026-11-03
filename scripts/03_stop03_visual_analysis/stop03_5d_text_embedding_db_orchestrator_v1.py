@@ -607,14 +607,17 @@ class LocalSentenceTransformerAdapter:
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         os.environ["HF_DATASETS_OFFLINE"] = "1"
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        import torch
-        from sentence_transformers import SentenceTransformer
+        from apps.media_archive_image_video_ui import query_trace as trace
+        with trace.span('embedding_library_import'):
+            import torch
+            from sentence_transformers import SentenceTransformer
         if self.device_requested == "auto":
             self.device_effective = "mps" if torch.backends.mps.is_available() else "cpu"
-        self.model = SentenceTransformer(
-            str(self.model_path), device=self.device_effective,
-            local_files_only=True, trust_remote_code=False,
-        )
+        with trace.span('embedding_weights_and_initialize'):
+            self.model = SentenceTransformer(
+                str(self.model_path), device=self.device_effective,
+                local_files_only=True, trust_remote_code=False,
+            )
         self.model_load_count += 1
 
     def encode(self, text: str) -> list[float]:

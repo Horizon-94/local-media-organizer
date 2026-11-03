@@ -247,7 +247,9 @@ def connect(database: Path, *, readonly: bool = False) -> sqlite3.Connection:
     if readonly:
         errors: list[str] = []
         con: sqlite3.Connection | None = None
-        for query in ("mode=ro", "mode=ro&immutable=1"):
+        # Product databases may have a live writer/WAL. A failed normal read is
+        # not proof of immutability; never bypass SQLite locking automatically.
+        for query in ("mode=ro",):
             try:
                 con = sqlite3.connect(
                     f"{path.as_uri()}?{query}", uri=True, timeout=10.0,
